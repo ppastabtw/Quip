@@ -11,7 +11,9 @@ import {
   type AppSettings,
   type ComparisonReport,
   type ComparisonSide,
+  type DebugEventView,
   type Metrics,
+  type Snapshot,
 } from "./ipc";
 import type { PredictionResult, Rect, SidecarHealth, Trigger } from "./contracts";
 
@@ -25,6 +27,8 @@ const comparisonEl = byId<HTMLDivElement>("comparison");
 const lastStateEl = byId<HTMLSpanElement>("last_state");
 const lastCommitEl = byId<HTMLParagraphElement>("last_commit");
 const playgroundEl = byId<HTMLTextAreaElement>("playground");
+const debugTimelineEl = byId<HTMLDivElement>("debug_timeline");
+const inlineCandidatesEl = byId<HTMLDivElement>("inline_candidates");
 
 // ---- playground: burst tracking, triggers, caret geometry ----
 
@@ -41,6 +45,7 @@ let activeBurstId: string | undefined;
 let suggesting = false;
 let selectedIndex = 0;
 let idleTimer: number | undefined;
+let debugRows: DebugEventView[] = [];
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
 
@@ -48,9 +53,102 @@ async function selectCandidate(index: number) {
   try {
     await api.selectCandidate(index);
   } catch (error) {
-    lastStateEl.textContent = `commit failed: ${String(error)}`;
+    const summary = `commit failed: ${String(error)}`;
+    lastStateEl.textContent = summary;
     lastCommitEl.textContent = "";
+    appendTimelineEvent("commit_failed", summary, {
+      selected_index: index,
+      success: false,
+      error: String(error),
+    });
   }
+}
+
+function appendTimelineEvent(
+  event: string,
+  summary: string,
+  payload: Record<string, unknown> = {},
+) {
+  debugRows.push({
+    ts_ms: Date.now(),
+    event,
+    summary,
+    payload,
+  });
+  if (debugRows.length > 50) debugRows = debugRows.slice(-50);
+  renderTimeline();
+}
+
+function mergeDebugEvents(eventsFromSink: DebugEventView[]) {
+  const seen = new Set(debugRows.map((row) => `${row.ts_ms}:${row.event}:${row.summary}`));
+  for (const event of eventsFromSink) {
+    const key = `${event.ts_ms}:${event.event}:${event.summary}`;
+    if (!seen.has(key)) {
+      debugRows.push(event);
+      seen.add(key);
+    }
+  }
+  debugRows.sort((a, b) => a.ts_ms - b.ts_ms);
+  if (debugRows.length > 50) debugRows = debugRows.slice(-50);
+  renderTimeline();
+}
+
+function renderTimeline() {
+  debugTimelineEl.replaceChildren();
+  if (debugRows.length === 0) {
+    debugTimelineEl.append(el("div", "placeholder", "No debug events"));
+    return;
+  }
+  for (const event of debugRows.slice().reverse()) {
+    const row = el("div", "debug-row");
+    row.append(
+      el("span", "debug-time", new Date(event.ts_ms).toLocaleTimeString()),
+      el("span", "debug-summary", `${event.event}: ${event.summary}`),
+    );
+    debugTimelineEl.append(row);
+  }
+}
+
+function snapshotSummary(snapshot: Snapshot): string {
+  switch (snapshot.phase) {
+    case "predicting":
+      return `${snapshot.burst_id} draft_chars=${snapshot.draft.length}`;
+    case "suggesting":
+      return (
+        `${snapshot.candidates.length} candidates` +
+        (snapshot.backend ? ` ${snapshot.backend}` : "") +
+        (snapshot.latency_ms === null ? "" : ` ${snapshot.latency_ms}ms`) +
+        ` caret=${Math.round(snapshot.caret.x)},${Math.round(snapshot.caret.y)}`
+      );
+    case "unavailable":
+      return snapshot.reason;
+    case "applied":
+      return `${snapshot.destination_id} chars=${snapshot.text.length}`;
+    case "idle":
+      return "hidden/idle";
+  }
+}
+
+function renderInlineCandidates(snapshot: Snapshot) {
+  inlineCandidatesEl.replaceChildren();
+  if (snapshot.phase !== "suggesting") {
+    inlineCandidatesEl.classList.add("placeholder");
+    inlineCandidatesEl.textContent = "No candidates";
+    return;
+  }
+  inlineCandidatesEl.classList.remove("placeholder");
+  if (snapshot.error) {
+    inlineCandidatesEl.append(el("div", "inline-candidate", `error: ${snapshot.error.code}`));
+    return;
+  }
+  if (snapshot.candidates.length === 0) {
+    inlineCandidatesEl.classList.add("placeholder");
+    inlineCandidatesEl.textContent = "No candidates";
+    return;
+  }
+  snapshot.candidates.forEach((candidate, index) => {
+    inlineCandidatesEl.append(el("div", "inline-candidate", `${index + 1}. ${candidate}`));
+  });
 }
 
 function caretClientPoint(): { x: number; y: number } {
@@ -90,6 +188,11 @@ async function fireTrigger(trigger: Trigger) {
   burstEnd = playgroundEl.selectionStart;
   const draft = playgroundEl.value.slice(burstStart, burstEnd).trim();
   if (draft.length === 0) return;
+  appendTimelineEvent("playground_input", `draft_chars=${draft.length}`, {
+    source: "playground",
+    trigger,
+    draft_chars: draft.length,
+  });
   activeBurstId = `pg_${++burstSeq}`;
   void api.injectCapture({
     status: "ready",
@@ -285,6 +388,8 @@ void events.onSettings((next) => {
 });
 void events.onSnapshot((snapshot) => {
   lastStateEl.textContent = `composition: ${snapshot.phase}`;
+  appendTimelineEvent("snapshot", snapshotSummary(snapshot), { phase: snapshot.phase });
+  renderInlineCandidates(snapshot);
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
   suggesting =
     snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
@@ -295,6 +400,11 @@ void events.onSnapshot((snapshot) => {
 });
 void events.onCommitted((outcome) => {
   lastCommitEl.textContent = `last commit → ${outcome.destination_id}: "${outcome.text}"`;
+  appendTimelineEvent("commit_succeeded", `${outcome.destination_id} chars=${outcome.text.length}`, {
+    destination_id: outcome.destination_id,
+    committed_chars: outcome.text.length,
+    success: true,
+  });
   if (outcome.destination_id === "destination_playground") {
     applyReplacement(outcome.text);
   }
@@ -314,5 +424,10 @@ void (async () => {
     casesEl.append(button);
   }
   await refresh();
+  renderTimeline();
+  void api.getDebugEvents(50).then(mergeDebugEvents).catch(() => {});
+  window.setInterval(() => {
+    void api.getDebugEvents(50).then(mergeDebugEvents).catch(() => {});
+  }, 2000);
   window.setInterval(() => void refresh(), 3000);
 })();
