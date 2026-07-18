@@ -24,7 +24,7 @@ class FixtureMappingTests(unittest.TestCase):
         self.assertTrue(all(set(row) == {"input", "output", "metadata"} for row in rows))
         self.assertTrue(all("base" not in row["metadata"]["example_id"] for row in rows))
         self.assertTrue(
-            all(set(json.loads(row["output"])) == {"suggestion"} for row in rows)
+            all(set(row["output"]) == {"suggestion"} for row in rows)
         )
 
     def test_protected_fixture_keeps_both_tokens(self):
@@ -34,7 +34,7 @@ class FixtureMappingTests(unittest.TestCase):
         )
         row = MODULE.map_exchange(scenario)
         self.assertEqual(row["metadata"]["protected_tokens"], ["usr/bin", "q3_finl_v2.pdf"])
-        self.assertEqual(json.loads(row["output"]), {"suggestion": scenario["request"]["draft"]})
+        self.assertEqual(row["output"], {"suggestion": scenario["request"]["draft"]})
 
 
 if __name__ == "__main__":

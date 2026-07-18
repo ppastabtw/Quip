@@ -17,6 +17,9 @@ enum SidecarCommand {
     Predict {
         request: PredictionRequest,
     },
+    Benchmark {
+        request: PredictionRequest,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +32,19 @@ struct ProtocolFailure {
 struct ProtocolError {
     code: &'static str,
     message: &'static str,
+    retryable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkFailure {
+    status: &'static str,
+    error: BenchmarkError,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkError {
+    code: &'static str,
+    message: String,
     retryable: bool,
 }
 
@@ -52,6 +68,25 @@ pub fn serve<R: BufRead, W: Write, B: InferenceBackend>(
                 serde_json::to_writer(&mut writer, &backend.predict(&request))
                     .map_err(json_error)?;
             }
+            Ok(SidecarCommand::Benchmark { request }) => match backend.benchmark(&request) {
+                Ok(benchmark) => {
+                    serde_json::to_writer(&mut writer, &benchmark).map_err(json_error)?;
+                }
+                Err(message) => {
+                    serde_json::to_writer(
+                        &mut writer,
+                        &BenchmarkFailure {
+                            status: "benchmark_error",
+                            error: BenchmarkError {
+                                code: "benchmark_failed",
+                                message,
+                                retryable: false,
+                            },
+                        },
+                    )
+                    .map_err(json_error)?;
+                }
+            },
             Err(_) => {
                 // Do not echo the rejected line: it may contain a private draft.
                 serde_json::to_writer(
@@ -94,6 +129,7 @@ mod tests {
         let input = concat!(
             "{\"operation\":\"health\"}\n",
             "{\"operation\":\"predict\",\"request\":{\"request_id\":\"new-id\",\"profile_id\":\"profile_default\",\"model_variant\":\"base\",\"draft\":\"cnt cm tmrw\",\"context_snippets\":[],\"personal_patterns\":[]}}\n",
+            "{\"operation\":\"benchmark\",\"request\":{\"request_id\":\"benchmark-id\",\"profile_id\":\"profile_default\",\"model_variant\":\"base\",\"draft\":\"cnt cm tmrw\",\"context_snippets\":[],\"personal_patterns\":[]}}\n",
             "{not-json}\n",
         );
         let backend = FixtureBackend::embedded().unwrap();
@@ -106,9 +142,10 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(responses.len(), 3);
+        assert_eq!(responses.len(), 4);
         assert_eq!(responses[0]["status"], "ready");
         assert_eq!(responses[1]["request_id"], "new-id");
-        assert_eq!(responses[2]["status"], "protocol_error");
+        assert_eq!(responses[2]["status"], "benchmark_error");
+        assert_eq!(responses[3]["status"], "protocol_error");
     }
 }

@@ -1,0 +1,7 @@
+# The Swift-bridged accessibility crates (axuielement, apple-cf) emit an
+# Xcode-toolchain search path for the Swift compatibility static libraries
+# (swiftCompatibility56 etc.). On machines with Command Line Tools only, those
+# libraries live here instead; a search path that does not exist is only a
+# linker warning, so this is safe on full-Xcode machines too.
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/Library/Developer/CommandLineTools/usr/lib/swift/macosx"]

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dataset_compiler.contract import DATASET_DIR, REPORT_PATH, validate_compiled_datasets  # noqa: E402
-from scoring import parse_prediction, score_completion  # noqa: E402
+from scoring import model_text, parse_prediction, score_completion  # noqa: E402
 
 
 SMOKE_METADATA_KEYS = {
@@ -22,7 +22,6 @@ SMOKE_METADATA_KEYS = {
     "category",
     "target_changed",
     "accepted_suggestions",
-    "protected_tokens",
 }
 
 
@@ -42,7 +41,7 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
             row = json.loads(line)
             if not isinstance(row, dict) or set(row) != {"input", "output", "metadata"}:
                 raise ValueError(f"{path}:{line_number}: invalid row shape")
-            input_payload = json.loads(row["input"])
+            input_payload = row["input"]
             if (
                 not isinstance(input_payload, dict)
                 or set(input_payload) != {"text"}
@@ -50,9 +49,9 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
                 or not input_payload["text"].strip()
             ):
                 raise ValueError(f"{path}:{line_number}: invalid input")
-            prediction = parse_prediction(row["output"])
+            prediction = parse_prediction(model_text(row["output"]))
             metadata = row["metadata"]
-            if not isinstance(metadata, dict) or set(metadata) != SMOKE_METADATA_KEYS:
+            if not isinstance(metadata, dict) or not SMOKE_METADATA_KEYS.issubset(metadata):
                 raise ValueError(f"{path}:{line_number}: invalid smoke metadata")
             if not isinstance(metadata["target_changed"], bool):
                 raise ValueError(f"{path}:{line_number}: target_changed must be boolean")
@@ -68,15 +67,11 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
                 or normalize(prediction.suggestion) not in {normalize(item) for item in accepted}
             ):
                 raise ValueError(f"{path}:{line_number}: invalid accepted_suggestions")
-            if not isinstance(metadata["protected_tokens"], list) or not all(
-                isinstance(item, str) and item for item in metadata["protected_tokens"]
-            ):
-                raise ValueError(f"{path}:{line_number}: invalid protected_tokens")
             result = score_completion(
                 input_text=row["input"],
                 expected_output=row["output"],
                 metadata=metadata,
-                response_text=row["output"],
+                response_text=model_text(row["output"]),
             )
             if result.score != 1.0 or not result.success:
                 raise ValueError(
@@ -120,6 +115,7 @@ def main() -> int:
     validate_compiled_datasets(
         train_path=DATASET_DIR / "train.jsonl",
         eval_path=DATASET_DIR / "eval.jsonl",
+        test_path=DATASET_DIR / "test.jsonl",
         report_path=REPORT_PATH,
     )
     return 0

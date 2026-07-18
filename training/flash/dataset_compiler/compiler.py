@@ -1,142 +1,127 @@
-"""Deterministic split construction and teacher augmentation orchestration."""
+"""Compile MASSIVE text windows with deterministic QWERTY augmentation."""
 
 from __future__ import annotations
 
 import json
 import random
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
-import httpx
-
-from .backboard import (
-    GENERATION_MODEL,
-    GENERATION_SYSTEM_PROMPT,
-    VERIFICATION_MODEL,
-    VERIFICATION_SYSTEM_PROMPT,
-    BackboardClient,
-    validate_generation_payload,
-    validate_verification_payload,
-)
+from augmentation import augment_text
 from .contract import (
     CONTRACT,
     DATASET_DIR,
-    GENERATION_SCHEMA_PATH,
     MANIFEST_PATH,
     REPORT_PATH,
-    VERIFICATION_SCHEMA_PATH,
     BuildError,
     Candidate,
     compact_json,
-    is_near_duplicate,
     make_row,
     normalize_text,
-    pair_rejection_reason,
     sha256_file,
     validate_compiled_datasets,
+    window_rejection_reason,
 )
-from .sources import (
-    choose_candidates,
-    jfleg_candidates,
-    load_manifest,
-    multilexnorm_candidates,
-    parse_jfleg,
-    parse_multilexnorm,
-    parse_uci_ham,
-    prepare_sources,
-    uci_candidates,
-)
+from .sources import load_manifest, parse_massive, prepare_sources, sample_massive_windows
 
 
-def augment_targets(
-    targets: Sequence[Candidate],
-    client: BackboardClient,
+def _augmentation_generation(result: Mapping[str, Any], *, seed: int) -> dict[str, Any]:
+    return {
+        "method": "qwerty_augmentation",
+        "seed": seed,
+        "requested_events": CONTRACT.augmentation_events,
+        "operations": [
+            {
+                "event": operation["event"],
+                "operator": operation["operator"],
+                "index": operation["index"],
+                "source": operation["source"],
+                "replacement": operation["replacement"],
+            }
+            for operation in result["operations"]
+        ],
+    }
+
+
+def select_split(
+    pools: Mapping[int, Sequence[Candidate]],
     *,
-    blocked_texts: Sequence[str] = (),
-    required_count: int | None = None,
-) -> list[Candidate]:
-    required = len(targets) if required_count is None else required_count
-    if required < 1 or required > len(targets):
-        raise BuildError("teacher required_count is outside the target pool")
-    blocked_normalized = {normalize_text(value) for value in blocked_texts}
-    accepted: dict[str, Candidate] = {}
+    split: str,
+    rng: random.Random,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    expected = CONTRACT.expected_counts(split)
+    surfaces: set[str] = set()
+    used_families: set[str] = set()
+    selected: list[dict[str, Any]] = []
 
-    def run_round(round_targets: Sequence[Candidate], attempt: int) -> list[Candidate]:
-        rejected_round: list[Candidate] = []
-        for batch_start in range(0, len(round_targets), CONTRACT.batch_size):
-            batch = list(round_targets[batch_start : batch_start + CONTRACT.batch_size])
-            target_ids = [item.source_record_id for item in batch]
-            generation = client.complete(
-                system_prompt=GENERATION_SYSTEM_PROMPT,
-                user_payload={
-                    "attempt": attempt,
-                    "targets": [
-                        {"target_id": item.source_record_id, "target": item.target}
-                        for item in batch
-                    ],
-                },
-                phase="generation",
-            )
-            drafts = validate_generation_payload(generation, target_ids)
-            pairs = [
-                {
-                    "target_id": item.source_record_id,
-                    "draft": drafts[item.source_record_id],
-                    "target": item.target,
-                }
-                for item in batch
-            ]
-            verification = client.complete(
-                system_prompt=VERIFICATION_SYSTEM_PROMPT,
-                user_payload={"pairs": pairs},
-                phase="verification",
-            )
-            verdicts = validate_verification_payload(verification, target_ids)
-            batch_normalized: set[str] = set()
-            for item in batch:
-                draft = drafts[item.source_record_id]
-                verdict = verdicts[item.source_record_id]
-                reason = pair_rejection_reason(draft, item.target, teacher=True)
-                normalized_draft = normalize_text(draft)
-                if (
-                    reason
-                    or not verdict["accepted"]
-                    or normalized_draft in blocked_normalized
-                    or normalized_draft in batch_normalized
-                ):
-                    rejected_round.append(item)
+    for size in CONTRACT.window_sizes:
+        candidates = list(pools[size])
+        rng.shuffle(candidates)
+        required = expected["window_sizes"][size]
+        unchanged_required = expected["unchanged_by_size"][size]
+        size_rows: list[dict[str, Any]] = []
+        unchanged_count = 0
+
+        for base in candidates:
+            if len(size_rows) >= required:
+                break
+            if base.family_id in used_families:
+                continue
+            target_normalized = normalize_text(base.target)
+            if not target_normalized or target_normalized in surfaces:
+                continue
+
+            if unchanged_count < unchanged_required:
+                candidate = base
+                generation = {"method": "sourced"}
+            else:
+                row_seed = rng.randrange(0, 2**63)
+                result = augment_text(
+                    base.target,
+                    seed=row_seed,
+                    event_count=CONTRACT.augmentation_events,
+                )
+                draft = result["augmented"]
+                if result["applied_events"] != CONTRACT.augmentation_events:
                     continue
-                batch_normalized.add(normalized_draft)
-                accepted[item.source_record_id] = Candidate(
+                if window_rejection_reason(draft, expected_size=size):
+                    continue
+                input_normalized = normalize_text(draft)
+                if (
+                    not input_normalized
+                    or input_normalized == target_normalized
+                    or input_normalized in surfaces
+                ):
+                    continue
+                candidate = replace(
+                    base,
                     text=draft,
-                    target=item.target,
-                    source_dataset=item.source_dataset,
-                    source_record_id=item.source_record_id,
-                    source_license=item.source_license,
-                    family_id=item.family_id,
-                    category="teacher_shorthand",
+                    category="qwerty_typo",
                     target_changed=True,
                 )
-            blocked_normalized.update(batch_normalized)
-        return rejected_round
+                generation = _augmentation_generation(result, seed=row_seed)
 
-    rejected = run_round(targets, 1)
-    remaining_calls = CONTRACT.max_teacher_requests - client.request_count
-    retry_batches = max(0, remaining_calls // 2)
-    retry_targets = rejected[: retry_batches * CONTRACT.batch_size]
-    if retry_targets:
-        run_round(retry_targets, 2)
-    ordered = [
-        accepted[item.source_record_id]
-        for item in targets
-        if item.source_record_id in accepted
-    ]
-    if len(ordered) < required:
-        raise BuildError(
-            f"teacher accepted {len(ordered)} of {required} required rows after one regeneration"
-        )
-    return ordered[:required]
+            input_normalized = normalize_text(candidate.text)
+            if input_normalized in surfaces:
+                continue
+            size_rows.append(make_row(candidate, generation=generation))
+            surfaces.update({input_normalized, target_normalized})
+            used_families.add(base.family_id)
+            if not candidate.target_changed:
+                unchanged_count += 1
+
+        if len(size_rows) != required or unchanged_count != unchanged_required:
+            raise BuildError(
+                f"{split} size-{size} quota failed: "
+                f"rows={len(size_rows)}/{required}, "
+                f"unchanged={unchanged_count}/{unchanged_required}"
+            )
+        selected.extend(size_rows)
+
+    rng.shuffle(selected)
+    return selected, surfaces
 
 
 def write_jsonl(path: Path, rows: Sequence[dict[str, Any]]) -> None:
@@ -148,162 +133,99 @@ def write_jsonl(path: Path, rows: Sequence[dict[str, Any]]) -> None:
 
 def split_summary(rows: Sequence[dict[str, Any]], path: Path) -> dict[str, Any]:
     changes = Counter(row["metadata"]["target_changed"] for row in rows)
+    sizes = Counter(row["metadata"]["window_size"] for row in rows)
+    unchanged_sizes = Counter(
+        row["metadata"]["window_size"]
+        for row in rows
+        if not row["metadata"]["target_changed"]
+    )
     return {
         "rows": len(rows),
         "sha256": sha256_file(path),
-        "changes": {
-            "unchanged": changes[False],
-            "changed": changes[True],
+        "changes": {"unchanged": changes[False], "changed": changes[True]},
+        "window_sizes": {str(size): sizes[size] for size in CONTRACT.window_sizes},
+        "unchanged_by_size": {
+            str(size): unchanged_sizes[size] for size in CONTRACT.window_sizes
         },
-        "single_word": sum(row["metadata"]["is_single_word"] for row in rows),
-        "single_word_keep": sum(
-            row["metadata"]["is_single_word"]
-            and not row["metadata"]["target_changed"]
-            for row in rows
-        ),
-        "protected_rows": sum(bool(row["metadata"]["protected_tokens"]) for row in rows),
     }
 
 
-def compile_datasets(
-    *,
-    seed: int,
-    offline: bool,
-    transport: httpx.BaseTransport | None = None,
-) -> dict[str, Any]:
+def compile_datasets(*, seed: int, offline: bool) -> dict[str, Any]:
     manifest = load_manifest()
-    sources = prepare_sources(manifest, offline=offline)
-    json.loads(GENERATION_SCHEMA_PATH.read_text(encoding="utf-8"))
-    json.loads(VERIFICATION_SCHEMA_PATH.read_text(encoding="utf-8"))
+    source_paths = prepare_sources(manifest, offline=offline)
+    records = parse_massive(source_paths["massive_en_us"])
     rng = random.Random(seed)
 
-    multi_train = parse_multilexnorm(sources["multilexnorm_en_train"])
-    multi_test = parse_multilexnorm(sources["multilexnorm_en_test"])
-    jfleg = parse_jfleg(
-        sources["jfleg_test_source"],
-        [sources[f"jfleg_test_ref{index}"] for index in range(4)],
-    )
-    uci = parse_uci_ham(sources["uci_sms_ham"])
-
-    eval_keep = choose_candidates(
-        multilexnorm_candidates(multi_test, split="test", action="keep"),
-        count=150,
-        single_count=27,
+    test_pools = sample_massive_windows(
+        records,
+        partition="test",
+        required_by_size=CONTRACT.expected_counts("test")["window_sizes"],
         rng=rng,
     )
-    eval_replace_multi = choose_candidates(
-        multilexnorm_candidates(multi_test, split="test", action="replace"),
-        count=90,
-        single_count=9,
+    eval_pools = sample_massive_windows(
+        records,
+        partition="dev",
+        required_by_size=CONTRACT.expected_counts("eval")["window_sizes"],
         rng=rng,
-        blocked_texts=[item.text for item in eval_keep],
     )
-    eval_jfleg = choose_candidates(
-        jfleg_candidates(jfleg),
-        count=60,
-        single_count=0,
+    train_pools = sample_massive_windows(
+        records,
+        partition="train",
+        required_by_size=CONTRACT.expected_counts("train")["window_sizes"],
         rng=rng,
-        blocked_texts=[item.text for item in eval_keep + eval_replace_multi],
     )
-    eval_candidates = eval_keep + eval_replace_multi + eval_jfleg
-    eval_blocked = [item.text for item in eval_candidates]
-
-    train_keep = choose_candidates(
-        uci_candidates(uci, action="keep"),
-        count=1000,
-        single_count=180,
-        rng=rng,
-        blocked_texts=eval_blocked,
-    )
-    train_real_replace = choose_candidates(
-        multilexnorm_candidates(multi_train, split="train", action="replace"),
-        count=400,
-        single_count=60,
-        rng=rng,
-        blocked_texts=eval_blocked + [item.text for item in train_keep],
-    )
-    teacher_targets = choose_candidates(
-        [
-            item
-            for item in uci_candidates(uci, action="replace")
-            if len(item.text.split()) > 1
-        ],
-        count=CONTRACT.teacher_target_pool_size,
-        single_count=0,
-        rng=rng,
-        blocked_texts=eval_blocked
-        + [item.text for item in train_keep + train_real_replace],
-    )
-
-    client = BackboardClient(offline=offline, transport=transport)
-    try:
-        train_teacher_replace = augment_targets(
-            teacher_targets,
-            client,
-            blocked_texts=[item.text for item in train_keep + train_real_replace],
-            required_count=600,
-        )
-        teacher_report = client.report()
-    finally:
-        client.close()
-
-    if any(
-        is_near_duplicate(item.text, blocked)
-        for item in train_teacher_replace
-        for blocked in eval_blocked
-    ):
-        raise BuildError("teacher augmentation introduced train and eval near-duplicate leakage")
-
-    sourced_generation = {"method": "sourced", "teacher_model": None}
-    teacher_generation = {
-        "method": "backboard_augmentation",
-        "teacher_model": GENERATION_MODEL,
-        "verifier_model": VERIFICATION_MODEL,
-    }
-    train_rows = [
-        make_row(
-            item,
-            generation=teacher_generation
-            if item.category == "teacher_shorthand"
-            else sourced_generation,
-        )
-        for item in train_keep + train_real_replace + train_teacher_replace
-    ]
-    eval_rows = [make_row(item, generation=sourced_generation) for item in eval_candidates]
-    rng.shuffle(train_rows)
-    rng.shuffle(eval_rows)
+    test_rows, _ = select_split(test_pools, split="test", rng=rng)
+    eval_rows, _ = select_split(eval_pools, split="eval", rng=rng)
+    train_rows, _ = select_split(train_pools, split="train", rng=rng)
 
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
     train_path = DATASET_DIR / "train.jsonl"
     eval_path = DATASET_DIR / "eval.jsonl"
+    test_path = DATASET_DIR / "test.jsonl"
     write_jsonl(train_path, train_rows)
     write_jsonl(eval_path, eval_rows)
+    write_jsonl(test_path, test_rows)
+
     report = {
-        "schema_version": 1,
-        "corpus_policy": "research_only",
+        "schema_version": 2,
+        "dataset_policy": "massive_window_augmentation_v1",
         "seed": seed,
-        "constraints": {
-            "train_size": CONTRACT.train_size,
-            "eval_size": CONTRACT.eval_size,
-            "change_balance": {"unchanged": 0.5, "changed": 0.5},
-            "input_word_range": [1, CONTRACT.max_words],
-            "single_word_share": 0.12,
-            "single_word_keep_share": 0.75,
-            "protected_token_max_share": CONTRACT.protected_token_max_share,
-            "context": False,
-            "personalization": False,
+        "source": {
+            "dataset": "MASSIVE",
+            "revision": "1.1",
+            "locale": "en-US",
+            "records": len(records),
+            "license": "CC BY 4.0",
+        },
+        "contract": {
+            "window_sizes": list(CONTRACT.window_sizes),
+            "window_share": 1 / len(CONTRACT.window_sizes),
+            "unchanged_share": CONTRACT.unchanged_share,
+            "augmented_share": 1 - CONTRACT.unchanged_share,
+            "augmentation": "deterministic_us_qwerty",
+            "augmentation_events": CONTRACT.augmentation_events,
+            "profanity_filter": "better-profanity==0.7.0",
+            "source_quality": "wordfreq==3.1.1 with minimum Zipf frequency 3.0",
+            "sampling": "one seeded random contiguous window per source utterance",
+            "split_policy": "MASSIVE train, dev, and test remain separate",
         },
         "source_manifest_sha256": sha256_file(MANIFEST_PATH),
-        "teacher": teacher_report,
         "splits": {
             "train": split_summary(train_rows, train_path),
             "eval": split_summary(eval_rows, eval_path),
+            "test": split_summary(test_rows, test_path),
         },
     }
     REPORT_PATH.write_text(
         json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
+    )
+    validate_compiled_datasets(
+        train_path=train_path,
+        eval_path=eval_path,
+        test_path=test_path,
+        report_path=REPORT_PATH,
     )
     return report
 
@@ -312,5 +234,6 @@ def verify_only() -> None:
     validate_compiled_datasets(
         train_path=DATASET_DIR / "train.jsonl",
         eval_path=DATASET_DIR / "eval.jsonl",
+        test_path=DATASET_DIR / "test.jsonl",
         report_path=REPORT_PATH,
     )

@@ -204,6 +204,42 @@ th {
   border-color: var(--accent);
 }
 
+.playground-stack {
+  position: relative;
+}
+
+.playground-stack #playground {
+  position: relative;
+  z-index: 1;
+}
+
+/* Mirrors #playground's text metrics exactly so the underline lands under the
+   same words; its own glyphs are transparent — only the chunk span draws. */
+.playground-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: transparent;
+  pointer-events: none;
+}
+
+.chunk-underline {
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 3px;
+}
+
 /* ---- demo harness ---- */
 
 .grid2 {

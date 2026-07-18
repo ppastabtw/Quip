@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scoring import model_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "evaluate_predictions.py"
@@ -19,7 +21,7 @@ class EvaluationTests(unittest.TestCase):
         predictions = [
             {
                 "example_id": row["metadata"]["example_id"],
-                "response": row["output"],
+                "response": model_text(row["output"]),
                 "latency_ms": 100,
             }
             for row in dataset
@@ -33,8 +35,12 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(report["mean_latency_ms"], 100.0)
 
     def test_wrong_change_counts_as_unnecessary_edit(self):
+        dataset = MODULE.load_jsonl(ROOT / "dataset" / "eval.jsonl")
+        unchanged = next(
+            row for row in dataset if row["metadata"]["target_changed"] is False
+        )
         prediction = {
-            "example_id": "eval_009",
+            "example_id": unchanged["metadata"]["example_id"],
             "response": '{"suggestion":"/opt/homebrew/bun"}',
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -42,7 +48,7 @@ class EvaluationTests(unittest.TestCase):
             path.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
             report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
         self.assertGreater(report["unnecessary_edit_rate"], 0.0)
-        self.assertEqual(report["missing_predictions"], 15)
+        self.assertEqual(report["missing_predictions"], len(dataset) - 1)
 
 
 if __name__ == "__main__":

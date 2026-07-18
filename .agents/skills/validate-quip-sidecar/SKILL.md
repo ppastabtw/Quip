@@ -18,7 +18,8 @@ The validator must:
 3. Keep one sidecar process alive across health and prediction requests.
 4. Verify ready health, schema-valid zero- and five-candidate results, request-ID echoing, and the explicit missing-adapter error.
 5. Run the phrase tester and verify its base/global comparison is visibly labeled as fixture mode.
-6. Print the observed responses without writing generated logs to the repository.
+6. Build the latency tester and verify its model-comparison controls are available.
+7. Print the observed responses without writing generated logs to the repository.
 
 Treat unit tests alone as insufficient. A successful run ends with `Quip sidecar integration passed` after the process-level checks. On failure, report the failing command and response; do not claim completion.
 
@@ -34,5 +35,8 @@ self-test mode. It verifies live health, schema-valid base output, latency,
 contract-valid zero-to-five candidate conversion, explicit unloaded-adapter results,
 app-side child-process launch, candidate rendering state, and metrics.
 Deterministic tests separately verify vote ranking, deduplication, five-candidate
-capping, and exact-draft filtering. A successful run ends with
+capping, exact-draft filtering, and latency summary statistics. The validator
+also runs a live benchmark and checks backend, completion-batch,
+normalization/ranking, time-to-first-byte, and parsing timings without copying
+phrase text into its JSON samples. A successful run ends with
 `Quip live inference integration passed`.

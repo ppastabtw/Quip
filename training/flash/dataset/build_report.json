@@ -1,0 +1,99 @@
+{
+  "contract": {
+    "augmentation": "deterministic_us_qwerty",
+    "augmentation_events": 1,
+    "augmented_share": 0.9,
+    "profanity_filter": "better-profanity==0.7.0",
+    "sampling": "one seeded random contiguous window per source utterance",
+    "source_quality": "wordfreq==3.1.1 with minimum Zipf frequency 3.0",
+    "split_policy": "MASSIVE train, dev, and test remain separate",
+    "unchanged_share": 0.1,
+    "window_share": 0.2,
+    "window_sizes": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "dataset_policy": "massive_window_augmentation_v1",
+  "schema_version": 2,
+  "seed": 42,
+  "source": {
+    "dataset": "MASSIVE",
+    "license": "CC BY 4.0",
+    "locale": "en-US",
+    "records": 16521,
+    "revision": "1.1"
+  },
+  "source_manifest_sha256": "4628c2916aa29f84f1b39cc98edb8b5da7ab4d7646aba9bc47fee6fc09b1f1c2",
+  "splits": {
+    "eval": {
+      "changes": {
+        "changed": 180,
+        "unchanged": 20
+      },
+      "rows": 200,
+      "sha256": "74f6fae94adf4f7ced38d99f8362f300b421681dab3a5144a008109f5b4c0af1",
+      "unchanged_by_size": {
+        "1": 4,
+        "2": 4,
+        "3": 4,
+        "4": 4,
+        "5": 4
+      },
+      "window_sizes": {
+        "1": 40,
+        "2": 40,
+        "3": 40,
+        "4": 40,
+        "5": 40
+      }
+    },
+    "test": {
+      "changes": {
+        "changed": 180,
+        "unchanged": 20
+      },
+      "rows": 200,
+      "sha256": "ac4f6dfd691e6d673bf2c8956d909fe6fb58024dc9646fdd7d82db67de8b1561",
+      "unchanged_by_size": {
+        "1": 4,
+        "2": 4,
+        "3": 4,
+        "4": 4,
+        "5": 4
+      },
+      "window_sizes": {
+        "1": 40,
+        "2": 40,
+        "3": 40,
+        "4": 40,
+        "5": 40
+      }
+    },
+    "train": {
+      "changes": {
+        "changed": 1800,
+        "unchanged": 200
+      },
+      "rows": 2000,
+      "sha256": "b4531ca8b8fd74c801a5ae406b9d694155b2d96c5ce875d2315d7b590f02c960",
+      "unchanged_by_size": {
+        "1": 40,
+        "2": 40,
+        "3": 40,
+        "4": 40,
+        "5": 40
+      },
+      "window_sizes": {
+        "1": 400,
+        "2": 400,
+        "3": 400,
+        "4": 400,
+        "5": 400
+      }
+    }
+  }
+}

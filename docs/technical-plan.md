@@ -112,10 +112,10 @@ docs/
 
 ### Workstream 1: Flash training and evaluation
 
-1. Build the executable quotas in `training/flash/dataset_compiler/contract.py` from sources that meet `docs/SPEC.md`, recording augmentation provenance.
+1. Implement `docs/training-data-contract.md` in `training/flash/dataset_compiler/contract.py`, recording source and augmentation provenance without restating policy here.
 2. Package the single-turn Flash environment and baseline Qwen3.5.
 3. Run SFT and choose steps, checkpoints, and any OPD or GRPO follow-up from development results.
-4. Report correction accuracy separately from false-correction rate, plus category, protected-token, schema, and latency results. Use the locked test split only for selected comparisons.
+4. Report correction success separately from unnecessary edit rate, plus schema and latency results. Use the locked test split only for selected comparisons.
 5. Export the selected global adapter with its metrics and inspected failures, then train and evaluate two private profile adapters from compact confirmed examples.
 
 ### Workstream 2: local inference, adapters, and packaging
@@ -146,7 +146,7 @@ docs/
 3. Wire fixture-backed candidate rendering before the live inference sidecar is ready.
 4. Store compact local labeled examples from confirmed candidates, stable dismissed suggestions, post-commit corrections, and repeated personal patterns, then package only selected examples for Freesolo profile training.
 5. Build the local pattern dictionary for immediate personalization before adapter training has enough examples.
-6. Add demo comparison screens for base Qwen versus trained-model output, protected-token preservation, shorthand decoding, context resolution, personalization, and latency.
+6. Add demo comparison screens for base Qwen versus trained-model output, typing-error correction, context resolution, personalization, and latency.
 7. Add local structured logs, sidecar health display, schema-validity counters, model/adapter presence checks, and a deterministic corpus fallback mode.
 
 ### Integration checkpoints
@@ -156,11 +156,11 @@ docs/
 3. Connect Workstream 1 exported adapter artifacts to Workstream 2 packaging and verify the demo corpus uses real model outputs, not hand-written candidates.
 4. Connect Workstream 4 selected profile examples to Workstream 1 Freesolo profile training, then connect the exported adapters to Workstream 2 and verify two local profiles produce different candidates.
 5. Run an end-to-end TextEdit flow: observe, predict, skip unchanged suggestions, show and select up to five numbered candidates, cancel, commit, compare models, and capture a local example.
-6. Run an end-to-end browser flow with bounded window context and protected-token examples.
+6. Run an end-to-end browser flow with bounded window context.
 
 ### Final hardening
 
-1. Select final demo examples from real model outputs covering noisy shorthand, ordinary typo correction, protected-token preservation, ambiguous context, and two personalized profiles.
+1. Select final demo examples from real model outputs covering ordinary typing-error correction, unnecessary-edit restraint, ambiguous context, and two personalized profiles.
 2. Verify operational readiness for the live build: local logs, sidecar health checks, model/adapter presence checks, latency reporting, deterministic corpus fallback, and rollback to fixture mode.
 3. Test compatibility on the M3 Pro primary machine and M4 Air backup machine, recording quality, latency, memory behavior, and app-specific limitations.
 4. Rehearse the pitch around the live comparison, Flash environment, training configuration, checkpoint evaluation, exported adapter, and local privacy contract.

@@ -9,7 +9,7 @@
 //! dismissal (a `keep` learning label).
 
 use crate::commit::{self, CommitOutcome};
-use crate::inference::{FixtureBackend, Metrics, SidecarClient};
+use crate::inference::{FixtureBackend, Metrics};
 use crate::learning::{self, LabeledExample, LearningStore};
 use crate::settings::{AppSettings, BackendMode};
 use quip_contracts::{
@@ -103,7 +103,6 @@ pub struct Engine {
     pub settings: AppSettings,
     pub learning: LearningStore,
     pub backend: FixtureBackend,
-    sidecar: SidecarClient,
     pub metrics: Metrics,
     state: State,
     burst_seq: u64,
@@ -116,7 +115,6 @@ impl Engine {
             settings: AppSettings::load(data_dir),
             learning: LearningStore::open(data_dir),
             backend: FixtureBackend::new(),
-            sidecar: SidecarClient::auto(),
             metrics: Metrics::default(),
             state: State::Idle,
             burst_seq: 0,
@@ -191,13 +189,24 @@ impl Engine {
         Ok((snapshot, request, self.settings.backend_mode))
     }
 
-    /// Runs the configured backend. Split from `begin_burst` so the async
-    /// caller can simulate latency between the two without holding the lock.
-    pub fn predict(&mut self, request: &PredictionRequest, mode: BackendMode) -> PredictionResult {
-        let result = match mode {
-            BackendMode::Fixture => self.backend.predict(request),
-            BackendMode::Live => self.sidecar.predict(request),
-        };
+    /// Runs the fixture backend and records the result. Split from
+    /// `begin_burst` so the async caller can simulate latency between the two
+    /// without holding the lock. Live results come from the sidecar outside
+    /// the engine lock entirely (a live inference can take a second; holding
+    /// the lock that long stalls every synchronous command on the main
+    /// thread) and re-enter through `record_result`.
+    pub fn predict_fixture(&mut self, request: &PredictionRequest) -> PredictionResult {
+        let result = self.backend.predict(request);
+        self.record_result(request, result)
+    }
+
+    /// Counts a finished prediction and downgrades schema-invalid results to
+    /// an explicit error, whichever backend produced them.
+    pub fn record_result(
+        &mut self,
+        request: &PredictionRequest,
+        result: PredictionResult,
+    ) -> PredictionResult {
         let valid = self.metrics.record(&result);
         if valid {
             result
@@ -393,11 +402,10 @@ impl Engine {
         }
     }
 
-    pub fn health(&mut self) -> SidecarHealth {
-        match self.settings.backend_mode {
-            BackendMode::Fixture => self.backend.health(),
-            BackendMode::Live => self.sidecar.health(),
-        }
+    /// Fixture-mode health. Live health is answered by the sidecar client
+    /// outside the engine lock (see `get_health` in `main.rs`).
+    pub fn fixture_health(&self) -> SidecarHealth {
+        self.backend.health()
     }
 }
 
@@ -450,9 +458,9 @@ mod tests {
     }
 
     fn run_burst(engine: &mut Engine, draft: &str) -> Snapshot {
-        let (_, request, mode) = engine.begin_burst(typed(draft)).unwrap();
+        let (_, request, _) = engine.begin_burst(typed(draft)).unwrap();
         let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
-        let result = engine.predict(&request, mode);
+        let result = engine.predict_fixture(&request);
         engine.apply_result(&burst_id, result).unwrap()
     }
 
@@ -542,9 +550,9 @@ mod tests {
         let (mut engine, dir) = test_engine();
         let mut input = typed("ship spec tn");
         input.destination_id = Some("destination_missing".to_string());
-        let (_, request, mode) = engine.begin_burst(input).unwrap();
+        let (_, request, _mode) = engine.begin_burst(input).unwrap();
         let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
-        let result = engine.predict(&request, mode);
+        let result = engine.predict_fixture(&request);
         engine.apply_result(&burst_id, result).unwrap();
 
         let error = engine.select(0).unwrap_err();
@@ -638,27 +646,39 @@ mod tests {
     #[test]
     fn stale_results_are_dropped_after_dismiss() {
         let (mut engine, dir) = test_engine();
-        let (_, request, mode) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
+        let (_, request, _) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
         let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
-        let result = engine.predict(&request, mode);
+        let result = engine.predict_fixture(&request);
         engine.dismiss();
         assert!(engine.apply_result(&burst_id, result).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn live_mode_reports_sidecar_unavailable() {
+    fn recorded_live_errors_flow_through_apply_result() {
         let (mut engine, dir) = test_engine();
         engine.settings.backend_mode = BackendMode::Live;
-        let snapshot = run_burst(&mut engine, "cnt cm tmrw");
+        let (_, request, mode) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
+        assert_eq!(mode, BackendMode::Live);
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        // The sidecar answers outside the engine lock; its result re-enters
+        // through record_result and behaves like any other prediction.
+        let raw = PredictionResult::Error {
+            request_id: request.request_id.clone(),
+            model_variant: request.model_variant,
+            error: ErrorInfo {
+                code: "sidecar_unavailable".to_string(),
+                message: "The local inference sidecar is unavailable.".to_string(),
+                retryable: true,
+            },
+        };
+        let result = engine.record_result(&request, raw);
+        let snapshot = engine.apply_result(&burst_id, result).unwrap();
         let Snapshot::Suggesting { error, .. } = snapshot else {
             panic!("expected suggesting");
         };
         assert_eq!(error.unwrap().code, "sidecar_unavailable");
-        assert_eq!(
-            engine.health().status,
-            quip_contracts::HealthStatus::Unavailable
-        );
+        assert_eq!(engine.metrics.errors, 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

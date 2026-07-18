@@ -21,7 +21,7 @@ mod settings;
 use commit::CommitOutcome;
 use composition::{BurstInput, Engine, Snapshot};
 use debug_events::{DebugEventView, DebugSink};
-use inference::{DemoCase, FixtureLookupDebug, Metrics, SideSpec};
+use inference::{DemoCase, FixtureLookupDebug, Metrics, SideSpec, SidecarClient};
 use quip_contracts::{
     CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
 };
@@ -29,7 +29,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use settings::{AppSettings, BackendMode};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
@@ -42,6 +42,23 @@ const BAR_GAP: f64 = 10.0;
 struct EngineState(Mutex<Engine>);
 
 struct DebugState(Mutex<DebugSink>);
+
+/// The live sidecar client lives outside the engine lock: a live inference
+/// can take a second, and synchronous Tauri commands run on the main thread,
+/// so holding the engine lock across sidecar I/O freezes the whole UI
+/// (including typing). Requests serialize here instead, on a blocking worker.
+struct SidecarState(Arc<Mutex<SidecarClient>>);
+
+/// Runs one blocking sidecar exchange off the async runtime.
+async fn with_sidecar<T: Send + 'static>(
+    app: &AppHandle,
+    exchange: impl FnOnce(&mut SidecarClient) -> T + Send + 'static,
+) -> Option<T> {
+    let sidecar = app.state::<SidecarState>().0.clone();
+    tauri::async_runtime::spawn_blocking(move || exchange(&mut sidecar.lock().unwrap()))
+        .await
+        .ok()
+}
 
 struct TrayHandles {
     enabled: CheckMenuItem<Wry>,
@@ -365,15 +382,33 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         .unwrap_or(&request.request_id)
         .to_string();
 
-    let (result, lookup_debug) = {
-        let engine = app.state::<EngineState>();
-        let mut engine = engine.0.lock().unwrap();
-        let lookup_debug = if mode == BackendMode::Fixture {
-            Some(engine.backend.lookup_debug(&request))
-        } else {
-            None
-        };
-        (engine.predict(&request, mode), lookup_debug)
+    let (result, lookup_debug) = match mode {
+        BackendMode::Fixture => {
+            let engine = app.state::<EngineState>();
+            let mut engine = engine.0.lock().unwrap();
+            let lookup_debug = engine.backend.lookup_debug(&request);
+            (engine.predict_fixture(&request), Some(lookup_debug))
+        }
+        BackendMode::Live => {
+            // The engine lock is NOT held while the model runs: typing,
+            // settings reads, and the bar all stay responsive during a live
+            // inference. Only the metrics recording re-takes the lock.
+            let sidecar_request = request.clone();
+            let raw = with_sidecar(&app, move |sidecar| sidecar.predict(&sidecar_request))
+                .await
+                .unwrap_or_else(|| PredictionResult::Error {
+                    request_id: request.request_id.clone(),
+                    model_variant: request.model_variant,
+                    error: quip_contracts::ErrorInfo {
+                        code: "sidecar_unavailable".to_string(),
+                        message: "The sidecar worker task failed.".to_string(),
+                        retryable: true,
+                    },
+                });
+            let engine = app.state::<EngineState>();
+            let mut engine = engine.0.lock().unwrap();
+            (engine.record_result(&request, raw), None)
+        }
     };
     record_prediction_result(&app, &burst_id, &request, lookup_debug.as_ref(), &result);
     emit_metrics(&app);
@@ -617,8 +652,25 @@ fn reset_profile(app: AppHandle, profile_id: String) {
 }
 
 #[tauri::command]
-fn get_health(app: AppHandle) -> SidecarHealth {
-    app.state::<EngineState>().0.lock().unwrap().health()
+async fn get_health(app: AppHandle) -> SidecarHealth {
+    let mode = {
+        let engine = app.state::<EngineState>();
+        let engine = engine.0.lock().unwrap();
+        engine.settings.backend_mode
+    };
+    match mode {
+        BackendMode::Fixture => app
+            .state::<EngineState>()
+            .0
+            .lock()
+            .unwrap()
+            .fixture_health(),
+        // Async so the sidecar exchange never runs on (or blocks) the main
+        // thread; it shares the serial sidecar pipe with predictions.
+        BackendMode::Live => with_sidecar(&app, |sidecar| sidecar.health())
+            .await
+            .unwrap_or_else(inference::sidecar_worker_unavailable_health),
+    }
 }
 
 #[tauri::command]
@@ -715,7 +767,7 @@ fn run_comparison(app: AppHandle, case_id: String) -> Result<ComparisonReport, S
                 },
                 personal_patterns: engine.learning.patterns_for_request(&side.profile_id),
             };
-            let result = engine.predict(&request, BackendMode::Fixture);
+            let result = engine.predict_fixture(&request);
             ComparisonSide {
                 spec: side.clone(),
                 request,
@@ -960,6 +1012,7 @@ fn main() {
             let settings = engine.settings.clone();
             let profiles = engine.learning.list_profiles();
             app.manage(EngineState(Mutex::new(engine)));
+            app.manage(SidecarState(Arc::new(Mutex::new(SidecarClient::auto()))));
 
             let handles = build_tray(app, &settings, &profiles)?;
             app.manage(TrayState(Mutex::new(Some(handles))));
@@ -1207,7 +1260,7 @@ mod live_selftest {
     use super::*;
 
     pub async fn run(app: AppHandle) -> Result<(), String> {
-        let health = get_health(app.clone());
+        let health = get_health(app.clone()).await;
         if health.status != quip_contracts::HealthStatus::Ready || !health.loaded.base {
             return Err(format!("sidecar health was not live-ready: {health:?}"));
         }

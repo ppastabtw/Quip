@@ -33,19 +33,133 @@ const inlineCandidatesEl = byId<HTMLDivElement>("inline_candidates");
 // ---- playground: burst tracking, triggers, caret geometry ----
 
 // IME model (macOS Pinyin): predictions run continuously while the burst
-// grows, debounced only enough to avoid churn; the bar refreshes in place.
-const LIVE_DEBOUNCE_MS = 150;
+// grows and the bar refreshes in place. All inference is local, so calls are
+// free; the constraints are the sidecar's serial throughput (one request at
+// a time, each costing a full inference) and how the bar feels. A cadence
+// strategy decides which keystrokes are worth a serial slot.
 const DRAFT_WINDOW_CHARS = 80;
+
+// The base model is trained on groups of at most five words, so the burst is
+// chunked: completing the fifth word freezes that chunk and fires inference
+// on it while typing continues seamlessly in a fresh burst. When the result
+// lands, the chunk is underlined so it is obvious which words the candidates
+// would replace. Chunking applies under every strategy — it is a model
+// constraint, not a cadence choice.
+const MAX_BURST_WORDS = 5;
+
+// Long enough that ordinary typing rhythm never trips it: only a deliberate
+// stop mid-burst fetches early.
+const PAUSE_MS = 600;
+
+interface KeyInfo {
+  /** The last typed character completed a word (whitespace after a non-space). */
+  wordBoundary: boolean;
+  /** The last typed character is a sentence terminator. */
+  sentencePunct: boolean;
+  /** Rolling median of this typist's recent inter-key gaps. */
+  medianGapMs: number;
+}
+
+interface CadenceStrategy {
+  label: string;
+  hint: string;
+  /** Refire the moment a result lands if the draft moved meanwhile (the
+   * sidecar never idles while dirty, and never queues more than one). */
+  pipelined: boolean;
+  /** "now" fires immediately, a number arms the pause timer, "never" leaves
+   * only the 80-char draft window as a backstop. */
+  onKey(key: KeyInfo): "now" | number | "never";
+}
+
+const STRATEGIES: Record<string, CadenceStrategy> = {
+  chunk_pause: {
+    label: "Pause, punctuation, or 5 words (current)",
+    hint: "The five-word chunk and punctuation fire immediately; a 600 ms pause catches unfinished bursts. Typing never waits on inference.",
+    pipelined: true,
+    onKey: (key) => (key.sentencePunct ? "now" : PAUSE_MS),
+  },
+  pipeline_greedy: {
+    label: "Pipelined: every keystroke",
+    hint: "No timers: fetch immediately, and refetch the newest draft the moment the previous result lands.",
+    pipelined: true,
+    onKey: () => "now",
+  },
+  pipeline_word: {
+    label: "Pipelined: word boundaries",
+    hint: "Fetch on completed words so every serial slot sees whole words; 500 ms fallback mid-word.",
+    pipelined: true,
+    onKey: (key) => (key.sentencePunct || key.wordBoundary ? "now" : 500),
+  },
+  rhythm: {
+    label: "Rhythm-adaptive pause",
+    hint: "Pause threshold tracks your typing rhythm (2.2× median key gap); punctuation is immediate.",
+    pipelined: false,
+    onKey: (key) =>
+      key.sentencePunct ? "now" : Math.min(700, Math.max(180, 2.2 * key.medianGapMs)),
+  },
+  sentence_only: {
+    label: "Boundaries only",
+    hint: "Fetch only at . ! ? — plus the universal five-word chunk and 80-character backstop.",
+    pipelined: false,
+    onKey: (key) => (key.sentencePunct ? "now" : "never"),
+  },
+};
+
+/** A frozen span of text awaiting (or undergoing) inference. */
+interface ChunkRange {
+  start: number;
+  end: number;
+}
 
 let settings: AppSettings | undefined;
 let burstStart = 0;
-let burstEnd = 0;
+/** The exact range the in-flight (or shown) candidates would replace, pinned
+ * at request time: typing continues past it, so a selection must replace
+ * exactly the words the model saw. */
+let firedStart = 0;
+let firedEnd = 0;
+/** Chunks completed while inference was busy; fired oldest-first as the
+ * serial slot frees up (15 words typed = three 5-word batches, one at a
+ * time, while typing continues). */
+const pendingChunks: ChunkRange[] = [];
+/** The batch whose candidates are currently on offer: underlined in the
+ * playground, and acceptable even after the engine has moved on to
+ * inferring the next queued batch. */
+let shownChunk:
+  | (ChunkRange & { candidates: string[]; selected: number; burstId: string })
+  | undefined;
 let burstSeq = 0;
 let activeBurstId: string | undefined;
 let suggesting = false;
 let selectedIndex = 0;
 let idleTimer: number | undefined;
 let debugRows: DebugEventView[] = [];
+
+let strategy: CadenceStrategy = STRATEGIES.chunk_pause;
+let inflight = false;
+let dirty = false;
+let lastKeyAt = 0;
+const keyGaps: number[] = [];
+const stats = { keystrokes: 0, fired: 0, shown: 0, ttbLast: 0, ttbSum: 0 };
+
+const strategyStatsEl = byId<HTMLParagraphElement>("strategy_stats");
+const strategyHintEl = byId<HTMLSpanElement>("strategy_hint");
+const strategyEl = byId<HTMLSelectElement>("strategy");
+
+function medianGapMs(): number {
+  if (keyGaps.length === 0) return 250;
+  const sorted = [...keyGaps].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function renderStrategyStats() {
+  const avg = stats.shown === 0 ? "–" : `${Math.round(stats.ttbSum / stats.shown)} ms`;
+  const last = stats.shown === 0 ? "–" : `${stats.ttbLast} ms`;
+  strategyStatsEl.textContent =
+    `keystrokes ${stats.keystrokes} · requests ${stats.fired} · bars ${stats.shown}` +
+    ` · time-to-bar last ${last} / avg ${avg}` +
+    ` · median key gap ${Math.round(medianGapMs())} ms`;
+}
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
 
@@ -170,16 +284,47 @@ function renderInlineCandidates(snapshot: Snapshot) {
 function resetPlayground(reason: string, caret: number) {
   window.clearTimeout(idleTimer);
   burstStart = caret;
-  burstEnd = caret;
+  firedStart = caret;
+  firedEnd = caret;
   activeBurstId = undefined;
   suggesting = false;
   selectedIndex = 0;
+  inflight = false;
+  dirty = false;
+  pendingChunks.length = 0;
+  shownChunk = undefined;
+  renderChunkIndicator();
   recordTimelineEvent("playground_reset", reason, {
     reason,
     caret,
     value_chars: playgroundEl.value.length,
   });
 }
+
+const backdropEl = byId<HTMLDivElement>("playground_backdrop");
+
+// The backdrop mirrors the textarea's text with transparent glyphs; only the
+// span around the active chunk draws, as an underline exactly under the words
+// the visible candidates would replace.
+function renderChunkIndicator() {
+  if (!shownChunk) {
+    backdropEl.replaceChildren();
+    return;
+  }
+  const value = playgroundEl.value;
+  backdropEl.replaceChildren(
+    document.createTextNode(value.slice(0, shownChunk.start)),
+    el("span", "chunk-underline", value.slice(shownChunk.start, shownChunk.end)),
+    document.createTextNode(value.slice(shownChunk.end)),
+  );
+  backdropEl.scrollTop = playgroundEl.scrollTop;
+  backdropEl.scrollLeft = playgroundEl.scrollLeft;
+}
+
+playgroundEl.addEventListener("scroll", () => {
+  backdropEl.scrollTop = playgroundEl.scrollTop;
+  backdropEl.scrollLeft = playgroundEl.scrollLeft;
+});
 
 function caretClientPoint(): { x: number; y: number } {
   const style = getComputedStyle(playgroundEl);
@@ -213,20 +358,33 @@ async function caretScreenRect(): Promise<Rect> {
   };
 }
 
-async function fireTrigger(trigger: Trigger) {
+async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
   window.clearTimeout(idleTimer);
-  burstEnd = playgroundEl.selectionStart;
-  if (playgroundEl.value.length === 0 || burstEnd < burstStart) {
-    resetPlayground("cleared_or_caret_before_burst", burstEnd);
+  const value = playgroundEl.value;
+  const start = chunk ? chunk.start : burstStart;
+  let end = chunk ? chunk.end : playgroundEl.selectionStart;
+  if (value.length === 0 || end < start || start > value.length) {
+    resetPlayground("cleared_or_caret_before_burst", end);
     return;
   }
-  const draft = playgroundEl.value.slice(burstStart, burstEnd).trim();
-  if (draft.length === 0) return;
+  // Trailing whitespace stays outside the replaced range so an accepted
+  // candidate keeps its separator from the words typed after it.
+  while (end > start && /\s/.test(value[end - 1])) end -= 1;
+  firedStart = start;
+  firedEnd = end;
+  const draft = value.slice(start, end).trim();
+  if (draft.length === 0) {
+    inflight = false;
+    return;
+  }
   recordTimelineEvent("playground_input", `draft_chars=${draft.length}`, {
     source: "playground",
     trigger,
     draft_chars: draft.length,
   });
+  // Beginning the next burst silently supersedes the engine's visible
+  // suggestions; any still-offered batch lives on in shownChunk.
+  suggesting = false;
   activeBurstId = `pg_${++burstSeq}`;
   void api.injectCapture({
     status: "ready",
@@ -239,79 +397,196 @@ async function fireTrigger(trigger: Trigger) {
   });
 }
 
+// Spends a serial slot, or earmarks one: pipelined strategies never queue
+// behind an in-flight request — they mark the draft dirty and refire with the
+// newest text the moment the result lands. Non-pipelined strategies fire
+// unconditionally (overlapping requests supersede; stale results are dropped
+// engine-side), which is exactly the head-of-line cost the demo lets you feel.
+function requestPrediction(trigger: Trigger) {
+  window.clearTimeout(idleTimer);
+  if (strategy.pipelined && inflight) {
+    dirty = true;
+    return;
+  }
+  inflight = true;
+  dirty = false;
+  stats.fired += 1;
+  renderStrategyStats();
+  void fireTrigger(trigger);
+}
+
+// Completing the fifth word freezes the chunk and starts a fresh burst at the
+// caret immediately: inference on the chunk overlaps typing the next words,
+// so the typist never waits. If the serial slot is busy the chunk queues and
+// fires the moment the previous result lands.
+function chunkBurst(caret: number) {
+  window.clearTimeout(idleTimer);
+  const chunk: ChunkRange = { start: burstStart, end: caret };
+  burstStart = caret;
+  if (inflight) {
+    pendingChunks.push(chunk);
+    dirty = false;
+    return;
+  }
+  inflight = true;
+  stats.fired += 1;
+  renderStrategyStats();
+  void fireTrigger("idle", chunk);
+}
+
 // Ends the composition session at the current caret: visible suggestions
 /// become a stable dismissal (a keep label), and the next keystroke starts a
 /// fresh burst.
 function endSession() {
   window.clearTimeout(idleTimer);
+  dirty = false;
+  // A newline is a hard composition boundary. Release the frontend's serial
+  // slot even when the prior request was dismissed while still in flight;
+  // otherwise pipelined strategies can remain wedged forever waiting for a
+  // settled snapshot that the engine correctly drops as stale.
+  inflight = false;
+  activeBurstId = undefined;
+  pendingChunks.length = 0;
+  shownChunk = undefined;
+  renderChunkIndicator();
   if (suggesting) void api.dismissSuggestions();
+  suggesting = false;
   burstStart = playgroundEl.selectionStart;
-  burstEnd = burstStart;
 }
 
 playgroundEl.addEventListener("input", () => {
+  const now = performance.now();
+  if (lastKeyAt > 0) {
+    const gap = now - lastKeyAt;
+    // Gaps past 1.2 s are thinking pauses, not typing rhythm.
+    if (gap < 1200) {
+      keyGaps.push(gap);
+      if (keyGaps.length > 15) keyGaps.shift();
+    }
+  }
+  lastKeyAt = now;
+  stats.keystrokes += 1;
+
   const caret = playgroundEl.selectionStart;
-  if (playgroundEl.value.length === 0 || caret < burstStart) {
+  // Clearing the textarea, replacing a selection, or editing before the
+  // tracked burst invalidates the old offsets. Start a fresh burst at the
+  // current edit instead of slicing from an unreachable prior position.
+  if (caret < burstStart || playgroundEl.value.length < burstStart) {
     resetPlayground("cleared_or_caret_before_burst", caret);
     return;
   }
+  // Editing at or before the underlined chunk invalidates its candidates.
+  if (shownChunk && caret <= shownChunk.end) {
+    shownChunk = undefined;
+  }
+  renderChunkIndicator();
   const draft = playgroundEl.value.slice(burstStart, caret);
   const last = draft.at(-1) ?? "";
   // Sentence boundary ends the session: a newline, or whitespace after a
   // terminator (the burst before it was already predicted on).
   if (last === "\n" || (/\s/.test(last) && /[.!?]$/.test(draft.trimEnd()))) {
     endSession();
+    renderStrategyStats();
     return;
   }
   if (draft.trim().length === 0) {
     resetPlayground("empty_draft", caret);
+    renderStrategyStats();
     return;
   }
-  // Continuous prediction while the burst grows, like an IME: punctuation
-  // and the draft window fire immediately, everything else on a short
-  // debounce. Stale results are dropped engine-side.
-  if (".!?".includes(last)) {
-    void fireTrigger("punctuation");
-  } else if (draft.length >= DRAFT_WINDOW_CHARS) {
-    void fireTrigger("idle");
-  } else {
-    window.clearTimeout(idleTimer);
-    idleTimer = window.setTimeout(() => void fireTrigger("idle"), LIVE_DEBOUNCE_MS);
+  // The five-word chunk boundary applies under every strategy — the model
+  // never sees a sixth word. Inference on the frozen chunk overlaps typing.
+  if (/\s/.test(last) && draft.trim().split(/\s+/).filter(Boolean).length >= MAX_BURST_WORDS) {
+    chunkBurst(caret);
+    renderStrategyStats();
+    return;
   }
+  // The draft window is a strategy-independent backstop: past 80 chars the
+  // burst must be predicted on before it grows unwieldy.
+  if (draft.length >= DRAFT_WINDOW_CHARS) {
+    requestPrediction("idle");
+    return;
+  }
+  const key: KeyInfo = {
+    wordBoundary: /\s/.test(last) && draft.length > 1 && !/\s/.test(draft.at(-2) ?? " "),
+    sentencePunct: ".!?".includes(last),
+    medianGapMs: medianGapMs(),
+  };
+  const action = strategy.onKey(key);
+  if (action === "now") {
+    requestPrediction(key.sentencePunct ? "punctuation" : "idle");
+  } else if (action !== "never") {
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => requestPrediction("idle"), action);
+  }
+  renderStrategyStats();
 });
 
 playgroundEl.addEventListener("keydown", (e) => {
-  if (!suggesting) return;
-  // Pinyin-style keys while candidates are visible: digits pick, arrow keys
+  const offered = shownChunk;
+  if (!offered) return;
+  // Pinyin-style keys while candidates are on offer: digits pick, arrow keys
   // move the highlight, Tab accepts the highlighted candidate (Space stays a
   // real character in English, so Tab plays Space's role), Escape keeps the
-  // literal text. Any other key types through and the bar simply refreshes
-  // with the growing burst.
-  if (e.key >= "1" && e.key <= "5") {
+  // literal text. While the engine still holds this batch as Suggesting the
+  // keys route through it (commit + learning record); once the engine has
+  // moved on to the next queued batch, the stored candidates apply directly
+  // so earlier batches stay acceptable while later ones infer.
+  const accept = (index: number) => {
+    if (index >= offered.candidates.length) return;
     e.preventDefault();
-    void selectCandidate(Number(e.key) - 1);
-  } else if (e.key === "ArrowLeft") {
+    if (suggesting) {
+      void selectCandidate(index);
+    } else {
+      applyRangeReplacement(offered.start, offered.end, offered.candidates[index]);
+    }
+  };
+  if (e.key >= "1" && e.key <= "5") {
+    accept(Number(e.key) - 1);
+  } else if (e.key === "ArrowLeft" && suggesting) {
     e.preventDefault();
     void api.moveSelection(-1);
-  } else if (e.key === "ArrowRight") {
+  } else if (e.key === "ArrowRight" && suggesting) {
     e.preventDefault();
     void api.moveSelection(1);
   } else if (e.key === "Tab") {
-    e.preventDefault();
-    void selectCandidate(selectedIndex);
+    accept(suggesting ? selectedIndex : offered.selected);
   } else if (e.key === "Escape") {
     e.preventDefault();
-    endSession();
+    if (suggesting) void api.dismissSuggestions();
+    shownChunk = undefined;
+    renderChunkIndicator();
   }
 });
 
-function applyReplacement(text: string) {
+function applyRangeReplacement(start: number, end: number, text: string) {
   const value = playgroundEl.value;
-  playgroundEl.value = value.slice(0, burstStart) + text + value.slice(burstEnd);
-  const caret = burstStart + text.length;
+  const prevCaret = playgroundEl.selectionStart;
+  const delta = text.length - (end - start);
+  playgroundEl.value = value.slice(0, start) + text + value.slice(end);
+  // The typist may already be words past the replaced batch: keep their caret
+  // where they are typing (shifted by the edit) instead of yanking it back.
+  const caret = prevCaret >= end ? prevCaret + delta : start + text.length;
   playgroundEl.setSelectionRange(caret, caret);
-  burstStart = caret;
-  burstEnd = caret;
+  if (burstStart >= end) {
+    burstStart += delta;
+  } else {
+    burstStart = start + text.length;
+  }
+  // The in-flight batch and any queued ones sit after the replaced range;
+  // their pinned offsets shift with the edit.
+  if (firedStart >= end) {
+    firedStart += delta;
+    firedEnd += delta;
+  }
+  for (const chunk of pendingChunks) {
+    if (chunk.start >= end) {
+      chunk.start += delta;
+      chunk.end += delta;
+    }
+  }
+  shownChunk = undefined;
+  renderChunkIndicator();
   playgroundEl.focus();
 }
 
@@ -435,6 +710,37 @@ void events.onSnapshot((snapshot) => {
   appendTimelineEvent("snapshot", snapshotSummary(snapshot), { phase: snapshot.phase });
   renderInlineCandidates(snapshot);
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
+  // Any settled phase means the serial slot is free again.
+  inflight = false;
+  if (snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId) {
+    stats.shown += 1;
+    stats.ttbLast = Math.max(0, Math.round(performance.now() - lastKeyAt));
+    stats.ttbSum += stats.ttbLast;
+    renderStrategyStats();
+    // Underline exactly the words these candidates would replace — the
+    // typist may be several words past them by now — and keep the offer
+    // alive across the next batch's inference.
+    shownChunk = {
+      start: firedStart,
+      end: firedEnd,
+      candidates: snapshot.candidates,
+      selected: snapshot.selected,
+      burstId: snapshot.burst_id,
+    };
+  } else {
+    shownChunk = undefined;
+  }
+  renderChunkIndicator();
+  const next = pendingChunks.shift();
+  if (next) {
+    inflight = true;
+    stats.fired += 1;
+    renderStrategyStats();
+    void fireTrigger("idle", next);
+  } else if (dirty) {
+    dirty = false;
+    requestPrediction("idle");
+  }
   suggesting =
     snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
   selectedIndex = snapshot.phase === "suggesting" ? snapshot.selected : 0;
@@ -450,8 +756,29 @@ void events.onCommitted((outcome) => {
     success: true,
   });
   if (outcome.destination_id === "destination_playground") {
-    applyReplacement(outcome.text);
+    // An engine-side commit always corresponds to the batch on offer.
+    const start = shownChunk ? shownChunk.start : firedStart;
+    const end = shownChunk ? shownChunk.end : firedEnd;
+    applyRangeReplacement(start, end, outcome.text);
   }
+});
+
+for (const [id, spec] of Object.entries(STRATEGIES)) {
+  const option = el("option", undefined, spec.label);
+  option.value = id;
+  strategyEl.append(option);
+}
+strategyHintEl.textContent = strategy.hint;
+renderStrategyStats();
+strategyEl.addEventListener("change", () => {
+  strategy = STRATEGIES[strategyEl.value];
+  strategyHintEl.textContent = strategy.hint;
+  window.clearTimeout(idleTimer);
+  dirty = false;
+  keyGaps.length = 0;
+  Object.assign(stats, { keystrokes: 0, fired: 0, shown: 0, ttbLast: 0, ttbSum: 0 });
+  renderStrategyStats();
+  playgroundEl.focus();
 });
 
 void (async () => {

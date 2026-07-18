@@ -1,0 +1,24 @@
+[benchmark]
+dataset = "dataset/eval.jsonl"
+max_tokens = 128
+timeout_seconds = 180
+
+[[models]]
+label = "qwen-0.8b"
+model = "Qwen/Qwen3.5-0.8B"
+
+[[models]]
+label = "qwen-2b"
+model = "Qwen/Qwen3.5-2B"
+
+[[models]]
+label = "qwen-4b"
+model = "Qwen/Qwen3.5-4B"
+
+[[models]]
+label = "qwen-9b"
+model = "Qwen/Qwen3.5-9B"
+
+[[models]]
+label = "qwen-35b-a3b"
+model = "Qwen/Qwen3.6-35B-A3B"

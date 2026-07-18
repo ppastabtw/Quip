@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Mapping
 
+from freesolo.utils.core import serialize_value
+
 
 OUTPUT_KEYS = {"suggestion"}
 OUTPUT_JSON_SCHEMA = {
@@ -30,7 +32,6 @@ class ScoreResult:
     schema_valid: bool
     change_correct: bool
     content_correct: bool
-    protected_preserved: bool
     prediction: Prediction | None
     reason: str
 
@@ -40,7 +41,6 @@ class ScoreResult:
             self.schema_valid
             and self.change_correct
             and self.content_correct
-            and self.protected_preserved
         )
 
 
@@ -49,8 +49,13 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
-def _input_payload(input_text: str) -> dict[str, Any]:
-    payload = json.loads(input_text)
+def model_text(value: object) -> str:
+    """Render a dataset value exactly as Freesolo presents it to the model."""
+    return serialize_value(value)
+
+
+def _input_payload(input_value: object) -> dict[str, Any]:
+    payload = json.loads(input_value) if isinstance(input_value, str) else input_value
     if (
         not isinstance(payload, dict)
         or set(payload) != {"text"}
@@ -85,15 +90,9 @@ def _accepted_suggestions(
     raise ValueError("accepted suggestions are missing")
 
 
-def _preserves_tokens(suggestion: str, protected_tokens: object) -> bool:
-    if not isinstance(protected_tokens, list) or not protected_tokens:
-        return True
-    return all(isinstance(token, str) and token in suggestion for token in protected_tokens)
-
-
 def score_completion(
     *,
-    input_text: str,
+    input_text: object,
     expected_output: object,
     metadata: Mapping[str, Any],
     response_text: str,
@@ -106,13 +105,10 @@ def score_completion(
         if not isinstance(target_changed, bool):
             target_changed = accepted[0] != input_payload["text"]
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        return ScoreResult(0.0, False, False, False, False, None, f"invalid schema: {exc}")
+        return ScoreResult(0.0, False, False, False, None, f"invalid schema: {exc}")
 
     predicted_changed = prediction.suggestion != input_payload["text"]
     change_correct = predicted_changed == target_changed
-    protected_preserved = _preserves_tokens(
-        prediction.suggestion, metadata.get("protected_tokens")
-    )
     score = 0.15
 
     if not change_correct:
@@ -121,7 +117,6 @@ def score_completion(
             True,
             False,
             False,
-            protected_preserved,
             prediction,
             "wrong change decision",
         )
@@ -132,7 +127,7 @@ def score_completion(
     content_correct = suggestion_normalized in accepted_normalized
 
     if content_correct:
-        score += 0.55
+        score += 0.60
     else:
         best_similarity = max(
             SequenceMatcher(None, suggestion_normalized, gold).ratio()
@@ -140,19 +135,13 @@ def score_completion(
         )
         score += 0.25 * best_similarity
 
-    if protected_preserved:
-        score += 0.05
-
     score = round(min(score, 1.0), 6)
     reason = "accepted suggestion" if content_correct else "suggestion not accepted"
-    if not protected_preserved:
-        reason = f"{reason}; protected token changed"
     return ScoreResult(
         score,
         True,
         True,
         content_correct,
-        protected_preserved,
         prediction,
         reason,
     )
