@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Quip",
+  "version": "0.1.0",
+  "identifier": "com.hackthe6ix.quip",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "composition",
+        "title": "Quip",
+        "url": "composition.html",
+        "width": 480,
+        "height": 240,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true
+      },
+      {
+        "label": "settings",
+        "title": "Quip Settings",
+        "url": "settings.html",
+        "width": 420,
+        "height": 480,
+        "visible": false
+      },
+      {
+        "label": "demo",
+        "title": "Quip Demo Harness",
+        "url": "demo.html",
+        "width": 900,
+        "height": 640,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png"]
+  }
+}

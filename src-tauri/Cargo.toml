@@ -1,0 +1,13 @@
+[package]
+name = "quip"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+quip-contracts = { path = "../crates/quip-contracts" }

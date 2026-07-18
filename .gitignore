@@ -9,3 +9,14 @@
 .codex/
 agent-hooks/
 .env
+
+# build outputs
+target/
+node_modules/
+dist/
+src-tauri/gen/
+
+# local model artifacts, adapters, and personal data are never committed
+artifacts/models/*
+!artifacts/models/.gitkeep
+*.log
