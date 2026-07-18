@@ -19,10 +19,52 @@ use tauri::{
     Manager, WindowEvent,
 };
 
+use quip_contracts::{CaptureResult, Trigger};
+
 fn show_window(app: &tauri::AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
+    accessibility::capture_focused_destination(&profile_id, trigger)
+}
+
+#[tauri::command]
+fn commit_confirmed_text(
+    destination_id: String,
+    confirmed_text: String,
+) -> Result<commit::CommitReport, commit::CommitError> {
+    commit::commit_confirmed_text(&destination_id, &confirmed_text)
+}
+
+#[tauri::command]
+fn cancel_destination(destination_id: String) -> Result<commit::CommitReport, commit::CommitError> {
+    commit::cancel_destination(&destination_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_command_rejects_unknown_destination() {
+        let result = commit_confirmed_text(
+            "destination_missing".to_string(),
+            "confirmed text".to_string(),
+        );
+
+        assert_eq!(result, Err(commit::CommitError::UnknownDestination));
+    }
+
+    #[test]
+    fn cancel_command_rejects_unknown_destination() {
+        let result = cancel_destination("destination_missing".to_string());
+
+        assert_eq!(result, Err(commit::CommitError::UnknownDestination));
     }
 }
 
@@ -98,6 +140,11 @@ fn main() {
                 let _ = window.hide();
             }
         })
+        .invoke_handler(tauri::generate_handler![
+            capture_focused_destination,
+            commit_confirmed_text,
+            cancel_destination
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Quip");
 }

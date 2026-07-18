@@ -6,7 +6,8 @@
 //! composition layer. Never inserts without explicit confirmation.
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CommitMethod {
     Accessibility,
     SimulatedPaste,
@@ -14,7 +15,8 @@ pub enum CommitMethod {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommitReport {
     pub destination_id: String,
     pub method: CommitMethod,
@@ -22,7 +24,8 @@ pub struct CommitReport {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CommitError {
     UnknownDestination,
     AccessibilityWriteFailed,
