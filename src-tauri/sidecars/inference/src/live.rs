@@ -21,6 +21,7 @@ const DEFAULT_MODEL_ID: &str = "default";
 const DEFAULT_COMPLETION_COUNT: usize = 5;
 const DEFAULT_TEMPERATURE: f64 = 0.1;
 const DEFAULT_MAX_TOKENS: u64 = 64;
+const COMPLETION_ATTEMPTS: usize = 3;
 const SYSTEM_PROMPT: &str = include_str!("../../../../training/flash/system_prompt.txt");
 
 #[derive(Debug)]
@@ -343,7 +344,24 @@ impl LiveBackend {
         })
     }
 
+    /// An unconstrained small model occasionally emits a whitespace-only
+    /// reply; retry those instead of failing the whole completion batch.
     fn complete_base(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<TimedModelOutput, LiveBackendError> {
+        let mut last_error = None;
+        for _ in 0..COMPLETION_ATTEMPTS {
+            match self.complete_base_once(request) {
+                Ok(output) => return Ok(output),
+                Err(error @ LiveBackendError::MissingModelContent) => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(LiveBackendError::MissingModelContent))
+    }
+
+    fn complete_base_once(
         &self,
         request: &PredictionRequest,
     ) -> Result<TimedModelOutput, LiveBackendError> {
@@ -497,7 +515,6 @@ struct ChatCompletion {
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
-    index: usize,
     message: ChatMessage,
     finish_reason: Option<String>,
 }
