@@ -11,13 +11,16 @@
 
     <h2>Playground: type like in any textbox</h2>
     <p class="muted" style="margin-bottom: 6px">
-      Simulates a macOS textbox until Workstream 3's Accessibility observer lands. Candidates
-      appear and refresh live above the caret while you type, like the macOS Pinyin IME:
-      1 through 5 or click picks a candidate, Tab accepts the highlighted one, Esc keeps your text,
-      and ending a sentence (or a newline) closes the session. The model window is the trailing
-      five words: older words become final as you keep typing.
+      Simulates a macOS textbox until Workstream 3's Accessibility observer lands. Completing a
+      fifth word freezes that chunk and runs inference on it while you keep typing — when the
+      candidates arrive, the chunk is underlined to show which words they would replace.
+      1 through 5 or click picks a candidate, Tab accepts the highlighted one, Esc keeps your
+      text, and ending a sentence (or a newline) closes the session.
     </p>
-    <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+    <div class="playground-stack">
+      <div id="playground_backdrop" class="playground-backdrop" aria-hidden="true"></div>
+      <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+    </div>
     <div class="statline" style="margin-top: 6px">
       <label class="row" style="padding: 0">
         Inference cadence
