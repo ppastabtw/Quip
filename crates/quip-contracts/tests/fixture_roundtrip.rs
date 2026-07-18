@@ -21,6 +21,13 @@ fn capture_case(case_id: &str) -> CaptureResult {
         .result
 }
 
+fn unavailable_capture_reason(case_id: &str) -> String {
+    match capture_case(case_id) {
+        CaptureResult::Unavailable { reason } => reason,
+        CaptureResult::Ready { .. } => panic!("capture case {case_id} should be unavailable"),
+    }
+}
+
 #[test]
 fn fixtures_round_trip_exactly() {
     let raw = load_raw();
@@ -76,4 +83,11 @@ fn textedit_ready_capture_fixture_matches_shared_rust_contract() {
             trigger: Trigger::Idle,
         }
     );
+}
+
+#[test]
+fn secure_field_capture_fixture_matches_shared_rust_contract() {
+    let reason = unavailable_capture_reason("secure_field");
+
+    assert_eq!(reason, "secure_field");
 }
