@@ -5,4 +5,7 @@
 !docs/**/*
 .workspace/
 .workspace/**/*
+.claude/
+.codex/
+hooks/
 .env
