@@ -10,12 +10,15 @@ use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
 use axuielement::ax_attribute::attributes::{
-    AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SELECTED_TEXT_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE,
-    AX_VALUE_ATTRIBUTE,
+    AX_FOCUSED_ATTRIBUTE, AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SELECTED_TEXT_ATTRIBUTE,
+    AX_SELECTED_TEXT_RANGE_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE, AX_TITLE_ATTRIBUTE, AX_VALUE_ATTRIBUTE,
 };
 use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
+use axuielement::ax_value::AXRange;
 use axuielement::AXUIElement;
 use quip_contracts::{CaptureResult, ContextSnippet, Trigger};
+
+const DRAFT_MAX_CHARS: usize = 80;
 
 #[allow(dead_code)]
 const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
@@ -37,9 +40,11 @@ pub enum AccessibilityPermissionStatus {
 pub enum AccessibilityError {
     PermissionMissing,
     DestinationNotFound,
+    DestinationRegistryUnavailable,
     UnsupportedApp,
     SecureField,
     NotEditable,
+    CommitFailed,
 }
 
 impl AccessibilityError {
@@ -48,16 +53,21 @@ impl AccessibilityError {
         match self {
             Self::PermissionMissing => "accessibility_permission_missing",
             Self::DestinationNotFound => "destination_not_found",
+            Self::DestinationRegistryUnavailable => "destination_registry_unavailable",
             Self::UnsupportedApp => "unsupported_app",
             Self::SecureField => "secure_field",
             Self::NotEditable => "not_editable",
+            Self::CommitFailed => "commit_failed",
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct DestinationSnapshot {
+pub(crate) struct DestinationSnapshot {
+    app_element: Option<AXUIElement>,
+    element: Option<AXUIElement>,
+    pid: Option<i32>,
     app_bundle_id: String,
     app_name: String,
     role: String,
@@ -67,25 +77,63 @@ struct DestinationSnapshot {
 
 impl DestinationSnapshot {
     #[allow(dead_code)]
-    fn from_focused_textedit(focused: &FocusedElementSnapshot) -> Self {
+    fn from_focused_textedit(focused: &FocusedEditableElement) -> Self {
         Self {
-            app_bundle_id: TEXTEDIT_BUNDLE_ID.to_string(),
-            app_name: TEXTEDIT_APP_NAME.to_string(),
-            role: focused.role.clone(),
-            selected_range_utf16: 0..0,
-            insertion_range_utf16: 0..0,
+            app_element: focused.app_element.clone(),
+            element: Some(focused.element.clone()),
+            pid: focused.element.pid().ok(),
+            app_bundle_id: focused.app_id.clone(),
+            app_name: focused.app_name.clone(),
+            role: focused.snapshot.role.clone(),
+            selected_range_utf16: focused.snapshot.selected_range_utf16.clone(),
+            insertion_range_utf16: focused.snapshot.selected_range_utf16.end
+                ..focused.snapshot.selected_range_utf16.end,
         }
     }
 
     #[cfg(test)]
     fn new_for_test(app_bundle_id: &str, app_name: &str, role: &str) -> Self {
         Self {
+            app_element: None,
+            element: None,
+            pid: None,
             app_bundle_id: app_bundle_id.to_string(),
             app_name: app_name.to_string(),
             role: role.to_string(),
             selected_range_utf16: 0..0,
             insertion_range_utf16: 0..0,
         }
+    }
+
+    fn restore_focus_and_range(&self) -> Result<(), AccessibilityError> {
+        if let Some(app_element) = &self.app_element {
+            let _ = app_element.set_bool_attribute(AX_FOCUSED_ATTRIBUTE, true);
+        }
+
+        let element = self
+            .element
+            .as_ref()
+            .ok_or(AccessibilityError::DestinationNotFound)?;
+        element
+            .set_bool_attribute(AX_FOCUSED_ATTRIBUTE, true)
+            .map_err(|_| AccessibilityError::CommitFailed)?;
+        element
+            .set_range_attribute(
+                AX_SELECTED_TEXT_RANGE_ATTRIBUTE,
+                range_to_ax_range(&self.selected_range_utf16),
+            )
+            .map_err(|_| AccessibilityError::CommitFailed)
+    }
+
+    fn write_confirmed_text(&self, confirmed_text: &str) -> Result<(), AccessibilityError> {
+        self.restore_focus_and_range()?;
+        let element = self
+            .element
+            .as_ref()
+            .ok_or(AccessibilityError::DestinationNotFound)?;
+        element
+            .set_string_attribute(AX_SELECTED_TEXT_ATTRIBUTE, confirmed_text)
+            .map_err(|_| AccessibilityError::CommitFailed)
     }
 }
 
@@ -95,6 +143,7 @@ struct FocusedElementSnapshot {
     role: String,
     subrole: Option<String>,
     is_editable: Option<bool>,
+    selected_range_utf16: Range<usize>,
 }
 
 impl FocusedElementSnapshot {
@@ -110,11 +159,18 @@ impl FocusedElementSnapshot {
             .bool_attribute(AX_IS_EDITABLE_ATTRIBUTE)
             .map_err(|_| AccessibilityError::NotEditable)?
             .or_else(|| element.is_attribute_settable(AX_VALUE_ATTRIBUTE).ok());
+        let selected_range_utf16 = element
+            .range_attribute(AX_SELECTED_TEXT_RANGE_ATTRIBUTE)
+            .ok()
+            .flatten()
+            .and_then(ax_range_to_range)
+            .unwrap_or(0..0);
 
         Ok(Self {
             role,
             subrole,
             is_editable,
+            selected_range_utf16,
         })
     }
 
@@ -124,6 +180,7 @@ impl FocusedElementSnapshot {
             role: role.to_string(),
             subrole: subrole.map(str::to_string),
             is_editable,
+            selected_range_utf16: 0..0,
         }
     }
 }
@@ -240,23 +297,26 @@ fn capture_preflight(
 
 #[allow(dead_code)]
 struct FocusedEditableElement {
+    app_element: Option<AXUIElement>,
+    app_id: String,
+    app_name: String,
     element: AXUIElement,
     snapshot: FocusedElementSnapshot,
 }
 
 #[allow(dead_code)]
 fn validate_focused_editable_element(
-    bundle_id: &str,
+    app_id: &str,
     focused: &FocusedElementSnapshot,
 ) -> Result<(), AccessibilityError> {
-    capture_preflight(AccessibilityPermissionStatus::Trusted, bundle_id)?;
+    capture_preflight(AccessibilityPermissionStatus::Trusted, app_id)?;
 
     if focused.subrole.as_deref() == Some(AX_SECURE_TEXT_FIELD_SUBROLE) {
         return Err(AccessibilityError::SecureField);
     }
 
-    if bundle_id == "com.apple.TextEdit"
-        && focused.role == "AXTextArea"
+    if is_supported_app(app_id)
+        && matches!(focused.role.as_str(), "AXTextArea" | "AXTextField")
         && focused.is_editable.unwrap_or(false)
     {
         return Ok(());
@@ -266,21 +326,32 @@ fn validate_focused_editable_element(
 }
 
 #[allow(dead_code)]
-fn focused_editable_textedit_element(
-    bundle_id: &str,
-) -> Result<FocusedEditableElement, AccessibilityError> {
-    capture_preflight(accessibility_permission_status(), bundle_id)?;
-
+fn focused_editable_element() -> Result<FocusedEditableElement, AccessibilityError> {
     let system = axuielement::SystemWideElement::new().ok_or(AccessibilityError::NotEditable)?;
+    let app_element = system
+        .focused_application()
+        .map_err(|_| AccessibilityError::NotEditable)?;
+    let (app_id, app_name) = app_element
+        .as_ref()
+        .and_then(focused_app_identity)
+        .ok_or(AccessibilityError::UnsupportedApp)?;
+
+    capture_preflight(accessibility_permission_status(), &app_id)?;
     let element = system
         .focused_ui_element()
         .map_err(|_| AccessibilityError::NotEditable)?
         .ok_or(AccessibilityError::NotEditable)?;
     let snapshot = FocusedElementSnapshot::from_ax_element(&element)?;
 
-    validate_focused_editable_element(bundle_id, &snapshot)?;
+    validate_focused_editable_element(&app_id, &snapshot)?;
 
-    Ok(FocusedEditableElement { element, snapshot })
+    Ok(FocusedEditableElement {
+        app_element,
+        app_id,
+        app_name,
+        element,
+        snapshot,
+    })
 }
 
 #[allow(dead_code)]
@@ -290,18 +361,20 @@ fn destination_registry() -> &'static Mutex<DestinationRegistry> {
 
 #[allow(dead_code)]
 fn draft_from_element(element: &AXUIElement) -> String {
-    element
-        .string_attribute(AX_SELECTED_TEXT_ATTRIBUTE)
-        .ok()
-        .flatten()
-        .filter(|text| !text.is_empty())
-        .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())
-        .unwrap_or_default()
+    bound_draft(
+        &element
+            .string_attribute(AX_SELECTED_TEXT_ATTRIBUTE)
+            .ok()
+            .flatten()
+            .filter(|text| !text.is_empty())
+            .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())
+            .unwrap_or_default(),
+    )
 }
 
 #[allow(dead_code)]
 pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> CaptureResult {
-    let focused = match focused_editable_textedit_element(TEXTEDIT_BUNDLE_ID) {
+    let focused = match focused_editable_element() {
         Ok(focused) => focused,
         Err(error) => {
             return CaptureResult::Unavailable {
@@ -310,7 +383,7 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
         }
     };
     let draft = draft_from_element(&focused.element);
-    let snapshot = DestinationSnapshot::from_focused_textedit(&focused.snapshot);
+    let snapshot = DestinationSnapshot::from_focused_textedit(&focused);
 
     let Ok(mut registry) = destination_registry().lock() else {
         return CaptureResult::Unavailable {
@@ -321,10 +394,100 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
     build_ready_capture_result(&mut registry, profile_id, trigger, &draft, snapshot)
 }
 
+#[allow(dead_code)]
+pub(crate) fn destination_exists(destination_id: &str) -> bool {
+    destination_registry()
+        .lock()
+        .map(|registry| registry.snapshots.contains_key(destination_id))
+        .unwrap_or(false)
+}
+
+#[allow(dead_code)]
+pub(crate) fn write_confirmed_text_to_destination(
+    destination_id: &str,
+    confirmed_text: &str,
+) -> Result<(), AccessibilityError> {
+    let snapshot = destination_registry()
+        .lock()
+        .map_err(|_| AccessibilityError::DestinationRegistryUnavailable)?
+        .snapshots
+        .get(destination_id)
+        .cloned()
+        .ok_or(AccessibilityError::DestinationNotFound)?;
+
+    snapshot.write_confirmed_text(confirmed_text)
+}
+
+#[allow(dead_code)]
+pub(crate) fn restore_destination(destination_id: &str) -> Result<(), AccessibilityError> {
+    let snapshot = destination_registry()
+        .lock()
+        .map_err(|_| AccessibilityError::DestinationRegistryUnavailable)?
+        .snapshots
+        .get(destination_id)
+        .cloned()
+        .ok_or(AccessibilityError::DestinationNotFound)?;
+
+    snapshot.restore_focus_and_range()
+}
+
+#[allow(dead_code)]
+pub fn release_destination(destination_id: &str) -> Result<(), AccessibilityError> {
+    destination_registry()
+        .lock()
+        .map_err(|_| AccessibilityError::DestinationRegistryUnavailable)?
+        .release(destination_id)
+}
+
+#[allow(dead_code)]
+pub(crate) fn cancel_destination(destination_id: &str) -> Result<(), AccessibilityError> {
+    restore_destination(destination_id)?;
+    release_destination(destination_id)
+}
+
+fn focused_app_identity(app_element: &AXUIElement) -> Option<(String, String)> {
+    app_element
+        .string_attribute(AX_TITLE_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .and_then(|title| match title.as_str() {
+            TEXTEDIT_APP_NAME => Some((TEXTEDIT_BUNDLE_ID.to_string(), title)),
+            "Notes" => Some(("com.apple.Notes".to_string(), title)),
+            "Vivaldi" => Some(("com.vivaldi.Vivaldi".to_string(), title)),
+            "Google Chrome" => Some(("com.google.Chrome".to_string(), title)),
+            "Safari" => Some(("com.apple.Safari".to_string(), title)),
+            _ => None,
+        })
+}
+
+fn ax_range_to_range(range: AXRange) -> Option<Range<usize>> {
+    let start = usize::try_from(range.location).ok()?;
+    let length = usize::try_from(range.length).ok()?;
+    Some(start..start.saturating_add(length))
+}
+
+fn range_to_ax_range(range: &Range<usize>) -> AXRange {
+    AXRange {
+        location: isize::try_from(range.start).unwrap_or(isize::MAX),
+        length: isize::try_from(range.end.saturating_sub(range.start)).unwrap_or(isize::MAX),
+    }
+}
+
+fn bound_draft(draft: &str) -> String {
+    draft
+        .chars()
+        .rev()
+        .take(DRAFT_MAX_CHARS)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_context_snippets, build_ready_capture_result, capture_preflight,
+        bound_context_snippets, bound_draft, build_ready_capture_result, capture_preflight,
         collect_context_snippets, is_supported_app, validate_focused_editable_element,
         AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
         ContextSnippetLimit, DestinationRegistry, DestinationSnapshot, FocusedElementSnapshot,
@@ -340,9 +503,11 @@ mod tests {
         let _errors = [
             AccessibilityError::PermissionMissing,
             AccessibilityError::DestinationNotFound,
+            AccessibilityError::DestinationRegistryUnavailable,
             AccessibilityError::UnsupportedApp,
             AccessibilityError::SecureField,
             AccessibilityError::NotEditable,
+            AccessibilityError::CommitFailed,
         ];
         let _snippet_limit = ContextSnippetLimit {
             max_snippets: 3,
@@ -459,6 +624,13 @@ mod tests {
                     .iter()
                     .all(|snippet| snippet.visible_text.len() <= 4)
         );
+    }
+
+    #[test]
+    fn draft_from_value_is_bounded_to_last_eighty_chars() {
+        let draft = format!("{}{}", "a".repeat(30), "b".repeat(80));
+
+        assert_eq!(bound_draft(&draft), "b".repeat(80));
     }
 
     #[test]

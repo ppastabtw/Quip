@@ -5,6 +5,8 @@
 //! Receives the opaque `destination_id` and confirmed text from the
 //! composition layer. Never inserts without explicit confirmation.
 
+use crate::accessibility;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +32,7 @@ pub enum CommitError {
     UnknownDestination,
     AccessibilityWriteFailed,
     ClipboardUnavailable,
+    PasteSimulationFailed,
     UnsupportedClipboardContent,
 }
 
@@ -55,6 +58,7 @@ trait CommitSession {
         destination_id: &str,
         confirmed_text: &str,
     ) -> Result<(), CommitError>;
+    fn restore_destination(&mut self, destination_id: &str) -> Result<(), CommitError>;
     fn release_destination(&mut self, destination_id: &str);
 }
 
@@ -69,17 +73,19 @@ fn commit_confirmed_text_with_session(
         return Err(CommitError::UnknownDestination);
     }
 
-    match session.write_accessibility(destination_id, confirmed_text) {
-        Ok(()) => {}
+    let method = match session.write_accessibility(destination_id, confirmed_text) {
+        Ok(()) => CommitMethod::Accessibility,
         Err(CommitError::AccessibilityWriteFailed) => {
-            return simulated_paste_fallback(destination_id, confirmed_text, clipboard);
+            session.restore_destination(destination_id)?;
+            simulated_paste_fallback(destination_id, confirmed_text, clipboard)?.method
         }
         Err(error) => return Err(error),
-    }
+    };
+    session.release_destination(destination_id);
 
     Ok(CommitReport {
         destination_id: destination_id.to_string(),
-        method: CommitMethod::Accessibility,
+        method,
         inserted_text: true,
     })
 }
@@ -110,8 +116,11 @@ fn simulated_paste_fallback(
 ) -> Result<CommitReport, CommitError> {
     let previous_clipboard = clipboard.snapshot()?;
     clipboard.set_plain_text(confirmed_text)?;
-    clipboard.simulate_paste()?;
-    clipboard.restore(previous_clipboard)?;
+    let paste_result = clipboard.simulate_paste();
+    let restore_result = clipboard.restore(previous_clipboard);
+
+    paste_result?;
+    restore_result?;
 
     Ok(CommitReport {
         destination_id: destination_id.to_string(),
@@ -143,19 +152,26 @@ pub fn cancel_destination(destination_id: &str) -> Result<CommitReport, CommitEr
 struct LiveCommitSession;
 
 impl CommitSession for LiveCommitSession {
-    fn has_destination(&self, _destination_id: &str) -> bool {
-        false
+    fn has_destination(&self, destination_id: &str) -> bool {
+        accessibility::destination_exists(destination_id)
     }
 
     fn write_accessibility(
         &mut self,
-        _destination_id: &str,
-        _confirmed_text: &str,
+        destination_id: &str,
+        confirmed_text: &str,
     ) -> Result<(), CommitError> {
-        Err(CommitError::UnknownDestination)
+        accessibility::write_confirmed_text_to_destination(destination_id, confirmed_text)
+            .map_err(CommitError::from)
     }
 
-    fn release_destination(&mut self, _destination_id: &str) {}
+    fn restore_destination(&mut self, destination_id: &str) -> Result<(), CommitError> {
+        accessibility::restore_destination(destination_id).map_err(CommitError::from)
+    }
+
+    fn release_destination(&mut self, destination_id: &str) {
+        let _ = accessibility::release_destination(destination_id);
+    }
 }
 
 struct ArboardClipboardSession {
@@ -186,12 +202,33 @@ impl ClipboardSession for ArboardClipboardSession {
     }
 
     fn simulate_paste(&mut self) -> Result<(), CommitError> {
-        Ok(())
+        let status = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                r#"tell application "System Events" to keystroke "v" using command down"#,
+            ])
+            .status()
+            .map_err(|_| CommitError::PasteSimulationFailed)?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(CommitError::PasteSimulationFailed)
+        }
     }
 
     fn restore(&mut self, snapshot: ClipboardSnapshot) -> Result<(), CommitError> {
         match snapshot {
             ClipboardSnapshot::PlainText(text) => self.set_plain_text(&text),
+        }
+    }
+}
+
+impl From<accessibility::AccessibilityError> for CommitError {
+    fn from(error: accessibility::AccessibilityError) -> Self {
+        match error {
+            accessibility::AccessibilityError::DestinationNotFound => Self::UnknownDestination,
+            accessibility::AccessibilityError::CommitFailed => Self::AccessibilityWriteFailed,
+            _ => Self::AccessibilityWriteFailed,
         }
     }
 }
@@ -283,15 +320,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn paste_fallback_restores_plain_text_clipboard_after_paste_failure() {
+        let mut clipboard = FakeClipboardSession::new("previous clipboard")
+            .with_paste_result(Err(CommitError::PasteSimulationFailed));
+
+        let result = simulated_paste_fallback(
+            "destination_textedit_0001",
+            "confirmed text",
+            &mut clipboard,
+        );
+
+        assert_eq!(
+            (result, clipboard.text),
+            (
+                Err(CommitError::PasteSimulationFailed),
+                "previous clipboard".to_string()
+            )
+        );
+    }
+
     struct FakeClipboardSession {
         text: String,
+        paste_result: Result<(), CommitError>,
     }
 
     impl FakeClipboardSession {
         fn new(text: &str) -> Self {
             Self {
                 text: text.to_string(),
+                paste_result: Ok(()),
             }
+        }
+
+        fn with_paste_result(mut self, result: Result<(), CommitError>) -> Self {
+            self.paste_result = result;
+            self
         }
     }
 
@@ -306,7 +370,7 @@ mod tests {
         }
 
         fn simulate_paste(&mut self) -> Result<(), CommitError> {
-            Ok(())
+            self.paste_result.clone()
         }
 
         fn restore(&mut self, snapshot: ClipboardSnapshot) -> Result<(), CommitError> {
@@ -358,6 +422,14 @@ mod tests {
             _confirmed_text: &str,
         ) -> Result<(), CommitError> {
             self.accessibility_write_result.clone()
+        }
+
+        fn restore_destination(&mut self, destination_id: &str) -> Result<(), CommitError> {
+            if self.has_destination(destination_id) {
+                Ok(())
+            } else {
+                Err(CommitError::UnknownDestination)
+            }
         }
 
         fn release_destination(&mut self, destination_id: &str) {
