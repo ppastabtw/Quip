@@ -2,13 +2,23 @@
 //! acceptance rule in `docs/phase-0-contracts.md`: a boundary is accepted only
 //! after one producer and one consumer validate the same fixture.
 
-use quip_contracts::{FixtureFile, PredictionResult};
+use quip_contracts::{CaptureResult, FixtureFile, PredictionResult, Trigger};
 
 fn load_raw() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/fixtures/phase-0-examples.json");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+fn capture_case(case_id: &str) -> CaptureResult {
+    let typed: FixtureFile = serde_json::from_str(&load_raw()).unwrap();
+    typed
+        .capture_results
+        .into_iter()
+        .find(|case| case.case_id == case_id)
+        .unwrap_or_else(|| panic!("missing capture case {case_id}"))
+        .result
 }
 
 #[test]
@@ -50,4 +60,20 @@ fn fixture_results_satisfy_invariants() {
             exchange.case_id
         );
     }
+}
+
+#[test]
+fn textedit_ready_capture_fixture_matches_shared_rust_contract() {
+    let fixture = capture_case("textedit_ready");
+
+    assert_eq!(
+        fixture,
+        CaptureResult::Ready {
+            burst_id: "burst_textedit".to_string(),
+            destination_id: "destination_textedit".to_string(),
+            profile_id: "profile_default".to_string(),
+            draft: "cnt cm tmrw".to_string(),
+            trigger: Trigger::Idle,
+        }
+    );
 }
