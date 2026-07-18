@@ -276,6 +276,25 @@ fn base_overedit(draft: &str) -> String {
     text
 }
 
+/// Health reported when the blocking sidecar worker task itself failed
+/// (never expected; the client already converts transport errors itself).
+pub fn sidecar_worker_unavailable_health() -> SidecarHealth {
+    SidecarHealth {
+        status: HealthStatus::Unavailable,
+        fixture_available: true,
+        loaded: LoadedArtifacts {
+            base: false,
+            global_adapter: false,
+            user_adapter: false,
+        },
+        error: Some(ErrorInfo {
+            code: "sidecar_unavailable".to_string(),
+            message: "The sidecar worker task failed.".to_string(),
+            retryable: true,
+        }),
+    }
+}
+
 /// Demo-visible counters over every prediction the app has run.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Metrics {
