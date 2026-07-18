@@ -11,3 +11,5 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 quip-contracts = { path = "../crates/quip-contracts" }
+axuielement = "0.9.1"
+arboard = "3.6.1"
