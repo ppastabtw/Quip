@@ -21,7 +21,7 @@ mod settings;
 use commit::CommitOutcome;
 use composition::{BurstInput, Engine, Snapshot};
 use debug_events::{DebugEventView, DebugSink};
-use inference::{DemoCase, Metrics, SideSpec};
+use inference::{DemoCase, FixtureLookupDebug, Metrics, SideSpec};
 use quip_contracts::{
     CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
 };
@@ -199,7 +199,28 @@ fn snapshot_phase(snapshot: &Snapshot) -> &'static str {
     }
 }
 
-fn record_prediction_result(app: &AppHandle, burst_id: &str, result: &PredictionResult) {
+fn record_prediction_result(
+    app: &AppHandle,
+    burst_id: &str,
+    request: &PredictionRequest,
+    lookup_debug: Option<&FixtureLookupDebug>,
+    result: &PredictionResult,
+) {
+    let (has_context, context_count, fallback_used, lookup_variant) = lookup_debug
+        .map(|debug| {
+            (
+                debug.has_context,
+                debug.context_count,
+                debug.fallback_used,
+                Some(debug.lookup_variant),
+            )
+        })
+        .unwrap_or((
+            !request.context_snippets.is_empty(),
+            request.context_snippets.len(),
+            false,
+            None,
+        ));
     match result {
         PredictionResult::Ok {
             request_id,
@@ -220,6 +241,10 @@ fn record_prediction_result(app: &AppHandle, burst_id: &str, result: &Prediction
                 "candidate_count": candidates.len(),
                 "candidates": candidates,
                 "latency_ms": latency_ms,
+                "has_context": has_context,
+                "context_count": context_count,
+                "fallback_used": fallback_used,
+                "lookup_variant": lookup_variant,
             }),
         ),
         PredictionResult::Error {
@@ -239,6 +264,10 @@ fn record_prediction_result(app: &AppHandle, burst_id: &str, result: &Prediction
                 "error_code": error.code,
                 "error_message": error.message,
                 "retryable": error.retryable,
+                "has_context": has_context,
+                "context_count": context_count,
+                "fallback_used": fallback_used,
+                "lookup_variant": lookup_variant,
             }),
         ),
     }
@@ -336,12 +365,17 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         .unwrap_or(&request.request_id)
         .to_string();
 
-    let result = {
+    let (result, lookup_debug) = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        engine.predict(&request, mode)
+        let lookup_debug = if mode == BackendMode::Fixture {
+            Some(engine.backend.lookup_debug(&request))
+        } else {
+            None
+        };
+        (engine.predict(&request, mode), lookup_debug)
     };
-    record_prediction_result(&app, &burst_id, &result);
+    record_prediction_result(&app, &burst_id, &request, lookup_debug.as_ref(), &result);
     emit_metrics(&app);
 
     // Fixture latencies are replayed in real time so the bar's arrival is
