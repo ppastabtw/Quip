@@ -80,15 +80,18 @@ fn commit_confirmed_text_with_session(
         return Err(CommitError::UnknownDestination);
     }
 
-    let method = match session.write_accessibility(destination_id, confirmed_text) {
-        Ok(()) => CommitMethod::Accessibility,
+    let result = match session.write_accessibility(destination_id, confirmed_text) {
+        Ok(()) => Ok(CommitMethod::Accessibility),
         Err(CommitError::AccessibilityWriteFailed) => {
-            session.restore_destination(destination_id)?;
-            simulated_paste_fallback(destination_id, confirmed_text, clipboard)?.method
+            session.restore_destination(destination_id).and_then(|()| {
+                simulated_paste_fallback(destination_id, confirmed_text, clipboard)
+                    .map(|report| report.method)
+            })
         }
-        Err(error) => return Err(error),
+        Err(error) => Err(error),
     };
     session.release_destination(destination_id);
+    let method = result?;
 
     Ok(CommitReport {
         destination_id: destination_id.to_string(),
@@ -263,16 +266,19 @@ fn commit_confirmed_text_with_clipboard_provider(
         return Err(CommitError::UnknownDestination);
     }
 
-    let method = match session.write_accessibility(destination_id, confirmed_text) {
-        Ok(()) => CommitMethod::Accessibility,
-        Err(CommitError::AccessibilityWriteFailed) => {
-            session.restore_destination(destination_id)?;
-            let mut clipboard = clipboard.open()?;
-            simulated_paste_fallback(destination_id, confirmed_text, &mut clipboard)?.method
-        }
-        Err(error) => return Err(error),
+    let result = match session.write_accessibility(destination_id, confirmed_text) {
+        Ok(()) => Ok(CommitMethod::Accessibility),
+        Err(CommitError::AccessibilityWriteFailed) => session
+            .restore_destination(destination_id)
+            .and_then(|()| clipboard.open())
+            .and_then(|mut clipboard| {
+                simulated_paste_fallback(destination_id, confirmed_text, &mut clipboard)
+                    .map(|report| report.method)
+            }),
+        Err(error) => Err(error),
     };
     session.release_destination(destination_id);
+    let method = result?;
 
     Ok(CommitReport {
         destination_id: destination_id.to_string(),
@@ -365,6 +371,27 @@ mod tests {
         .expect("fallback should handle direct write failure");
 
         assert_eq!(report.method, CommitMethod::SimulatedPaste);
+    }
+
+    #[test]
+    fn commit_releases_destination_after_paste_fallback_failure() {
+        let mut session = FakeCommitSession::with_destination("destination_textedit_0001")
+            .with_accessibility_write_result(Err(CommitError::AccessibilityWriteFailed));
+        let mut clipboard =
+            FakeClipboardProvider::new(Ok(FakeClipboardSession::new("previous clipboard")
+                .with_paste_result(Err(CommitError::PasteSimulationFailed))));
+
+        let result = commit_confirmed_text_with_clipboard_provider(
+            "destination_textedit_0001",
+            "confirmed text",
+            &mut session,
+            &mut clipboard,
+        );
+
+        assert_eq!(
+            (result, session.has_destination("destination_textedit_0001")),
+            (Err(CommitError::PasteSimulationFailed), false)
+        );
     }
 
     #[test]

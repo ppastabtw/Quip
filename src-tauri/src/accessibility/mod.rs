@@ -1,5 +1,5 @@
 //! Workstream 3: Accessibility permission detection, focused editable element
-//! recognition, secure-field exclusion, burst capture, and bounded window text.
+//! recognition, secure-field exclusion, destination capture, and commit restore.
 //!
 //! Produces `quip_contracts::CaptureResult` for the composition layer. Element
 //! handles, insertion markers, and restoration state stay internal here; only
@@ -256,6 +256,9 @@ fn bound_context_snippets(
 
 #[allow(dead_code)]
 pub fn collect_context_snippets(limit: ContextSnippetLimit) -> Vec<ContextSnippet> {
+    // Real visible-window context collection is intentionally out of scope for
+    // this capture + commit phase. Keep the public surface bounded and empty
+    // until the context-collection phase wires supported AX windows.
     bound_context_snippets(Vec::new(), limit)
 }
 
