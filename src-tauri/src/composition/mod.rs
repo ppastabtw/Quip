@@ -13,8 +13,8 @@ use crate::inference::{FixtureBackend, Metrics};
 use crate::learning::{self, LabeledExample, LearningStore};
 use crate::settings::{AppSettings, BackendMode};
 use quip_contracts::{
-    Backend, ErrorInfo, ModelVariant, PredictionRequest, PredictionResult, Rect, SidecarHealth,
-    Trigger,
+    Backend, ContextSnippet, ErrorInfo, ModelVariant, PredictionRequest, PredictionResult, Rect,
+    SidecarHealth, Trigger,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -72,13 +72,14 @@ pub struct Burst {
     pub model_variant: ModelVariant,
 }
 
-/// Input to `begin_burst`: a `capture_result.ready` from the playground now,
-/// Workstream 3's Accessibility observer later.
+/// Input to `begin_burst`: a `capture_result.ready` from the playground or a
+/// manual focused Accessibility capture.
 #[derive(Debug, Clone)]
 pub struct BurstInput {
     pub draft: String,
     pub trigger: Trigger,
     pub caret: Rect,
+    pub context_snippets: Vec<ContextSnippet>,
     pub burst_id: Option<String>,
     pub destination_id: Option<String>,
     pub profile_id: Option<String>,
@@ -165,9 +166,11 @@ impl Engine {
             profile_id: burst.profile_id.clone(),
             model_variant: burst.model_variant,
             draft: burst.draft.clone(),
-            // Window context arrives with Workstream 3; the toggle already
-            // gates it here so nothing leaks once real snippets exist.
-            context_snippets: Vec::new(),
+            context_snippets: if self.settings.window_context {
+                input.context_snippets
+            } else {
+                Vec::new()
+            },
             personal_patterns: self.learning.patterns_for_request(&burst.profile_id),
         };
         tracing::info!(
@@ -309,7 +312,7 @@ impl Engine {
             .clone();
         let burst = burst.clone();
 
-        let outcome = commit::replace_burst(&burst.destination_id, &burst.burst_id, &text);
+        let outcome = commit::replace_burst(&burst.destination_id, &burst.burst_id, &text)?;
         if !self.settings.learning_paused {
             self.learning.append_example(&LabeledExample {
                 ts_ms: learning::now_ms(),
@@ -436,9 +439,21 @@ mod tests {
             draft: draft.to_string(),
             trigger: Trigger::Idle,
             caret: caret(),
+            context_snippets: Vec::new(),
             burst_id: None,
             destination_id: Some("destination_test".to_string()),
             profile_id: None,
+        }
+    }
+
+    fn typed_with_context(draft: &str) -> BurstInput {
+        BurstInput {
+            context_snippets: vec![ContextSnippet {
+                app_name: "Notes".to_string(),
+                window_title: "Trip planning".to_string(),
+                visible_text: "Tomorrow: meet at Union Station at 8:30 AM.".to_string(),
+            }],
+            ..typed(draft)
         }
     }
 
@@ -468,6 +483,23 @@ mod tests {
         assert_eq!(recommended, 0);
         assert_eq!(at, caret());
         assert!(error.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn window_context_setting_controls_prediction_context() {
+        let (mut engine, dir) = test_engine();
+        engine.settings.window_context = true;
+        let (_, request, _) = engine
+            .begin_burst(typed_with_context("meet there tmrw"))
+            .unwrap();
+        assert_eq!(request.context_snippets.len(), 1);
+
+        engine.settings.window_context = false;
+        let (_, request, _) = engine
+            .begin_burst(typed_with_context("meet there tmrw"))
+            .unwrap();
+        assert!(request.context_snippets.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -510,6 +542,23 @@ mod tests {
         assert!(raw.contains("\"confirmed_candidate\""));
         // Selecting twice is impossible: state returned to idle.
         assert!(engine.select(0).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_real_commit_does_not_learn() {
+        let (mut engine, dir) = test_engine();
+        let mut input = typed("ship spec tn");
+        input.destination_id = Some("destination_missing".to_string());
+        let (_, request, _mode) = engine.begin_burst(input).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        let result = engine.predict_fixture(&request);
+        engine.apply_result(&burst_id, result).unwrap();
+
+        let error = engine.select(0).unwrap_err();
+
+        assert!(error.contains("real accessibility commit failed"));
+        assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

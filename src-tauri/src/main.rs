@@ -13,17 +13,20 @@
 mod accessibility;
 mod commit;
 mod composition;
+mod debug_events;
 mod inference;
 mod learning;
 mod settings;
 
 use commit::CommitOutcome;
 use composition::{BurstInput, Engine, Snapshot};
-use inference::{DemoCase, Metrics, SidecarClient, SideSpec};
+use debug_events::{DebugEventView, DebugSink};
+use inference::{DemoCase, FixtureLookupDebug, Metrics, SideSpec, SidecarClient};
 use quip_contracts::{
     CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
 use settings::{AppSettings, BackendMode};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -37,6 +40,8 @@ const BAR_HEIGHT: f64 = 44.0;
 const BAR_GAP: f64 = 10.0;
 
 struct EngineState(Mutex<Engine>);
+
+struct DebugState(Mutex<DebugSink>);
 
 /// The live sidecar client lives outside the engine lock: a live inference
 /// can take a second, and synchronous Tauri commands run on the main thread,
@@ -92,6 +97,12 @@ fn bar_width(candidates: &[String], has_error: bool) -> f64 {
 /// focus from the textbox the user is typing in.
 fn sync_bar(app: &AppHandle, snapshot: &Snapshot) {
     let Some(bar) = app.get_webview_window("suggestions") else {
+        record_debug(
+            app,
+            "bar_hidden",
+            "suggestion window unavailable",
+            json!({ "phase": "missing_window" }),
+        );
         return;
     };
     match snapshot {
@@ -108,10 +119,29 @@ fn sync_bar(app: &AppHandle, snapshot: &Snapshot) {
                 (caret.y - BAR_HEIGHT - BAR_GAP).max(0.0),
             ));
             let _ = bar.show();
+            record_debug(
+                app,
+                "bar_shown",
+                format!("shown with {} candidates", candidates.len()),
+                json!({
+                    "phase": "suggesting",
+                    "candidate_count": candidates.len(),
+                    "x": (caret.x - 8.0).max(0.0),
+                    "y": (caret.y - BAR_HEIGHT - BAR_GAP).max(0.0),
+                    "width": width,
+                    "height": BAR_HEIGHT,
+                }),
+            );
         }
         Snapshot::Predicting { .. } => {} // nothing shown until there is something to say
         _ => {
             let _ = bar.hide();
+            record_debug(
+                app,
+                "bar_hidden",
+                "bar hidden",
+                json!({ "phase": snapshot_phase(snapshot) }),
+            );
         }
     }
 }
@@ -145,6 +175,128 @@ fn show_window(app: &AppHandle, label: &str) {
     }
 }
 
+fn record_debug(app: &AppHandle, event: &str, summary: impl Into<String>, payload: Value) {
+    let debug = app.state::<DebugState>();
+    if let Ok(mut sink) = debug.0.lock() {
+        sink.record(event, summary, payload);
+    };
+}
+
+fn record_resolver_candidates(
+    app: &AppHandle,
+    parent_event: &'static str,
+    focused: &accessibility::FocusedElementDiagnostic,
+) {
+    for candidate in &focused.resolver_candidates {
+        record_debug(
+            app,
+            "capture_resolver_candidate",
+            format!(
+                "{} {} depth {} -> {}",
+                parent_event,
+                candidate.source,
+                candidate.depth,
+                candidate.reject_reason.unwrap_or("accepted")
+            ),
+            json!({
+                "parent_event": parent_event,
+                "candidate": candidate,
+            }),
+        );
+    }
+}
+
+fn snapshot_phase(snapshot: &Snapshot) -> &'static str {
+    match snapshot {
+        Snapshot::Idle => "idle",
+        Snapshot::Predicting { .. } => "predicting",
+        Snapshot::Suggesting { .. } => "suggesting",
+        Snapshot::Applied { .. } => "applied",
+        Snapshot::Unavailable { .. } => "unavailable",
+    }
+}
+
+fn record_prediction_result(
+    app: &AppHandle,
+    burst_id: &str,
+    request: &PredictionRequest,
+    lookup_debug: Option<&FixtureLookupDebug>,
+    result: &PredictionResult,
+) {
+    let (has_context, context_count, fallback_used, lookup_variant) = lookup_debug
+        .map(|debug| {
+            (
+                debug.has_context,
+                debug.context_count,
+                debug.fallback_used,
+                Some(debug.lookup_variant),
+            )
+        })
+        .unwrap_or((
+            !request.context_snippets.is_empty(),
+            request.context_snippets.len(),
+            false,
+            None,
+        ));
+    match result {
+        PredictionResult::Ok {
+            request_id,
+            model_variant,
+            backend,
+            candidates,
+            latency_ms,
+        } => record_debug(
+            app,
+            "prediction_result",
+            format!("prediction returned {} candidates", candidates.len()),
+            json!({
+                "status": "ok",
+                "request_id": request_id,
+                "burst_id": burst_id,
+                "model_variant": model_variant,
+                "backend": backend,
+                "candidate_count": candidates.len(),
+                "candidates": candidates,
+                "latency_ms": latency_ms,
+                "has_context": has_context,
+                "context_count": context_count,
+                "fallback_used": fallback_used,
+                "lookup_variant": lookup_variant,
+            }),
+        ),
+        PredictionResult::Error {
+            request_id,
+            model_variant,
+            error,
+        } => record_debug(
+            app,
+            "prediction_result",
+            format!("prediction error: {}", error.code),
+            json!({
+                "status": "error",
+                "request_id": request_id,
+                "burst_id": burst_id,
+                "model_variant": model_variant,
+                "candidate_count": 0,
+                "error_code": error.code,
+                "error_message": error.message,
+                "retryable": error.retryable,
+                "has_context": has_context,
+                "context_count": context_count,
+                "fallback_used": fallback_used,
+                "lookup_variant": lookup_variant,
+            }),
+        ),
+    }
+}
+
+fn prediction_status_and_count(result: &PredictionResult) -> (&'static str, usize, Option<String>) {
+    match result {
+        PredictionResult::Ok { candidates, .. } => ("ok", candidates.len(), None),
+        PredictionResult::Error { error, .. } => ("error", 0, Some(error.code.clone())),
+    }
+}
+
 #[tauri::command]
 fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
     accessibility::capture_focused_destination(&profile_id, trigger)
@@ -161,6 +313,34 @@ fn commit_confirmed_text(
 #[tauri::command]
 fn cancel_destination(destination_id: String) -> Result<commit::CommitReport, commit::CommitError> {
     commit::cancel_destination(&destination_id)
+}
+
+#[tauri::command]
+async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
+    let (profile_id, include_context) = {
+        let engine = app.state::<EngineState>();
+        let engine = engine.0.lock().unwrap();
+        (
+            engine.settings.active_profile.clone(),
+            engine.settings.window_context,
+        )
+    };
+    let focused = accessibility::focused_element_diagnostic();
+    record_resolver_candidates(&app, "capture_requested", &focused);
+    record_debug(
+        &app,
+        "capture_requested",
+        "manual focused capture requested",
+        json!({
+            "source": "manual_focused_capture",
+            "trigger": trigger,
+            "profile_id": profile_id,
+            "include_context": include_context,
+            "focused": focused,
+        }),
+    );
+    let result = accessibility::capture_focused_destination(&profile_id, trigger);
+    run_capture_result(app, result, include_context, "manual_focused_capture").await;
 }
 
 /// One full burst: begin → inference → suggest. Fixture latency is replayed;
@@ -180,6 +360,21 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
             return;
         }
     };
+    record_debug(
+        &app,
+        "prediction_started",
+        format!("prediction started for {}", request.request_id),
+        json!({
+            "request_id": request.request_id,
+            "burst_id": request.request_id.strip_prefix("req_").unwrap_or(&request.request_id),
+            "mode": mode,
+            "model_variant": request.model_variant,
+            "context_count": request.context_snippets.len(),
+            "personal_pattern_count": request.personal_patterns.len(),
+            "draft_chars": request.draft.chars().count(),
+            "draft_text": request.draft,
+        }),
+    );
     emit_snapshot(&app, &snapshot);
     let burst_id = request
         .request_id
@@ -187,11 +382,12 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         .unwrap_or(&request.request_id)
         .to_string();
 
-    let result = match mode {
+    let (result, lookup_debug) = match mode {
         BackendMode::Fixture => {
             let engine = app.state::<EngineState>();
             let mut engine = engine.0.lock().unwrap();
-            engine.predict_fixture(&request)
+            let lookup_debug = engine.backend.lookup_debug(&request);
+            (engine.predict_fixture(&request), Some(lookup_debug))
         }
         BackendMode::Live => {
             // The engine lock is NOT held while the model runs: typing,
@@ -211,9 +407,10 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
                 });
             let engine = app.state::<EngineState>();
             let mut engine = engine.0.lock().unwrap();
-            engine.record_result(&request, raw)
+            (engine.record_result(&request, raw), None)
         }
     };
+    record_prediction_result(&app, &burst_id, &request, lookup_debug.as_ref(), &result);
     emit_metrics(&app);
 
     // Fixture latencies are replayed in real time so the bar's arrival is
@@ -237,10 +434,12 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     }
 }
 
-/// `capture_result` entry point: the playground and demo harness now, real
-/// Accessibility observation from Workstream 3 later, same shape either way.
-#[tauri::command]
-async fn inject_capture(app: AppHandle, result: CaptureResult) {
+async fn run_capture_result(
+    app: AppHandle,
+    result: CaptureResult,
+    include_context: bool,
+    source: &'static str,
+) {
     match result {
         CaptureResult::Ready {
             burst_id,
@@ -250,12 +449,34 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
             trigger,
             caret,
         } => {
+            let context_snippets = if include_context {
+                accessibility::collect_context_snippets(accessibility::DEFAULT_CONTEXT_LIMIT)
+            } else {
+                Vec::new()
+            };
+            record_debug(
+                &app,
+                "capture_ready",
+                format!("capture ready with {} chars", draft.chars().count()),
+                json!({
+                    "source": source,
+                    "trigger": trigger,
+                    "burst_id": burst_id,
+                    "destination_id": destination_id,
+                    "profile_id": profile_id,
+                    "draft_chars": draft.chars().count(),
+                    "draft_text": draft,
+                    "context_count": context_snippets.len(),
+                    "caret": caret,
+                }),
+            );
             run_burst_flow(
                 app,
                 BurstInput {
                     draft,
                     trigger,
                     caret,
+                    context_snippets,
                     burst_id: Some(burst_id),
                     destination_id: Some(destination_id),
                     profile_id: Some(profile_id),
@@ -264,20 +485,79 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
             .await;
         }
         CaptureResult::Unavailable { reason } => {
+            let focused = accessibility::focused_element_diagnostic();
+            record_resolver_candidates(&app, "capture_unavailable", &focused);
+            record_debug(
+                &app,
+                "capture_unavailable",
+                format!("capture unavailable: {reason}"),
+                json!({
+                    "source": source,
+                    "reason": reason,
+                    "focused": focused,
+                }),
+            );
             emit_snapshot(&app, &Snapshot::Unavailable { reason });
         }
     }
 }
 
+/// Demo entry point: accepts a caller-provided `capture_result` fixture and
+/// feeds it through the same burst flow as real Accessibility capture.
+#[tauri::command]
+async fn inject_capture(app: AppHandle, result: CaptureResult) {
+    run_capture_result(app, result, false, "capture_fixture").await;
+}
+
 #[tauri::command]
 fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, String> {
-    let (snapshot, outcome) = {
+    record_debug(
+        &app,
+        "candidate_selected",
+        format!("candidate {index} selected"),
+        json!({ "selected_index": index }),
+    );
+    let selected = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        engine.select(index)?
+        engine.select(index)
+    };
+    let (snapshot, outcome) = match selected {
+        Ok(selected) => selected,
+        Err(error) => {
+            record_debug(
+                &app,
+                "commit_failed",
+                format!("commit failed: {error}"),
+                json!({
+                    "selected_index": index,
+                    "success": false,
+                    "error": error,
+                }),
+            );
+            emit_snapshot(
+                &app,
+                &Snapshot::Unavailable {
+                    reason: error.clone(),
+                },
+            );
+            return Err(error);
+        }
     };
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
+    record_debug(
+        &app,
+        "commit_succeeded",
+        format!("committed to {}", outcome.destination_id),
+        json!({
+            "destination_id": outcome.destination_id,
+            "selected_index": index,
+            "success": true,
+            "committed_chars": outcome.text.chars().count(),
+            "committed_text": outcome.text,
+        }),
+    );
     emit_snapshot(&app, &Snapshot::Idle);
     Ok(outcome)
 }
@@ -379,7 +659,12 @@ async fn get_health(app: AppHandle) -> SidecarHealth {
         engine.settings.backend_mode
     };
     match mode {
-        BackendMode::Fixture => app.state::<EngineState>().0.lock().unwrap().fixture_health(),
+        BackendMode::Fixture => app
+            .state::<EngineState>()
+            .0
+            .lock()
+            .unwrap()
+            .fixture_health(),
         // Async so the sidecar exchange never runs on (or blocks) the main
         // thread; it shares the serial sidecar pipe with predictions.
         BackendMode::Live => with_sidecar(&app, |sidecar| sidecar.health())
@@ -391,6 +676,20 @@ async fn get_health(app: AppHandle) -> SidecarHealth {
 #[tauri::command]
 fn get_metrics(app: AppHandle) -> Metrics {
     app.state::<EngineState>().0.lock().unwrap().metrics.clone()
+}
+
+#[tauri::command]
+fn get_debug_events(app: AppHandle, limit: usize) -> Vec<DebugEventView> {
+    app.state::<DebugState>()
+        .0
+        .lock()
+        .map(|sink| sink.recent(limit))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn record_debug_event(app: AppHandle, event: String, summary: String, payload: Value) {
+    record_debug(&app, &event, summary, payload);
 }
 
 #[tauri::command]
@@ -432,14 +731,29 @@ struct ComparisonReport {
 /// depend on the live sidecar.
 #[tauri::command]
 fn run_comparison(app: AppHandle, case_id: String) -> Result<ComparisonReport, String> {
+    record_debug(
+        &app,
+        "comparison_requested",
+        format!("comparison requested: {case_id}"),
+        json!({ "case_id": case_id.clone() }),
+    );
     let report = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        let case = engine
-            .backend
-            .case(&case_id)
-            .cloned()
-            .ok_or_else(|| format!("unknown corpus case {case_id}"))?;
+        let Some(case) = engine.backend.case(&case_id).cloned() else {
+            let error = format!("unknown corpus case {case_id}");
+            drop(engine);
+            record_debug(
+                &app,
+                "comparison_failed",
+                format!("comparison failed: {error}"),
+                json!({
+                    "case_id": case_id,
+                    "error": error,
+                }),
+            );
+            return Err(error);
+        };
         let run_side = |engine: &mut Engine, side: &SideSpec, tag: &str| {
             let request = PredictionRequest {
                 request_id: format!("req_cmp_{}_{}", case.case_id, tag),
@@ -469,6 +783,29 @@ fn run_comparison(app: AppHandle, case_id: String) -> Result<ComparisonReport, S
             draft: case.draft,
         }
     };
+    let (left_status, left_candidate_count, left_error_code) =
+        prediction_status_and_count(&report.left.result);
+    let (right_status, right_candidate_count, right_error_code) =
+        prediction_status_and_count(&report.right.result);
+    record_debug(
+        &app,
+        "comparison_result",
+        format!(
+            "{}: left {left_candidate_count} candidates, right {right_candidate_count} candidates",
+            report.case_id
+        ),
+        json!({
+            "case_id": report.case_id.clone(),
+            "left_status": left_status,
+            "right_status": right_status,
+            "left_candidate_count": left_candidate_count,
+            "right_candidate_count": right_candidate_count,
+            "left_error_code": left_error_code,
+            "right_error_code": right_error_code,
+            "draft_chars": report.draft.chars().count(),
+            "draft_text": report.draft.clone(),
+        }),
+    );
     emit_metrics(&app);
     Ok(report)
 }
@@ -525,6 +862,13 @@ fn build_tray(
 
     let open_settings = MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
     let open_demo = MenuItem::with_id(app, "open_demo", "Demo & Playground…", true, None::<&str>)?;
+    let capture_focused = MenuItem::with_id(
+        app,
+        "capture_focused",
+        "Manual focused capture",
+        true,
+        Some("CmdOrCtrl+Shift+Space"),
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit Quip", true, None::<&str>)?;
 
     let menu = Menu::with_items(
@@ -534,6 +878,8 @@ fn build_tray(
             &window_context,
             &pause_learning,
             &profile_menu,
+            &PredefinedMenuItem::separator(app)?,
+            &capture_focused,
             &PredefinedMenuItem::separator(app)?,
             &open_settings,
             &open_demo,
@@ -563,6 +909,12 @@ fn on_tray_menu(app: &AppHandle, id: &str) {
     match id {
         "open_settings" => show_window(app, "settings"),
         "open_demo" => show_window(app, "demo"),
+        "capture_focused" => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                capture_active_destination(handle, Trigger::Shortcut).await;
+            });
+        }
         "quit" => app.exit(0),
         "toggle_enabled" | "toggle_context" | "toggle_learning" => {
             {
@@ -612,6 +964,25 @@ fn init_logging(log_dir: &PathBuf) {
         .init();
 }
 
+fn resolve_debug_dir(data_dir: &std::path::Path) -> PathBuf {
+    if let Ok(dir) = std::env::var("QUIP_DEBUG_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    if cfg!(debug_assertions) {
+        if let Ok(current_dir) = std::env::current_dir() {
+            for dir in current_dir.ancestors() {
+                let workspace = dir.join(".workspace");
+                if workspace.exists() {
+                    return workspace.join("quip-debug");
+                }
+            }
+        }
+    }
+
+    data_dir.join("debug")
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -624,6 +995,18 @@ fn main() {
             };
             init_logging(&data_dir.join("logs"));
             tracing::info!(data_dir = %data_dir.display(), "quip starting");
+
+            let debug_dir = resolve_debug_dir(&data_dir);
+            let include_debug_text = std::env::var("QUIP_DEBUG_TEXT").as_deref() == Ok("1");
+            app.manage(DebugState(Mutex::new(DebugSink::new(
+                debug_dir.clone(),
+                include_debug_text,
+            ))));
+            tracing::info!(
+                debug_dir = %debug_dir.display(),
+                include_debug_text,
+                "debug sink initialized"
+            );
 
             let engine = Engine::new(&data_dir);
             let settings = engine.settings.clone();
@@ -707,6 +1090,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             capture_focused_destination,
+            capture_active_destination,
             commit_confirmed_text,
             cancel_destination,
             inject_capture,
@@ -721,6 +1105,8 @@ fn main() {
             reset_profile,
             get_health,
             get_metrics,
+            get_debug_events,
+            record_debug_event,
             set_simulate_failure,
             list_corpus,
             run_comparison

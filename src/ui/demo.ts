@@ -1,6 +1,6 @@
-// Demo harness (Workstream 4): the typing playground (stand-in for any macOS
-// textbox until Workstream 3 lands), deterministic corpus comparison, sidecar
-// health and schema-validity counters, and scripted capture_result drivers.
+// Demo harness (Workstream 4): the typing playground, manual focused-capture
+// integration, deterministic corpus comparison, sidecar health and
+// schema-validity counters, and scripted capture_result drivers.
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -11,7 +11,9 @@ import {
   type AppSettings,
   type ComparisonReport,
   type ComparisonSide,
+  type DebugEventView,
   type Metrics,
+  type Snapshot,
 } from "./ipc";
 import type { PredictionResult, Rect, SidecarHealth, Trigger } from "./contracts";
 
@@ -25,6 +27,8 @@ const comparisonEl = byId<HTMLDivElement>("comparison");
 const lastStateEl = byId<HTMLSpanElement>("last_state");
 const lastCommitEl = byId<HTMLParagraphElement>("last_commit");
 const playgroundEl = byId<HTMLTextAreaElement>("playground");
+const debugTimelineEl = byId<HTMLDivElement>("debug_timeline");
+const inlineCandidatesEl = byId<HTMLDivElement>("inline_candidates");
 
 // ---- playground: burst tracking, triggers, caret geometry ----
 
@@ -129,6 +133,7 @@ let activeBurstId: string | undefined;
 let suggesting = false;
 let selectedIndex = 0;
 let idleTimer: number | undefined;
+let debugRows: DebugEventView[] = [];
 
 let strategy: CadenceStrategy = STRATEGIES.chunk_pause;
 let inflight = false;
@@ -157,6 +162,144 @@ function renderStrategyStats() {
 }
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
+
+async function selectCandidate(index: number) {
+  try {
+    await api.selectCandidate(index);
+  } catch (error) {
+    const summary = `commit failed: ${String(error)}`;
+    lastStateEl.textContent = summary;
+    lastCommitEl.textContent = "";
+    recordTimelineEvent("commit_failed", summary, {
+      selected_index: index,
+      success: false,
+      error: String(error),
+    });
+  }
+}
+
+function appendTimelineEvent(
+  event: string,
+  summary: string,
+  payload: Record<string, unknown> = {},
+) {
+  debugRows.push({
+    ts_ms: Date.now(),
+    event,
+    summary,
+    payload,
+  });
+  if (debugRows.length > 50) debugRows = debugRows.slice(-50);
+  renderTimeline();
+}
+
+function recordTimelineEvent(
+  event: string,
+  summary: string,
+  payload: Record<string, unknown> = {},
+) {
+  appendTimelineEvent(event, summary, payload);
+  void api.recordDebugEvent(event, summary, payload).catch(() => {});
+}
+
+function mergeDebugEvents(eventsFromSink: DebugEventView[]) {
+  const seen = new Set(debugRows.map((row) => `${row.ts_ms}:${row.event}:${row.summary}`));
+  for (const event of eventsFromSink) {
+    const key = `${event.ts_ms}:${event.event}:${event.summary}`;
+    if (!seen.has(key)) {
+      debugRows.push(event);
+      seen.add(key);
+    }
+  }
+  debugRows.sort((a, b) => a.ts_ms - b.ts_ms);
+  if (debugRows.length > 50) debugRows = debugRows.slice(-50);
+  renderTimeline();
+}
+
+function renderTimeline() {
+  debugTimelineEl.replaceChildren();
+  if (debugRows.length === 0) {
+    debugTimelineEl.append(el("div", "placeholder", "No debug events"));
+    return;
+  }
+  for (const event of debugRows.slice().reverse()) {
+    const row = el("div", "debug-row");
+    row.append(
+      el("span", "debug-time", new Date(event.ts_ms).toLocaleTimeString()),
+      el("span", "debug-summary", `${event.event}: ${event.summary}`),
+    );
+    debugTimelineEl.append(row);
+  }
+}
+
+function snapshotSummary(snapshot: Snapshot): string {
+  switch (snapshot.phase) {
+    case "predicting":
+      return `${snapshot.burst_id} draft_chars=${snapshot.draft.length}`;
+    case "suggesting":
+      return (
+        `${snapshot.candidates.length} candidates` +
+        (snapshot.backend ? ` ${snapshot.backend}` : "") +
+        (snapshot.latency_ms === null ? "" : ` ${snapshot.latency_ms}ms`) +
+        ` caret=${Math.round(snapshot.caret.x)},${Math.round(snapshot.caret.y)}`
+      );
+    case "unavailable":
+      return snapshot.reason;
+    case "applied":
+      return `${snapshot.destination_id} chars=${snapshot.text.length}`;
+    case "idle":
+      return "hidden/idle";
+  }
+}
+
+function renderInlineCandidates(snapshot: Snapshot) {
+  inlineCandidatesEl.replaceChildren();
+  if (snapshot.phase === "unavailable") {
+    inlineCandidatesEl.classList.remove("placeholder");
+    inlineCandidatesEl.append(
+      el("div", "inline-candidate error-text", `unavailable: ${snapshot.reason}`),
+    );
+    return;
+  }
+  if (snapshot.phase !== "suggesting") {
+    inlineCandidatesEl.classList.add("placeholder");
+    inlineCandidatesEl.textContent = "No candidates";
+    return;
+  }
+  inlineCandidatesEl.classList.remove("placeholder");
+  if (snapshot.error) {
+    inlineCandidatesEl.append(el("div", "inline-candidate", `error: ${snapshot.error.code}`));
+    return;
+  }
+  if (snapshot.candidates.length === 0) {
+    inlineCandidatesEl.classList.add("placeholder");
+    inlineCandidatesEl.textContent = "No candidates";
+    return;
+  }
+  snapshot.candidates.forEach((candidate, index) => {
+    inlineCandidatesEl.append(el("div", "inline-candidate", `${index + 1}. ${candidate}`));
+  });
+}
+
+function resetPlayground(reason: string, caret: number) {
+  window.clearTimeout(idleTimer);
+  burstStart = caret;
+  firedStart = caret;
+  firedEnd = caret;
+  activeBurstId = undefined;
+  suggesting = false;
+  selectedIndex = 0;
+  inflight = false;
+  dirty = false;
+  pendingChunks.length = 0;
+  shownChunk = undefined;
+  renderChunkIndicator();
+  recordTimelineEvent("playground_reset", reason, {
+    reason,
+    caret,
+    value_chars: playgroundEl.value.length,
+  });
+}
 
 const backdropEl = byId<HTMLDivElement>("playground_backdrop");
 
@@ -220,6 +363,10 @@ async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
   const value = playgroundEl.value;
   const start = chunk ? chunk.start : burstStart;
   let end = chunk ? chunk.end : playgroundEl.selectionStart;
+  if (value.length === 0 || end < start || start > value.length) {
+    resetPlayground("cleared_or_caret_before_burst", end);
+    return;
+  }
   // Trailing whitespace stays outside the replaced range so an accepted
   // candidate keeps its separator from the words typed after it.
   while (end > start && /\s/.test(value[end - 1])) end -= 1;
@@ -230,6 +377,11 @@ async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
     inflight = false;
     return;
   }
+  recordTimelineEvent("playground_input", `draft_chars=${draft.length}`, {
+    source: "playground",
+    trigger,
+    draft_chars: draft.length,
+  });
   // Beginning the next burst silently supersedes the engine's visible
   // suggestions; any still-offered batch lives on in shownChunk.
   suggesting = false;
@@ -320,13 +472,8 @@ playgroundEl.addEventListener("input", () => {
   // tracked burst invalidates the old offsets. Start a fresh burst at the
   // current edit instead of slicing from an unreachable prior position.
   if (caret < burstStart || playgroundEl.value.length < burstStart) {
-    burstStart = Math.max(0, caret - 1);
-    inflight = false;
-    dirty = false;
-    activeBurstId = undefined;
-    suggesting = false;
-    pendingChunks.length = 0;
-    shownChunk = undefined;
+    resetPlayground("cleared_or_caret_before_burst", caret);
+    return;
   }
   // Editing at or before the underlined chunk invalidates its candidates.
   if (shownChunk && caret <= shownChunk.end) {
@@ -343,6 +490,7 @@ playgroundEl.addEventListener("input", () => {
     return;
   }
   if (draft.trim().length === 0) {
+    resetPlayground("empty_draft", caret);
     renderStrategyStats();
     return;
   }
@@ -388,7 +536,7 @@ playgroundEl.addEventListener("keydown", (e) => {
     if (index >= offered.candidates.length) return;
     e.preventDefault();
     if (suggesting) {
-      void api.selectCandidate(index);
+      void selectCandidate(index);
     } else {
       applyRangeReplacement(offered.start, offered.end, offered.candidates[index]);
     }
@@ -538,6 +686,11 @@ byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {
   });
 });
 
+byId<HTMLButtonElement>("capture_focused").addEventListener("click", () => {
+  activeBurstId = undefined;
+  void api.captureActiveDestination("shortcut");
+});
+
 byId<HTMLButtonElement>("fire_secure").addEventListener("click", () => {
   void api.injectCapture({ status: "unavailable", reason: "secure_field" });
 });
@@ -550,7 +703,12 @@ void events.onSettings((next) => {
   renderBackendMode(next);
 });
 void events.onSnapshot((snapshot) => {
-  lastStateEl.textContent = `composition: ${snapshot.phase}`;
+  lastStateEl.textContent =
+    snapshot.phase === "unavailable"
+      ? `composition: unavailable (${snapshot.reason})`
+      : `composition: ${snapshot.phase}`;
+  appendTimelineEvent("snapshot", snapshotSummary(snapshot), { phase: snapshot.phase });
+  renderInlineCandidates(snapshot);
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
   // Any settled phase means the serial slot is free again.
   inflight = false;
@@ -592,6 +750,11 @@ void events.onSnapshot((snapshot) => {
 });
 void events.onCommitted((outcome) => {
   lastCommitEl.textContent = `last commit → ${outcome.destination_id}: "${outcome.text}"`;
+  appendTimelineEvent("commit_succeeded", `${outcome.destination_id} chars=${outcome.text.length}`, {
+    destination_id: outcome.destination_id,
+    committed_chars: outcome.text.length,
+    success: true,
+  });
   if (outcome.destination_id === "destination_playground") {
     // An engine-side commit always corresponds to the batch on offer.
     const start = shownChunk ? shownChunk.start : firedStart;
@@ -626,11 +789,32 @@ void (async () => {
     const button = el("button", undefined, demoCase.title);
     button.title = demoCase.description;
     button.addEventListener("click", async () => {
-      renderComparison(await api.runComparison(demoCase.case_id));
-      await refresh();
+      recordTimelineEvent("comparison_requested", demoCase.case_id, {
+        case_id: demoCase.case_id,
+      });
+      try {
+        const report = await api.runComparison(demoCase.case_id);
+        renderComparison(report);
+        recordTimelineEvent("comparison_result", `${report.case_id}: comparison rendered`, {
+          case_id: report.case_id,
+        });
+        await refresh();
+      } catch (error) {
+        const summary = `comparison failed: ${String(error)}`;
+        recordTimelineEvent("comparison_failed", summary, {
+          case_id: demoCase.case_id,
+          error: String(error),
+        });
+        lastStateEl.textContent = summary;
+      }
     });
     casesEl.append(button);
   }
   await refresh();
+  renderTimeline();
+  void api.getDebugEvents(50).then(mergeDebugEvents).catch(() => {});
+  window.setInterval(() => {
+    void api.getDebugEvents(50).then(mergeDebugEvents).catch(() => {});
+  }, 2000);
   window.setInterval(() => void refresh(), 3000);
 })();
