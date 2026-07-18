@@ -14,9 +14,18 @@
       Simulates a macOS textbox until Workstream 3's Accessibility observer lands. Candidates
       appear and refresh live above the caret while you type, like the macOS Pinyin IME:
       1 through 5 or click picks a candidate, Tab accepts the highlighted one, Esc keeps your text,
-      and ending a sentence (or a newline) closes the session.
+      and ending a sentence (or a newline) closes the session. The model window is the trailing
+      five words: older words become final as you keep typing.
     </p>
     <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+    <div class="statline" style="margin-top: 6px">
+      <label class="row" style="padding: 0">
+        Inference cadence
+        <select id="strategy"></select>
+      </label>
+      <span class="muted" id="strategy_hint"></span>
+    </div>
+    <p class="muted" id="strategy_stats" style="margin-top: 4px"></p>
 
     <h2>Sidecar health &amp; metrics</h2>
     <div class="card statline" id="healthline">

@@ -29,20 +29,124 @@ const playgroundEl = byId<HTMLTextAreaElement>("playground");
 // ---- playground: burst tracking, triggers, caret geometry ----
 
 // IME model (macOS Pinyin): predictions run continuously while the burst
-// grows, debounced only enough to avoid churn; the bar refreshes in place.
-const LIVE_DEBOUNCE_MS = 150;
+// grows and the bar refreshes in place. All inference is local, so calls are
+// free; the constraints are the sidecar's serial throughput (one request at
+// a time, each costing a full inference) and how the bar feels. A cadence
+// strategy decides which keystrokes are worth a serial slot.
 const DRAFT_WINDOW_CHARS = 80;
+
+// The base model is trained on groups of at most five words, so the burst is
+// a sliding window: when a sixth word starts, the oldest word slides out and
+// becomes final text — it is never re-predicted and never replaced.
+const MAX_BURST_WORDS = 5;
+
+interface KeyInfo {
+  /** The last typed character completed a word (whitespace after a non-space). */
+  wordBoundary: boolean;
+  /** The last typed character is a sentence terminator. */
+  sentencePunct: boolean;
+  /** Rolling median of this typist's recent inter-key gaps. */
+  medianGapMs: number;
+}
+
+interface CadenceStrategy {
+  label: string;
+  hint: string;
+  /** Refire the moment a result lands if the draft moved meanwhile (the
+   * sidecar never idles while dirty, and never queues more than one). */
+  pipelined: boolean;
+  /** "now" fires immediately, a number arms the pause timer, "never" leaves
+   * only the 80-char draft window as a backstop. */
+  onKey(key: KeyInfo): "now" | number | "never";
+}
+
+const STRATEGIES: Record<string, CadenceStrategy> = {
+  pause_150: {
+    label: "Fixed pause, 150 ms (current)",
+    hint: "Fetch 150 ms after typing stops; sentence punctuation is immediate.",
+    pipelined: false,
+    onKey: (key) => (key.sentencePunct ? "now" : 150),
+  },
+  pipeline_greedy: {
+    label: "Pipelined: every keystroke",
+    hint: "No timers: fetch immediately, and refetch the newest draft the moment the previous result lands.",
+    pipelined: true,
+    onKey: () => "now",
+  },
+  pipeline_word: {
+    label: "Pipelined: word boundaries",
+    hint: "Fetch on completed words so every serial slot sees whole words; 500 ms fallback mid-word.",
+    pipelined: true,
+    onKey: (key) => (key.sentencePunct || key.wordBoundary ? "now" : 500),
+  },
+  rhythm: {
+    label: "Rhythm-adaptive pause",
+    hint: "Pause threshold tracks your typing rhythm: 2.2× your median inter-key gap, clamped to 180–700 ms.",
+    pipelined: false,
+    onKey: (key) =>
+      key.sentencePunct ? "now" : Math.min(700, Math.max(180, 2.2 * key.medianGapMs)),
+  },
+  sentence_only: {
+    label: "Sentence punctuation only",
+    hint: "Fetch only at . ! ? or the 80-char window — the minimal-interruption extreme.",
+    pipelined: false,
+    onKey: (key) => (key.sentencePunct ? "now" : "never"),
+  },
+};
 
 let settings: AppSettings | undefined;
 let burstStart = 0;
 let burstEnd = 0;
+/** burstStart at the moment the visible candidates were requested: the window
+ * may slide further while they are on screen, but a selection must replace
+ * exactly the words the model saw. */
+let firedStart = 0;
 let burstSeq = 0;
 let activeBurstId: string | undefined;
 let suggesting = false;
 let selectedIndex = 0;
 let idleTimer: number | undefined;
 
+let strategy: CadenceStrategy = STRATEGIES.pause_150;
+let inflight = false;
+let dirty = false;
+let lastKeyAt = 0;
+const keyGaps: number[] = [];
+const stats = { keystrokes: 0, fired: 0, shown: 0, ttbLast: 0, ttbSum: 0 };
+
+const strategyStatsEl = byId<HTMLParagraphElement>("strategy_stats");
+const strategyHintEl = byId<HTMLSpanElement>("strategy_hint");
+const strategyEl = byId<HTMLSelectElement>("strategy");
+
+function medianGapMs(): number {
+  if (keyGaps.length === 0) return 250;
+  const sorted = [...keyGaps].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function renderStrategyStats() {
+  const avg = stats.shown === 0 ? "–" : `${Math.round(stats.ttbSum / stats.shown)} ms`;
+  const last = stats.shown === 0 ? "–" : `${stats.ttbLast} ms`;
+  strategyStatsEl.textContent =
+    `keystrokes ${stats.keystrokes} · requests ${stats.fired} · bars ${stats.shown}` +
+    ` · time-to-bar last ${last} / avg ${avg}` +
+    ` · median key gap ${Math.round(medianGapMs())} ms`;
+}
+
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
+
+// Advances burstStart until the draft holds at most MAX_BURST_WORDS words
+// (a trailing partial word counts: the model never sees a sixth).
+function slideBurstWindow(caret: number) {
+  for (;;) {
+    const draft = playgroundEl.value.slice(burstStart, caret);
+    const words = draft.trim().split(/\s+/).filter(Boolean);
+    if (words.length <= MAX_BURST_WORDS) return;
+    let cut = draft.indexOf(words[0]) + words[0].length;
+    while (cut < draft.length && /\s/.test(draft[cut])) cut += 1;
+    burstStart += cut;
+  }
+}
 
 function caretClientPoint(): { x: number; y: number } {
   const style = getComputedStyle(playgroundEl);
@@ -79,8 +183,12 @@ async function caretScreenRect(): Promise<Rect> {
 async function fireTrigger(trigger: Trigger) {
   window.clearTimeout(idleTimer);
   burstEnd = playgroundEl.selectionStart;
+  firedStart = burstStart;
   const draft = playgroundEl.value.slice(burstStart, burstEnd).trim();
-  if (draft.length === 0) return;
+  if (draft.length === 0) {
+    inflight = false;
+    return;
+  }
   activeBurstId = `pg_${++burstSeq}`;
   void api.injectCapture({
     status: "ready",
@@ -93,38 +201,82 @@ async function fireTrigger(trigger: Trigger) {
   });
 }
 
+// Spends a serial slot, or earmarks one: pipelined strategies never queue
+// behind an in-flight request — they mark the draft dirty and refire with the
+// newest text the moment the result lands. Non-pipelined strategies fire
+// unconditionally (overlapping requests supersede; stale results are dropped
+// engine-side), which is exactly the head-of-line cost the demo lets you feel.
+function requestPrediction(trigger: Trigger) {
+  window.clearTimeout(idleTimer);
+  if (strategy.pipelined && inflight) {
+    dirty = true;
+    return;
+  }
+  inflight = true;
+  dirty = false;
+  stats.fired += 1;
+  renderStrategyStats();
+  void fireTrigger(trigger);
+}
+
 // Ends the composition session at the current caret: visible suggestions
 /// become a stable dismissal (a keep label), and the next keystroke starts a
 /// fresh burst.
 function endSession() {
   window.clearTimeout(idleTimer);
+  dirty = false;
   if (suggesting) void api.dismissSuggestions();
   burstStart = playgroundEl.selectionStart;
   burstEnd = burstStart;
 }
 
 playgroundEl.addEventListener("input", () => {
+  const now = performance.now();
+  if (lastKeyAt > 0) {
+    const gap = now - lastKeyAt;
+    // Gaps past 1.2 s are thinking pauses, not typing rhythm.
+    if (gap < 1200) {
+      keyGaps.push(gap);
+      if (keyGaps.length > 15) keyGaps.shift();
+    }
+  }
+  lastKeyAt = now;
+  stats.keystrokes += 1;
+
   const caret = playgroundEl.selectionStart;
+  slideBurstWindow(caret);
   const draft = playgroundEl.value.slice(burstStart, caret);
   const last = draft.at(-1) ?? "";
   // Sentence boundary ends the session: a newline, or whitespace after a
   // terminator (the burst before it was already predicted on).
   if (last === "\n" || (/\s/.test(last) && /[.!?]$/.test(draft.trimEnd()))) {
     endSession();
+    renderStrategyStats();
     return;
   }
-  if (draft.trim().length === 0) return;
-  // Continuous prediction while the burst grows, like an IME: punctuation
-  // and the draft window fire immediately, everything else on a short
-  // debounce. Stale results are dropped engine-side.
-  if (".!?".includes(last)) {
-    void fireTrigger("punctuation");
-  } else if (draft.length >= DRAFT_WINDOW_CHARS) {
-    void fireTrigger("idle");
-  } else {
-    window.clearTimeout(idleTimer);
-    idleTimer = window.setTimeout(() => void fireTrigger("idle"), LIVE_DEBOUNCE_MS);
+  if (draft.trim().length === 0) {
+    renderStrategyStats();
+    return;
   }
+  // The draft window is a strategy-independent backstop: past 80 chars the
+  // burst must be predicted on before it grows unwieldy.
+  if (draft.length >= DRAFT_WINDOW_CHARS) {
+    requestPrediction("idle");
+    return;
+  }
+  const key: KeyInfo = {
+    wordBoundary: /\s/.test(last) && draft.length > 1 && !/\s/.test(draft.at(-2) ?? " "),
+    sentencePunct: ".!?".includes(last),
+    medianGapMs: medianGapMs(),
+  };
+  const action = strategy.onKey(key);
+  if (action === "now") {
+    requestPrediction(key.sentencePunct ? "punctuation" : "idle");
+  } else if (action !== "never") {
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => requestPrediction("idle"), action);
+  }
+  renderStrategyStats();
 });
 
 playgroundEl.addEventListener("keydown", (e) => {
@@ -154,8 +306,8 @@ playgroundEl.addEventListener("keydown", (e) => {
 
 function applyReplacement(text: string) {
   const value = playgroundEl.value;
-  playgroundEl.value = value.slice(0, burstStart) + text + value.slice(burstEnd);
-  const caret = burstStart + text.length;
+  playgroundEl.value = value.slice(0, firedStart) + text + value.slice(burstEnd);
+  const caret = firedStart + text.length;
   playgroundEl.setSelectionRange(caret, caret);
   burstStart = caret;
   burstEnd = caret;
@@ -272,6 +424,18 @@ void events.onSettings((next) => {
 void events.onSnapshot((snapshot) => {
   lastStateEl.textContent = `composition: ${snapshot.phase}`;
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
+  // Any settled phase means the serial slot is free again.
+  inflight = false;
+  if (snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId) {
+    stats.shown += 1;
+    stats.ttbLast = Math.max(0, Math.round(performance.now() - lastKeyAt));
+    stats.ttbSum += stats.ttbLast;
+    renderStrategyStats();
+  }
+  if (dirty) {
+    dirty = false;
+    requestPrediction("idle");
+  }
   suggesting =
     snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
   selectedIndex = snapshot.phase === "suggesting" ? snapshot.selected : 0;
@@ -284,6 +448,24 @@ void events.onCommitted((outcome) => {
   if (outcome.destination_id === "destination_playground") {
     applyReplacement(outcome.text);
   }
+});
+
+for (const [id, spec] of Object.entries(STRATEGIES)) {
+  const option = el("option", undefined, spec.label);
+  option.value = id;
+  strategyEl.append(option);
+}
+strategyHintEl.textContent = strategy.hint;
+renderStrategyStats();
+strategyEl.addEventListener("change", () => {
+  strategy = STRATEGIES[strategyEl.value];
+  strategyHintEl.textContent = strategy.hint;
+  window.clearTimeout(idleTimer);
+  dirty = false;
+  keyGaps.length = 0;
+  Object.assign(stats, { keystrokes: 0, fired: 0, shown: 0, ttbLast: 0, ttbSum: 0 });
+  renderStrategyStats();
+  playgroundEl.focus();
 });
 
 void (async () => {
