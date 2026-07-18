@@ -131,6 +131,12 @@ pub fn commit_confirmed_text(
     commit_confirmed_text_with_session(destination_id, confirmed_text, &mut session, &mut clipboard)
 }
 
+#[allow(dead_code)]
+pub fn cancel_destination(destination_id: &str) -> Result<CommitReport, CommitError> {
+    let mut session = LiveCommitSession;
+    cancel_destination_with_session(destination_id, &mut session)
+}
+
 struct LiveCommitSession;
 
 impl CommitSession for LiveCommitSession {
@@ -194,6 +200,13 @@ mod tests {
     #[test]
     fn commit_confirmed_text_rejects_unknown_live_destination() {
         let result = commit_confirmed_text("destination_missing", "confirmed text");
+
+        assert_eq!(result, Err(CommitError::UnknownDestination));
+    }
+
+    #[test]
+    fn cancel_destination_rejects_unknown_live_destination() {
+        let result = cancel_destination("destination_missing");
 
         assert_eq!(result, Err(CommitError::UnknownDestination));
     }
