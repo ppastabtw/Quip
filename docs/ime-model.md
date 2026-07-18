@@ -10,15 +10,19 @@ already implemented, and what Workstream 3 must do differently.
 1. The user types in their own textbox (TextEdit, Notes, a browser input).
    Keystrokes pass through untouched — the destination always receives the
    text as typed.
-2. On a trigger (punctuation, Return, ~400 ms idle, 80-char window), Quip runs
-   one prediction on the burst. The idle pause is deliberately short because
-   inference latency stacks on top of it.
+2. Predictions run **continuously while the burst grows** (~150 ms debounce;
+   punctuation and the 80-char window fire immediately). The bar refreshes in
+   place with each result, keeping its current candidates visible while the
+   next one computes — no flicker, exactly like the Pinyin candidate window.
 3. `replace` result → a small non-focusable bar floats directly above the
    caret with up to three numbered candidates. `keep` result → **nothing
    appears**; the user is never interrupted.
-4. While the bar is visible: `1`–`3` (or click) replaces the just-typed burst
-   in place; `Esc` or simply continuing to type dismisses it and changes
-   nothing.
+4. While candidates are visible: `1`–`3` (or click) picks one, **Tab accepts
+   the highlighted candidate** (Space stays a real character in English, so
+   Tab plays Space's Pinyin role), `Esc` keeps the literal text, and any
+   other key types through while the bar refreshes. A sentence boundary
+   (whitespace after `.!?`, or a newline) closes the session and counts
+   visible candidates as a stable dismissal.
 5. The bar never takes keyboard focus. Focus stays in the destination the
    whole time.
 
@@ -73,18 +77,21 @@ and adds one scoped responsibility (selection keys).
    typing. Watch the focused editable element via `AXObserver`
    (value-changed / selection-changed), maintain the burst buffer, and keep a
    text marker for the burst start.
-2. **Emit the extended capture.** On trigger, send `capture_result.ready`
-   with the draft plus the `caret` rect in logical screen coordinates.
-   Validate against the shared fixtures.
+2. **Emit captures continuously.** Send `capture_result.ready` (draft plus
+   the `caret` rect in logical screen coordinates) as the burst grows — a
+   short debounce (~150 ms) on text changes, immediate on punctuation and the
+   draft-window cap — not just once per burst. The engine drops stale
+   results. Validate against the shared fixtures.
 3. **Commit = in-place replacement.** Select the burst range (burst-start
    marker → current caret) and replace it with the selected candidate via
    Accessibility; fallback is select-range + simulated paste with clipboard
    preserve/restore. There is no destination-restore step: focus never moved.
 4. **Selection keys while the bar is visible.** A CGEventTap must swallow
-   only `1`–`3` and `Esc` when suggestions are showing (observe
+   only `1`–`3`, `Tab`, and `Esc` when suggestions are showing (observe
    `composition://state` or call `get_composition_state`) and forward them as
    `select_candidate` / `dismiss_suggestions`. Every other key passes through
-   and doubles as a dismissal signal.
+   while the bar keeps refreshing; a sentence boundary or newline ends the
+   session as a stable dismissal.
 5. **Unchanged:** secure-field exclusion (`unavailable` captures), supported
    app gating, bounded window-context collection.
 

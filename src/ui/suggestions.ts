@@ -9,6 +9,9 @@ import { api, byId, el, events, type Snapshot } from "./ipc";
 const barEl = byId<HTMLDivElement>("bar");
 
 function render(snapshot: Snapshot) {
+  // IME behavior: while the next prediction computes, keep showing the
+  // current candidates instead of flickering empty.
+  if (snapshot.phase === "predicting") return;
   barEl.replaceChildren();
   if (snapshot.phase !== "suggesting") return;
 

@@ -23,15 +23,16 @@ Quip runs as a menu-bar app and, when enabled, augments typing in place the way 
 
 1. Detect a supported editable field. Keystrokes pass through untouched; the destination receives the text as typed.
 2. Observe the writing burst and the caret position passively through Accessibility.
-3. After punctuation, Return, or an idle pause, run one prediction for the burst rather than one per character.
+3. Predict continuously while the burst grows, debounced just enough to avoid churn; punctuation and the draft-window cap fire immediately. Stale results are dropped, and the bar refreshes in place rather than flickering.
 4. Add relevant open-window context and learned user patterns.
-5. On a `replace` result, show up to three numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus.
+5. On a `replace` result, show up to three numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus, and it keeps its current candidates visible while the next prediction computes.
 6. On a `keep` result, show nothing. The typed text stands and the user is not interrupted.
-7. Selecting a candidate (number key or click) replaces the just-typed burst in the destination in place. Pressing Escape or simply continuing to type dismisses the bar and changes nothing.
+7. While candidates are visible: `1`–`3` (or a click) picks one, Tab accepts the highlighted candidate, Escape keeps the literal text. Any other key types through and the bar refreshes with the growing burst. Space stays an ordinary character — English needs it — so Tab plays the role Space has in the Pinyin IME.
+8. A sentence boundary (whitespace after a terminator, or a newline) closes the composition session: visible candidates count as a stable dismissal and the next keystroke starts a fresh burst.
 
 Keeping the typed text is always available by doing nothing; there is no separate exact-draft option because the draft is already committed keystroke-by-keystroke by the user themselves.
 
-Initial values are a 400 ms idle trigger and an 80-character draft window. The pause is kept short because model inference latency stacks on top of it before the bar can appear; both values require testing against real inference times.
+Initial values are a 150 ms live-prediction debounce and an 80-character draft window; both require testing against real inference times.
 
 Quip covers both ordinary mistakes such as `instaed` and compressed phrases such as `cnt cm tmrw`, with a stricter confidence threshold for single-word corrections.
 

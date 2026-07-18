@@ -123,8 +123,9 @@ impl Engine {
 
     /// Starts a burst: builds the bounded prediction request and moves to
     /// Predicting. Returns the request for the caller to execute so the lock
-    /// is not held during (simulated) inference. If suggestions were still
-    /// visible, the user kept typing over them: record a stable dismissal.
+    /// is not held during (simulated) inference. Superseding visible
+    /// suggestions is silent (IME model: the burst is still growing and the
+    /// bar simply refreshes); only an explicit dismissal records a keep label.
     pub fn begin_burst(
         &mut self,
         input: BurstInput,
@@ -134,7 +135,6 @@ impl Engine {
                 reason: "disabled".to_string(),
             });
         }
-        self.record_dismissal_if_suggesting();
         let draft = input.draft.trim().to_string();
         if draft.is_empty() {
             self.state = State::Idle;
@@ -489,13 +489,13 @@ mod tests {
     }
 
     #[test]
-    fn typing_over_suggestions_counts_as_dismissal() {
+    fn superseding_suggestions_is_silent_continuation() {
         let (mut engine, dir) = test_engine();
         run_burst(&mut engine, "cnt cm tmrw");
-        // A new burst arrives while suggestions are visible.
-        let _ = engine.begin_burst(typed("more typing here")).unwrap();
-        let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
-        assert!(raw.contains("\"dismissal\""));
+        // The burst keeps growing while suggestions are visible: the bar
+        // refreshes, but no keep label is recorded (not a stable dismissal).
+        let _ = engine.begin_burst(typed("cnt cm tmrw ok")).unwrap();
+        assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

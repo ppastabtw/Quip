@@ -27,9 +27,9 @@ const playgroundEl = byId<HTMLTextAreaElement>("playground");
 
 // ---- playground: burst tracking, triggers, caret geometry ----
 
-// Kept short because model inference latency (~400–700 ms) stacks on top of
-// the pause before the bar can appear.
-const IDLE_TRIGGER_MS = 400;
+// IME model (macOS Pinyin): predictions run continuously while the burst
+// grows, debounced only enough to avoid churn; the bar refreshes in place.
+const LIVE_DEBOUNCE_MS = 150;
 const DRAFT_WINDOW_CHARS = 80;
 
 let settings: AppSettings | undefined;
@@ -38,6 +38,7 @@ let burstEnd = 0;
 let burstSeq = 0;
 let activeBurstId: string | undefined;
 let suggesting = false;
+let recommendedIndex = 0;
 let idleTimer: number | undefined;
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
@@ -91,41 +92,55 @@ async function fireTrigger(trigger: Trigger) {
   });
 }
 
+/// Ends the composition session at the current caret: visible suggestions
+/// become a stable dismissal (a keep label), and the next keystroke starts a
+/// fresh burst.
+function endSession() {
+  window.clearTimeout(idleTimer);
+  if (suggesting) void api.dismissSuggestions();
+  burstStart = playgroundEl.selectionStart;
+  burstEnd = burstStart;
+}
+
 playgroundEl.addEventListener("input", () => {
-  if (suggesting) return; // typing over suggestions is handled in keydown
-  const typedSoFar = playgroundEl.value.slice(burstStart, playgroundEl.selectionStart);
-  if (typedSoFar.trim().length === 0) return;
-  const last = typedSoFar.at(-1) ?? "";
+  const caret = playgroundEl.selectionStart;
+  const draft = playgroundEl.value.slice(burstStart, caret);
+  const last = draft.at(-1) ?? "";
+  // Sentence boundary ends the session: a newline, or whitespace after a
+  // terminator (the burst before it was already predicted on).
+  if (last === "\n" || (/\s/.test(last) && /[.!?]$/.test(draft.trimEnd()))) {
+    endSession();
+    return;
+  }
+  if (draft.trim().length === 0) return;
+  // Continuous prediction while the burst grows, like an IME: punctuation
+  // and the draft window fire immediately, everything else on a short
+  // debounce. Stale results are dropped engine-side.
   if (".!?".includes(last)) {
     void fireTrigger("punctuation");
-  } else if (typedSoFar.length >= DRAFT_WINDOW_CHARS) {
+  } else if (draft.length >= DRAFT_WINDOW_CHARS) {
     void fireTrigger("idle");
   } else {
     window.clearTimeout(idleTimer);
-    idleTimer = window.setTimeout(() => void fireTrigger("idle"), IDLE_TRIGGER_MS);
+    idleTimer = window.setTimeout(() => void fireTrigger("idle"), LIVE_DEBOUNCE_MS);
   }
 });
 
 playgroundEl.addEventListener("keydown", (e) => {
-  if (suggesting) {
-    // IME behavior while the bar is visible: digits select, Escape
-    // dismisses, anything else dismisses and types through.
-    if (e.key >= "1" && e.key <= "3") {
-      e.preventDefault();
-      void api.selectCandidate(Number(e.key) - 1);
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      void api.dismissSuggestions();
-      return;
-    }
-    void api.dismissSuggestions();
-    return;
-  }
-  if (e.key === "Enter") {
+  if (!suggesting) return;
+  // Pinyin-style keys while candidates are visible: digits pick, Tab accepts
+  // the highlighted candidate (Space stays a real character in English, so
+  // Tab plays Space's role), Escape keeps the literal text. Any other key
+  // types through and the bar simply refreshes with the growing burst.
+  if (e.key >= "1" && e.key <= "3") {
     e.preventDefault();
-    void fireTrigger("return");
+    void api.selectCandidate(Number(e.key) - 1);
+  } else if (e.key === "Tab") {
+    e.preventDefault();
+    void api.selectCandidate(recommendedIndex);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    endSession();
   }
 });
 
@@ -238,8 +253,10 @@ void events.onSettings((next) => {
 });
 void events.onSnapshot((snapshot) => {
   lastStateEl.textContent = `composition: ${snapshot.phase}`;
+  if (snapshot.phase === "predicting") return; // bar keeps current candidates
   suggesting =
     snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
+  recommendedIndex = snapshot.phase === "suggesting" ? snapshot.recommended : 0;
 });
 void events.onCommitted((outcome) => {
   lastCommitEl.textContent = `last commit → ${outcome.destination_id}: "${outcome.text}"`;
