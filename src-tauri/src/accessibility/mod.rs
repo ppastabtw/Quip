@@ -24,7 +24,35 @@ const DRAFT_MAX_CHARS: usize = 80;
 #[allow(dead_code)]
 const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
 #[allow(dead_code)]
+const NOTES_BUNDLE_ID: &str = "com.apple.Notes";
+#[allow(dead_code)]
+const VIVALDI_BUNDLE_ID: &str = "com.vivaldi.Vivaldi";
+#[allow(dead_code)]
+const CHROME_BUNDLE_ID: &str = "com.google.Chrome";
+#[allow(dead_code)]
+const SAFARI_BUNDLE_ID: &str = "com.apple.Safari";
+#[allow(dead_code)]
 const TEXTEDIT_APP_NAME: &str = "TextEdit";
+#[allow(dead_code)]
+const NOTES_APP_NAME: &str = "Notes";
+#[allow(dead_code)]
+const VIVALDI_APP_NAME: &str = "Vivaldi";
+#[allow(dead_code)]
+const CHROME_APP_NAME: &str = "Google Chrome";
+#[allow(dead_code)]
+const SAFARI_APP_NAME: &str = "Safari";
+#[allow(dead_code)]
+const AX_TEXT_AREA_ROLE: &str = "AXTextArea";
+#[allow(dead_code)]
+const AX_TEXT_FIELD_ROLE: &str = "AXTextField";
+#[allow(dead_code)]
+const SUPPORTED_APP_BUNDLE_IDS: [&str; 5] = [
+    TEXTEDIT_BUNDLE_ID,
+    NOTES_BUNDLE_ID,
+    VIVALDI_BUNDLE_ID,
+    CHROME_BUNDLE_ID,
+    SAFARI_BUNDLE_ID,
+];
 
 #[allow(dead_code)]
 static DESTINATION_REGISTRY: OnceLock<Mutex<DestinationRegistry>> = OnceLock::new();
@@ -78,12 +106,12 @@ pub(crate) struct DestinationSnapshot {
 
 impl DestinationSnapshot {
     #[allow(dead_code)]
-    fn from_focused_textedit(focused: &FocusedEditableElement) -> Self {
+    fn from_focused_editable_element(focused: &FocusedEditableElement) -> Self {
         Self {
             app_element: focused.app_element.clone(),
             element: Some(focused.element.clone()),
             pid: focused.element.pid().ok(),
-            app_bundle_id: focused.app_id.clone(),
+            app_bundle_id: focused.app_bundle_id.clone(),
             app_name: focused.app_name.clone(),
             role: focused.snapshot.role.clone(),
             selected_range_utf16: focused.snapshot.selected_range_utf16.clone(),
@@ -256,8 +284,8 @@ fn bound_context_snippets(
 
 #[allow(dead_code)]
 pub fn collect_context_snippets(limit: ContextSnippetLimit) -> Vec<ContextSnippet> {
-    // Real visible-window context collection is intentionally out of scope for
-    // this capture + commit phase. Keep the public surface bounded and empty
+    // real visible-window context collection is intentionally out of scope for
+    // this capture + commit phase. keep the public surface bounded and empty
     // until the context-collection phase wires supported AX windows.
     bound_context_snippets(Vec::new(), limit)
 }
@@ -273,14 +301,7 @@ pub fn accessibility_permission_status() -> AccessibilityPermissionStatus {
 
 #[allow(dead_code)]
 fn is_supported_app(bundle_id: &str) -> bool {
-    matches!(
-        bundle_id,
-        "com.apple.TextEdit"
-            | "com.apple.Notes"
-            | "com.vivaldi.Vivaldi"
-            | "com.google.Chrome"
-            | "com.apple.Safari"
-    )
+    SUPPORTED_APP_BUNDLE_IDS.contains(&bundle_id)
 }
 
 #[allow(dead_code)]
@@ -302,7 +323,7 @@ fn capture_preflight(
 #[allow(dead_code)]
 struct FocusedEditableElement {
     app_element: Option<AXUIElement>,
-    app_id: String,
+    app_bundle_id: String,
     app_name: String,
     element: AXUIElement,
     snapshot: FocusedElementSnapshot,
@@ -320,7 +341,10 @@ fn validate_focused_editable_element(
     }
 
     if is_supported_app(app_id)
-        && matches!(focused.role.as_str(), "AXTextArea" | "AXTextField")
+        && matches!(
+            focused.role.as_str(),
+            AX_TEXT_AREA_ROLE | AX_TEXT_FIELD_ROLE
+        )
         && focused.is_editable.unwrap_or(false)
     {
         return Ok(());
@@ -335,23 +359,23 @@ fn focused_editable_element() -> Result<FocusedEditableElement, AccessibilityErr
     let app_element = system
         .focused_application()
         .map_err(|_| AccessibilityError::NotEditable)?;
-    let (app_id, app_name) = app_element
+    let (app_bundle_id, app_name) = app_element
         .as_ref()
         .and_then(focused_app_identity)
         .ok_or(AccessibilityError::UnsupportedApp)?;
 
-    capture_preflight(accessibility_permission_status(), &app_id)?;
+    capture_preflight(accessibility_permission_status(), &app_bundle_id)?;
     let element = system
         .focused_ui_element()
         .map_err(|_| AccessibilityError::NotEditable)?
         .ok_or(AccessibilityError::NotEditable)?;
     let snapshot = FocusedElementSnapshot::from_ax_element(&element)?;
 
-    validate_focused_editable_element(&app_id, &snapshot)?;
+    validate_focused_editable_element(&app_bundle_id, &snapshot)?;
 
     Ok(FocusedEditableElement {
         app_element,
-        app_id,
+        app_bundle_id,
         app_name,
         element,
         snapshot,
@@ -387,7 +411,7 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
         }
     };
     let draft = draft_from_element(&focused.element);
-    let snapshot = DestinationSnapshot::from_focused_textedit(&focused);
+    let snapshot = DestinationSnapshot::from_focused_editable_element(&focused);
 
     let Ok(mut registry) = destination_registry().lock() else {
         return CaptureResult::Unavailable {
@@ -460,10 +484,10 @@ fn focused_app_identity(app_element: &AXUIElement) -> Option<(String, String)> {
         .flatten()
         .and_then(|title| match title.as_str() {
             TEXTEDIT_APP_NAME => Some((TEXTEDIT_BUNDLE_ID.to_string(), title)),
-            "Notes" => Some(("com.apple.Notes".to_string(), title)),
-            "Vivaldi" => Some(("com.vivaldi.Vivaldi".to_string(), title)),
-            "Google Chrome" => Some(("com.google.Chrome".to_string(), title)),
-            "Safari" => Some(("com.apple.Safari".to_string(), title)),
+            NOTES_APP_NAME => Some((NOTES_BUNDLE_ID.to_string(), title)),
+            VIVALDI_APP_NAME => Some((VIVALDI_BUNDLE_ID.to_string(), title)),
+            CHROME_APP_NAME => Some((CHROME_BUNDLE_ID.to_string(), title)),
+            SAFARI_APP_NAME => Some((SAFARI_BUNDLE_ID.to_string(), title)),
             _ => None,
         })
 }
