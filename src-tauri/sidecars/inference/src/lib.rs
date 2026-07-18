@@ -7,7 +7,10 @@ mod live;
 mod protocol;
 
 pub use fixture::{FixtureBackend, FixtureBackendError};
-pub use live::{LiveBackend, LiveBackendError};
+pub use live::{
+    CompletionTiming, HttpTiming, LiveBackend, LiveBackendError, LiveBenchmark, LiveConfig,
+    PipelineTiming,
+};
 pub use protocol::serve;
 
 use quip_contracts::{PredictionRequest, PredictionResult, SidecarHealth};
@@ -15,4 +18,8 @@ use quip_contracts::{PredictionRequest, PredictionResult, SidecarHealth};
 pub trait InferenceBackend {
     fn health(&self, case_id: Option<&str>) -> SidecarHealth;
     fn predict(&self, request: &PredictionRequest) -> PredictionResult;
+
+    fn benchmark(&self, _request: &PredictionRequest) -> Result<LiveBenchmark, String> {
+        Err("latency benchmarking is unavailable for this backend".to_owned())
+    }
 }

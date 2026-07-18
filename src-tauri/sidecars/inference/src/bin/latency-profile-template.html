@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quip latency profile</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f5;
+      --fg: #20201e;
+      --muted: #66645e;
+      --line: #d8d6cf;
+      --surface: #ffffff;
+      --client: #6c88b7;
+      --model: #c66b3d;
+      --post: #70936a;
+      --schema: #b24f62;
+      --useful: #658c70;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #181817;
+        --fg: #eeeeea;
+        --muted: #aaa79f;
+        --line: #3d3c38;
+        --surface: #222220;
+        --client: #819bc5;
+        --model: #d98250;
+        --post: #83a37e;
+        --schema: #d16a7b;
+        --useful: #7fa489;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+    main { max-width: 1080px; margin: 0 auto; padding: 28px 20px 48px; }
+    h1, h2 { margin: 0; font-weight: 600; }
+    h1 { font-size: 1.45rem; }
+    h2 { font-size: 1rem; }
+    .muted, .note { color: var(--muted); }
+    .topline, .controls, .crumbs, .stats, .legend { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .topline { justify-content: space-between; }
+    .controls label { display: grid; gap: 4px; color: var(--muted); font-size: .82rem; }
+    select, input { color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; }
+    .stats { margin: 24px 0; }
+    .stat { flex: 1 1 180px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+    .stat strong { display: block; margin-top: 3px; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    .crumbs { margin: 16px 0 12px; }
+    .crumbs button { border: 0; padding: 0; color: var(--fg); background: transparent; text-decoration: underline; cursor: pointer; }
+    .bars { display: grid; gap: 10px; }
+    .bar-row { display: grid; grid-template-columns: minmax(150px, 230px) 1fr minmax(92px, auto); gap: 12px; align-items: center; }
+    .bar-label { border: 0; padding: 0; color: var(--fg); background: transparent; text-align: left; cursor: default; }
+    .bar-label.drill { text-decoration: underline; cursor: pointer; }
+    .track { height: 30px; background: color-mix(in srgb, var(--line) 45%, transparent); border-radius: 6px; overflow: hidden; }
+    .fill { height: 100%; min-width: 2px; border-radius: 6px; transition: width 180ms ease; }
+    .client { background: var(--client); }
+    .model { background: var(--model); }
+    .post { background: var(--post); }
+    .schema { background: var(--schema); }
+    .useful { background: var(--useful); }
+    .bar-value { text-align: right; font-variant-numeric: tabular-nums; }
+    .detail { min-height: 24px; margin-top: 14px; color: var(--muted); }
+    .token-panel { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--line); }
+    .token-stack { display: flex; height: 38px; margin: 12px 0 8px; overflow: hidden; border-radius: 7px; }
+    .token-stack div { display: grid; place-items: center; min-width: 2px; color: var(--surface); font-weight: 600; }
+    .legend { color: var(--muted); font-size: .86rem; }
+    .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    table { width: 100%; margin-top: 24px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    .note { margin-top: 16px; font-size: .88rem; }
+    @media (max-width: 620px) {
+      .bar-row { grid-template-columns: 1fr auto; }
+      .track { grid-column: 1 / -1; grid-row: 2; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <div class="topline">
+    <div>
+      <h1>Quip latency profile</h1>
+      <div id="meta" class="muted"></div>
+    </div>
+    <div class="controls">
+      <label>Statistic
+        <select id="statistic">
+          <option value="mean_ms" selected>Mean (additive)</option>
+          <option value="median_ms">Median</option>
+          <option value="p95_ms">p95</option>
+          <option value="max_ms">Maximum</option>
+        </select>
+      </label>
+      <label>Load another result
+        <input id="profile-file" type="file" accept="application/json,.json">
+      </label>
+    </div>
+  </div>
+
+  <div id="stats" class="stats"></div>
+  <section aria-labelledby="breakdown-title">
+    <h2 id="breakdown-title">Latency decomposition</h2>
+    <div id="crumbs" class="crumbs" aria-label="Latency hierarchy"></div>
+    <div id="bars" class="bars"></div>
+    <div id="detail" class="detail" aria-live="polite"></div>
+  </section>
+
+  <section id="token-panel" class="token-panel" aria-labelledby="token-title"></section>
+  <table id="stage-table">
+    <thead><tr><th>Leaf component</th><th>Mean</th><th>Median</th><th>p95</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="note">mistral.rs reports prompt-prefill and completion-decode durations plus exact aggregate token counts. Mean components are additive; independently calculated medians and p95 values need not sum. Schema token count is estimated from the deterministic wrapper’s share of output characters; its latency estimate uses the server-reported completion decode rate. Suggestions are never stored in the profile.</p>
+</main>
+<script>
+  let profile = /*__QUIP_PROFILE_DATA__*/null;
+  const $ = id => document.getElementById(id);
+  let current = 'root';
+
+  const labels = {
+    root: 'End-to-end sidecar request', backend: 'Inference backend', batch: 'Completion batch',
+    completion: 'One model completion', model: 'Model server', protocol: 'Sidecar protocol/process',
+    server_queue_overhead: 'Queue/server overhead', prompt_prefill: 'Prompt prefill', completion_decode: 'Output decoding',
+    normalization: 'Normalization/ranking', residual: 'Backend bookkeeping', request_build: 'Request construction',
+    connect: 'TCP connect', request_write: 'Request write', response_read: 'Response read',
+    http_parse: 'HTTP parse', response_decode: 'OpenAI response decode', output_decode: 'Quip schema decode',
+    completion_residual: 'Unattributed client time'
+  };
+
+  function stage(scope, name) {
+    return profile.summary.find(item => item.scope === scope && item.stage === name);
+  }
+  function value(scope, name) {
+    const item = stage(scope, name);
+    return item ? item[$('statistic').value] : 0;
+  }
+  function clampResidual(total, parts) { return Math.max(0, total - parts.reduce((a, b) => a + b, 0)); }
+  function node(id, ms, kind, child, note) { return {id, ms: Math.max(0, ms || 0), kind, child, note}; }
+
+  function children(id) {
+    const root = value('inference', 'sidecar_round_trip');
+    const backend = value('inference', 'backend_total');
+    const batch = value('inference', 'completion_batch');
+    const normalization = value('inference', 'normalization_ranking');
+    const total = value('completion', 'total');
+    const leaves = [
+      ['request_build', 'request_build', 'client'], ['connect', 'connect', 'client'],
+      ['request_write', 'request_write', 'client'], ['model', 'server_wait_ttfb', 'model'],
+      ['response_read', 'response_read', 'client'], ['http_parse', 'http_parse', 'post'],
+      ['response_decode', 'response_decode', 'post'], ['output_decode', 'output_decode', 'post']
+    ].map(([leaf, stageName, kind]) => node(leaf, value('completion', stageName), kind, leaf === 'model' ? 'model' : null));
+    if (id === 'root') return [
+      node('protocol', Math.max(0, root - backend), 'client', null, 'NDJSON exchange, process scheduling, and serialization around the backend.'),
+      node('backend', backend, 'model', 'backend')
+    ];
+    if (id === 'backend') return [
+      node('batch', batch, 'model', 'batch', profile.config.completion_count > 1 ? `${profile.config.completion_count} completions overlap concurrently.` : 'One completion request.'),
+      node('normalization', normalization, 'post'),
+      node('residual', clampResidual(backend, [batch, normalization]), 'client')
+    ];
+    if (id === 'batch') return [node('completion', total, 'model', 'completion')];
+    if (id === 'completion') {
+      const sum = leaves.reduce((acc, leaf) => acc + leaf.ms, 0);
+      leaves.push(node('completion_residual', Math.max(0, total - sum), 'client'));
+      return leaves;
+    }
+    if (id === 'model') return [
+      node('server_queue_overhead', value('model', 'server_queue_overhead'), 'client'),
+      node('prompt_prefill', value('model', 'prompt_prefill'), 'model'),
+      node('completion_decode', value('model', 'completion_decode'), 'schema')
+    ];
+    return [];
+  }
+
+  function ancestry(id) {
+    const paths = {
+      root: ['root'], backend: ['root','backend'], batch: ['root','backend','batch'],
+      completion: ['root','backend','batch','completion'], model: ['root','backend','batch','completion','model']
+    };
+    return paths[id] || ['root'];
+  }
+
+  function render() {
+    const root = stage('inference', 'sidecar_round_trip');
+    const tokens = profile.token_summary;
+    $('meta').textContent = `${profile.model_label} · ${profile.measured_runs} measured runs · ${profile.config.completion_count} completion(s)`;
+    $('stats').innerHTML = [
+      ['End to end', `${root ? root.median_ms.toFixed(1) : '—'} ms median`],
+      ['Output use', tokens ? `${tokens.mean_completion_tokens.toFixed(1)} tokens` : 'not reported'],
+      ['Decode/token', tokens ? `${(tokens.mean_completion_ms_per_token ?? tokens.mean_server_ms_per_output_token).toFixed(1)} ms` : 'not reported']
+    ].map(([label, val]) => `<div class="stat"><span class="muted">${label}</span><strong>${val}</strong></div>`).join('');
+
+    $('crumbs').innerHTML = ancestry(current).map((id, index, all) =>
+      `<button type="button" data-node="${id}" ${index === all.length - 1 ? 'aria-current="page"' : ''}>${labels[id]}</button>${index < all.length - 1 ? '<span>›</span>' : ''}`
+    ).join('');
+    $('crumbs').querySelectorAll('button').forEach(button => button.addEventListener('click', () => { current = button.dataset.node; render(); }));
+
+    {
+      const parts = children(current);
+      const total = Math.max(...parts.map(part => part.ms), 0.001);
+      $('bars').innerHTML = parts.map(part => {
+        const drill = Boolean(part.child);
+        return `<div class="bar-row">
+          <button type="button" class="bar-label ${drill ? 'drill' : ''}" data-node="${part.child || ''}" data-note="${part.note || ''}" ${drill ? '' : 'disabled'}>${labels[part.id]}</button>
+          <div class="track" role="img" aria-label="${labels[part.id]} ${part.ms.toFixed(3)} milliseconds"><div class="fill ${part.kind}" style="width:${Math.max(0.3, part.ms / total * 100)}%"></div></div>
+          <div class="bar-value">${part.ms < 1 ? part.ms.toFixed(3) : part.ms.toFixed(1)} ms</div>
+        </div>`;
+      }).join('');
+      $('bars').querySelectorAll('button[data-node]').forEach(button => {
+        button.addEventListener('click', () => { if (button.dataset.node) { current = button.dataset.node; render(); } });
+        button.addEventListener('focus', () => { $('detail').textContent = button.dataset.note || ''; });
+        button.addEventListener('mouseenter', () => { $('detail').textContent = button.dataset.note || ''; });
+      });
+      $('detail').textContent = current === 'completion'
+        ? 'Client work is separated from the orange model-server interval.'
+        : current === 'model'
+          ? 'mistral.rs reports prefill and completion timing separately; queue/server overhead is the remaining request interval.'
+          : '';
+    }
+    renderTokens(tokens);
+    renderTable();
+  }
+
+  function renderTokens(tokens) {
+    if (!tokens) {
+      $('token-panel').innerHTML = '<h2 id="token-title">Token allocation</h2><p class="muted">This result predates token profiling or the server omitted usage.</p>';
+      return;
+    }
+    const useful = tokens.mean_estimated_suggestion_tokens;
+    const schema = tokens.mean_estimated_schema_tokens;
+    const total = Math.max(useful + schema, .001);
+    $('token-panel').innerHTML = `
+      <h2 id="token-title">Output-token allocation</h2>
+      <div class="token-stack" role="img" aria-label="Estimated ${useful.toFixed(1)} suggestion tokens and ${schema.toFixed(1)} deterministic schema tokens">
+        <div class="useful" style="width:${useful / total * 100}%">${useful.toFixed(1)}</div>
+        <div class="schema" style="width:${schema / total * 100}%">${schema.toFixed(1)}</div>
+      </div>
+      <div class="legend"><span class="swatch useful"></span> Suggestion estimate <span class="swatch schema"></span> Deterministic JSON estimate</div>
+      <p><strong>${tokens.mean_schema_token_share_percent.toFixed(1)}%</strong> estimated schema share · <strong>${tokens.mean_estimated_schema_latency_ms.toFixed(1)} ms</strong> estimated schema decode latency · <strong>${tokens.mean_prompt_tokens.toFixed(1)}</strong> prompt tokens · <strong>${tokens.mean_completion_ms_per_token == null ? '—' : tokens.mean_completion_ms_per_token.toFixed(1)}</strong> ms/output token · <strong>${tokens.max_tokens_reached}</strong> max-token stops</p>`;
+  }
+
+  function renderTable() {
+    const rows = profile.summary.filter(item => item.scope === 'completion' && item.stage !== 'total');
+    $('stage-table').querySelector('tbody').innerHTML = rows.map(item => `<tr><td>${labels[item.stage] || item.stage}</td><td>${item.mean_ms.toFixed(3)} ms</td><td>${item.median_ms.toFixed(3)} ms</td><td>${item.p95_ms.toFixed(3)} ms</td></tr>`).join('');
+  }
+
+  $('statistic').addEventListener('change', render);
+  $('profile-file').addEventListener('change', async event => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try { profile = JSON.parse(await file.text()); current = 'root'; render(); }
+    catch (error) { $('detail').textContent = `Could not load profile: ${error.message}`; }
+  });
+  render();
+</script>
+</body>
+</html>
