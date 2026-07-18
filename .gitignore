@@ -1,5 +1,6 @@
 *.md
 !README.md
+!AGENTS.md
 !docs/
 !docs/**/*
 .workspace/
