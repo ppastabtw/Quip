@@ -48,7 +48,7 @@ A global shortcut can load selected existing text into the same temporary box. C
 
 ### Model contract
 
-The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode with guided JSON decoding.
+The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. SFT learns the JSON contract from gold outputs because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`, and the local runtime enforces the same schema at inference.
 
 Valid outputs are:
 
@@ -87,15 +87,18 @@ If the runtime cannot stack adapters, Quip merges the global adapter into the ba
 
 ### Global Freesolo adapter
 
-One Flash environment contains shorthand, phonetic English, ordinary mistakes, clean prose, protected text, SFT gold outputs, a GRPO reward, and separate training and held-out splits. The same environment evaluates models, generates inspected rollouts, and trains adapters.
+Scaffold one single-turn, non-reasoning Flash environment. Its `EnvironmentSingleTurn` builds prompt messages and returns a `RewardResult` from `score_response`. Package separate `dataset/train.jsonl` and `dataset/eval.jsonl` files and select them through `environment.params.split`.
+
+Every dataset row uses the exact keys `input`, optional `output`, and optional `metadata`; Flash drops other top-level keys. SFT learns from JSON gold values in `output`. GRPO samples from `input`, while gold references and scorer-only fields belong in `output` or `metadata`.
 
 Training proceeds as follows:
 
 1. Baseline the selected Qwen3.5 checkpoint on the held-out split.
-2. Run SFT on hundreds of clean examples to teach judgment and the output contract.
+2. Run SFT with a positive `train.max_examples` on hundreds of clean JSON-output examples to teach judgment and the output contract.
 3. Evaluate the SFT adapter on the untouched split.
-4. If useful, warm-start GRPO from SFT to sharpen keep-or-decode decisions.
-5. Inspect high-reward traces, evaluate useful checkpoints, and ship the best held-out checkpoint rather than automatically choosing the last one.
+4. If useful, warm-start GRPO with `init_from_adapter`, omit LoRA rank and alpha, and constrain rollouts with the Quip JSON schema.
+5. Use `max_steps` and `save_at_steps` for required checkpoint boundaries. Run `flash train config.toml --dry-run` and `--cost` before submission.
+6. Inspect high-reward traces, evaluate useful checkpoints, and ship the best held-out checkpoint rather than automatically choosing the last one.
 
 OPD is a fallback only if a stronger teacher first beats the student on the held-out task.
 
@@ -107,7 +110,9 @@ The held-out evaluation remains distinct from the optimized reward and reports c
 
 ### Artifacts
 
-Flash exports the global LoRA adapter. Each user's separate adapter is trained locally, and both are applied by the local runtime. The sponsor deck lists Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters.
+Export the chosen global adapter or checkpoint immediately to a team-owned Hugging Face repository with `flash export --adapter-id <run-id> --repository <owner>/<repo>`. Undeployed, inactive run artifacts may be garbage-collected after about seven days. Managed deployment is optional for inspection and is not part of Quip's local product path.
+
+Each user's separate adapter is trained locally, and both adapters are applied by the local runtime. The Flash catalog includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters.
 
 ## Application
 
@@ -133,6 +138,7 @@ Prove global adapter loading and per-user adapter composition before coupling in
 - Backup and compatibility target: M4 MacBook Air with 16 GB.
 - Start with Qwen3.5-2B at 4-bit quantization.
 - Benchmark Qwen3.5-4B at 4-bit on both Macs and adopt it only if its quality gain justifies the latency and memory.
+- Start at LoRA rank 32, within Flash's rank caps of 128 for 2B and 64 for 4B.
 
 Prefer the M3 Pro for its additional memory and sustained performance. Use the fanless M4 Air to prove compatibility on a common laptop.
 
