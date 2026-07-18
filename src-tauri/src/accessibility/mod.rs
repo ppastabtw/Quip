@@ -7,12 +7,23 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::{Mutex, OnceLock};
 
 use axuielement::ax_attribute::attributes::{
-    AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE, AX_VALUE_ATTRIBUTE,
+    AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SELECTED_TEXT_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE,
+    AX_VALUE_ATTRIBUTE,
 };
 use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
 use axuielement::AXUIElement;
+use quip_contracts::{CaptureResult, Trigger};
+
+#[allow(dead_code)]
+const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
+#[allow(dead_code)]
+const TEXTEDIT_APP_NAME: &str = "TextEdit";
+
+#[allow(dead_code)]
+static DESTINATION_REGISTRY: OnceLock<Mutex<DestinationRegistry>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -55,6 +66,17 @@ struct DestinationSnapshot {
 }
 
 impl DestinationSnapshot {
+    #[allow(dead_code)]
+    fn from_focused_textedit(focused: &FocusedElementSnapshot) -> Self {
+        Self {
+            app_bundle_id: TEXTEDIT_BUNDLE_ID.to_string(),
+            app_name: TEXTEDIT_APP_NAME.to_string(),
+            role: focused.role.clone(),
+            selected_range_utf16: 0..0,
+            insertion_range_utf16: 0..0,
+        }
+    }
+
     #[cfg(test)]
     fn new_for_test(app_bundle_id: &str, app_name: &str, role: &str) -> Self {
         Self {
@@ -127,6 +149,24 @@ impl DestinationRegistry {
             .remove(destination_id)
             .map(|_| ())
             .ok_or(AccessibilityError::DestinationNotFound)
+    }
+}
+
+#[allow(dead_code)]
+fn build_ready_capture_result(
+    registry: &mut DestinationRegistry,
+    profile_id: &str,
+    trigger: Trigger,
+    draft: &str,
+    snapshot: DestinationSnapshot,
+) -> CaptureResult {
+    let destination_id = registry.register(snapshot);
+    CaptureResult::Ready {
+        burst_id: format!("burst_{destination_id}"),
+        destination_id,
+        profile_id: profile_id.to_string(),
+        draft: draft.to_string(),
+        trigger,
     }
 }
 
@@ -219,13 +259,53 @@ fn focused_editable_textedit_element(
     Ok(FocusedEditableElement { element, snapshot })
 }
 
+#[allow(dead_code)]
+fn destination_registry() -> &'static Mutex<DestinationRegistry> {
+    DESTINATION_REGISTRY.get_or_init(|| Mutex::new(DestinationRegistry::default()))
+}
+
+#[allow(dead_code)]
+fn draft_from_element(element: &AXUIElement) -> String {
+    element
+        .string_attribute(AX_SELECTED_TEXT_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .filter(|text| !text.is_empty())
+        .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> CaptureResult {
+    let focused = match focused_editable_textedit_element(TEXTEDIT_BUNDLE_ID) {
+        Ok(focused) => focused,
+        Err(error) => {
+            return CaptureResult::Unavailable {
+                reason: error.unavailable_reason().to_string(),
+            };
+        }
+    };
+    let draft = draft_from_element(&focused.element);
+    let snapshot = DestinationSnapshot::from_focused_textedit(&focused.snapshot);
+
+    let Ok(mut registry) = destination_registry().lock() else {
+        return CaptureResult::Unavailable {
+            reason: "destination_registry_unavailable".to_string(),
+        };
+    };
+
+    build_ready_capture_result(&mut registry, profile_id, trigger, &draft, snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_preflight, is_supported_app, validate_focused_editable_element, AccessibilityError,
-        AccessibilityPermissionStatus, ContextSnippetLimit, DestinationRegistry,
-        DestinationSnapshot, FocusedElementSnapshot,
+        build_ready_capture_result, capture_preflight, is_supported_app,
+        validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
+        CaptureResult, ContextSnippetLimit, DestinationRegistry, DestinationSnapshot,
+        FocusedElementSnapshot,
     };
+    use quip_contracts::Trigger;
 
     #[test]
     fn destination_registry_returns_opaque_destination_id() {
@@ -274,6 +354,23 @@ mod tests {
             registry.release("destination_missing"),
             Err(AccessibilityError::DestinationNotFound)
         );
+    }
+
+    #[test]
+    fn capture_ready_result_stores_destination_snapshot() {
+        let mut registry = DestinationRegistry::default();
+        let capture = build_ready_capture_result(
+            &mut registry,
+            "profile_default",
+            Trigger::Idle,
+            "cnt cm tmrw",
+            DestinationSnapshot::new_for_test("com.apple.TextEdit", "TextEdit", "AXTextArea"),
+        );
+
+        let CaptureResult::Ready { destination_id, .. } = capture else {
+            panic!("expected ready capture result");
+        };
+        assert_eq!(registry.release(&destination_id), Ok(()));
     }
 
     #[test]
