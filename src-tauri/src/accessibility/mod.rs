@@ -8,6 +8,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use axuielement::ax_attribute::attributes::{
+    AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE, AX_VALUE_ATTRIBUTE,
+};
+use axuielement::AXUIElement;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum AccessibilityPermissionStatus {
@@ -57,6 +62,45 @@ impl DestinationSnapshot {
             role: role.to_string(),
             selected_range_utf16: 0..0,
             insertion_range_utf16: 0..0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+struct FocusedElementSnapshot {
+    role: String,
+    subrole: Option<String>,
+    is_editable: Option<bool>,
+}
+
+impl FocusedElementSnapshot {
+    fn from_ax_element(element: &AXUIElement) -> Result<Self, AccessibilityError> {
+        let role = element
+            .string_attribute(AX_ROLE_ATTRIBUTE)
+            .map_err(|_| AccessibilityError::NotEditable)?
+            .ok_or(AccessibilityError::NotEditable)?;
+        let subrole = element
+            .string_attribute(AX_SUBROLE_ATTRIBUTE)
+            .map_err(|_| AccessibilityError::NotEditable)?;
+        let is_editable = element
+            .bool_attribute(AX_IS_EDITABLE_ATTRIBUTE)
+            .map_err(|_| AccessibilityError::NotEditable)?
+            .or_else(|| element.is_attribute_settable(AX_VALUE_ATTRIBUTE).ok());
+
+        Ok(Self {
+            role,
+            subrole,
+            is_editable,
+        })
+    }
+
+    #[cfg(test)]
+    fn new_for_test(role: &str, subrole: Option<&str>, is_editable: Option<bool>) -> Self {
+        Self {
+            role: role.to_string(),
+            subrole: subrole.map(str::to_string),
+            is_editable,
         }
     }
 }
@@ -122,11 +166,53 @@ fn capture_preflight(
     Ok(())
 }
 
+#[allow(dead_code)]
+struct FocusedEditableElement {
+    element: AXUIElement,
+    snapshot: FocusedElementSnapshot,
+}
+
+#[allow(dead_code)]
+fn validate_focused_editable_element(
+    bundle_id: &str,
+    focused: &FocusedElementSnapshot,
+) -> Result<(), AccessibilityError> {
+    capture_preflight(AccessibilityPermissionStatus::Trusted, bundle_id)?;
+
+    if bundle_id == "com.apple.TextEdit"
+        && focused.role == "AXTextArea"
+        && focused.is_editable.unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err(AccessibilityError::NotEditable)
+}
+
+#[allow(dead_code)]
+fn focused_editable_textedit_element(
+    bundle_id: &str,
+) -> Result<FocusedEditableElement, AccessibilityError> {
+    capture_preflight(accessibility_permission_status(), bundle_id)?;
+
+    let system = axuielement::SystemWideElement::new().ok_or(AccessibilityError::NotEditable)?;
+    let element = system
+        .focused_ui_element()
+        .map_err(|_| AccessibilityError::NotEditable)?
+        .ok_or(AccessibilityError::NotEditable)?;
+    let snapshot = FocusedElementSnapshot::from_ax_element(&element)?;
+
+    validate_focused_editable_element(bundle_id, &snapshot)?;
+
+    Ok(FocusedEditableElement { element, snapshot })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_preflight, is_supported_app, AccessibilityError, AccessibilityPermissionStatus,
-        ContextSnippetLimit, DestinationRegistry, DestinationSnapshot,
+        capture_preflight, is_supported_app, validate_focused_editable_element, AccessibilityError,
+        AccessibilityPermissionStatus, ContextSnippetLimit, DestinationRegistry,
+        DestinationSnapshot, FocusedElementSnapshot,
     };
 
     #[test]
@@ -226,6 +312,36 @@ mod tests {
                 "com.vivaldi.Vivaldi"
             ),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn textedit_focused_text_area_is_editable_destination() {
+        let focused = FocusedElementSnapshot::new_for_test("AXTextArea", None, Some(true));
+
+        assert_eq!(
+            validate_focused_editable_element("com.apple.TextEdit", &focused),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn textedit_non_editable_text_area_is_not_editable() {
+        let focused = FocusedElementSnapshot::new_for_test("AXTextArea", None, Some(false));
+
+        assert_eq!(
+            validate_focused_editable_element("com.apple.TextEdit", &focused),
+            Err(AccessibilityError::NotEditable)
+        );
+    }
+
+    #[test]
+    fn textedit_button_focus_is_not_editable() {
+        let focused = FocusedElementSnapshot::new_for_test("AXButton", None, Some(true));
+
+        assert_eq!(
+            validate_focused_editable_element("com.apple.TextEdit", &focused),
+            Err(AccessibilityError::NotEditable)
         );
     }
 }
