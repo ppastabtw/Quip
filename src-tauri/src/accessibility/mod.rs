@@ -5,12 +5,13 @@
 //! handles, insertion markers, and restoration state stay internal here; only
 //! the opaque `destination_id` crosses the boundary.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
 use axuielement::ax_attribute::attributes::{
-    AX_FOCUSED_ATTRIBUTE, AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SELECTED_TEXT_ATTRIBUTE,
+    AX_CHILDREN_ATTRIBUTE, AX_FOCUSED_ATTRIBUTE, AX_FOCUSED_UI_ELEMENT_ATTRIBUTE,
+    AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SELECTED_TEXT_ATTRIBUTE,
     AX_SELECTED_TEXT_RANGE_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE, AX_TITLE_ATTRIBUTE, AX_VALUE_ATTRIBUTE,
     AX_VISIBLE_TEXT_ATTRIBUTE, AX_WINDOW_ATTRIBUTE,
 };
@@ -23,6 +24,7 @@ use quip_contracts::{CaptureResult, ContextSnippet, Rect, Trigger};
 use serde::Serialize;
 
 const DRAFT_MAX_CHARS: usize = 80;
+const DESCENDANT_SEARCH_LIMIT: usize = 64;
 pub(crate) const DEFAULT_CONTEXT_LIMIT: ContextSnippetLimit = ContextSnippetLimit {
     max_snippets: 1,
     max_chars_per_snippet: 240,
@@ -31,12 +33,273 @@ pub(crate) const DEFAULT_CONTEXT_LIMIT: ContextSnippetLimit = ContextSnippetLimi
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct FocusedElementDiagnostic {
     pub permission: &'static str,
+    pub focused_app_pid: Option<i32>,
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
-    pub role: Option<String>,
+    pub system_focused: Option<RawElementDiagnostic>,
+    pub app_focused: Option<RawElementDiagnostic>,
+    pub chosen_source: Option<&'static str>,
+    pub chosen_reason: Option<&'static str>,
+    pub resolution_error: Option<&'static str>,
+    pub resolver_candidates: Vec<ResolverCandidateDiagnostic>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RawElementDiagnostic {
+    pub source: &'static str,
+    pub element_pid: Option<i32>,
+    pub role: RawAttributeDiagnostic,
+    pub is_editable: RawAttributeDiagnostic,
+    pub value: RawAttributeDiagnostic,
+    pub selected_text_range: RawAttributeDiagnostic,
+    pub selected_text_range_settable: RawSettableDiagnostic,
+    pub selected_text_settable: RawSettableDiagnostic,
     pub subrole: Option<String>,
-    pub is_editable: Option<bool>,
+    pub caret_bounds_computable: bool,
+    pub can_restore_and_write: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RawAttributeDiagnostic {
+    pub status: &'static str,
+    pub value_kind: Option<String>,
+    pub value_summary: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RawSettableDiagnostic {
+    pub status: &'static str,
+    pub settable: Option<bool>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ElementContract {
+    role: String,
+    subrole: Option<String>,
+    is_editable: Option<bool>,
+    readable_text: bool,
+    selected_range_available: bool,
+    caret_bounds_computable: bool,
+    can_restore_and_write: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ResolverCandidateDiagnostic {
+    pub source: &'static str,
+    pub depth: usize,
+    pub role: Option<String>,
+    pub subrole: RawAttributeDiagnostic,
+    pub is_editable: RawAttributeDiagnostic,
+    pub readable_text: bool,
     pub selected_range_available: bool,
+    pub caret_bounds_computable: bool,
+    pub can_restore_and_write: bool,
+    pub accepted: bool,
+    pub reject_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusSource {
+    SystemFocused,
+    AppFocused,
+}
+
+impl FocusSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SystemFocused => "system.focused_ui_element",
+            Self::AppFocused => "focused_application.AXFocusedUIElement",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FocusResolution<T> {
+    element: T,
+    source: FocusSource,
+    reason: &'static str,
+    diagnostics: Vec<ResolverCandidateDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+enum ContractError {
+    UnsupportedApp,
+    SecureField,
+    RoleReadError,
+    SubroleReadError,
+    NotTextRole,
+    ExplicitNotEditable,
+    TextUnavailable,
+    SelectedRangeUnavailable,
+    CaretUnavailable,
+    CommitUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateEvaluation {
+    contract: Result<ElementContract, ContractError>,
+    diagnostic: ResolverCandidateDiagnostic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FocusResolutionError {
+    reason: ContractError,
+    diagnostics: Vec<ResolverCandidateDiagnostic>,
+}
+
+impl From<ContractError> for AccessibilityError {
+    fn from(error: ContractError) -> Self {
+        match error {
+            ContractError::UnsupportedApp => Self::UnsupportedApp,
+            ContractError::SecureField => Self::SecureField,
+            ContractError::CaretUnavailable => Self::CaretUnavailable,
+            ContractError::RoleReadError
+            | ContractError::SubroleReadError
+            | ContractError::NotTextRole
+            | ContractError::ExplicitNotEditable
+            | ContractError::TextUnavailable
+            | ContractError::SelectedRangeUnavailable
+            | ContractError::CommitUnavailable => Self::NotEditable,
+        }
+    }
+}
+
+impl ContractError {
+    fn unavailable_reason(&self) -> &'static str {
+        match self {
+            Self::UnsupportedApp => "unsupported_app",
+            Self::SecureField => "secure_field",
+            Self::RoleReadError => "role_read_error",
+            Self::SubroleReadError => "subrole_read_error",
+            Self::NotTextRole => "not_text_role",
+            Self::ExplicitNotEditable => "explicit_not_editable",
+            Self::TextUnavailable => "text_unavailable",
+            Self::SelectedRangeUnavailable => "selected_range_unavailable",
+            Self::CaretUnavailable => "caret_unavailable",
+            Self::CommitUnavailable => "commit_unavailable",
+        }
+    }
+}
+
+impl RawAttributeDiagnostic {
+    fn ok(value_kind: impl Into<String>, value_summary: impl Into<String>) -> Self {
+        Self {
+            status: "ok",
+            value_kind: Some(value_kind.into()),
+            value_summary: Some(value_summary.into()),
+            error: None,
+        }
+    }
+
+    fn none() -> Self {
+        Self {
+            status: "none",
+            value_kind: None,
+            value_summary: None,
+            error: None,
+        }
+    }
+
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            status: "error",
+            value_kind: None,
+            value_summary: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+impl RawSettableDiagnostic {
+    fn ok(settable: bool) -> Self {
+        Self {
+            status: "ok",
+            settable: Some(settable),
+            error: None,
+        }
+    }
+
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            status: "error",
+            settable: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProbeElement {
+    app_bundle_id: String,
+    contract: ElementContract,
+    children: Vec<ProbeElement>,
+}
+
+impl ElementContract {
+    #[cfg(test)]
+    fn editable_text(role: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            subrole: None,
+            is_editable: Some(true),
+            readable_text: true,
+            selected_range_available: true,
+            caret_bounds_computable: true,
+            can_restore_and_write: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn container(role: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            subrole: None,
+            is_editable: Some(false),
+            readable_text: false,
+            selected_range_available: false,
+            caret_bounds_computable: false,
+            can_restore_and_write: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn secure_text() -> Self {
+        Self {
+            subrole: Some(AX_SECURE_TEXT_FIELD_SUBROLE.to_string()),
+            ..Self::editable_text(AX_TEXT_FIELD_ROLE)
+        }
+    }
+}
+
+impl ResolverCandidateDiagnostic {
+    fn from_contract(source: FocusSource, depth: usize, contract: &ElementContract) -> Self {
+        Self {
+            source: source.label(),
+            depth,
+            role: Some(contract.role.clone()),
+            subrole: raw_attribute_from_optional_string(contract.subrole.as_deref()),
+            is_editable: raw_attribute_from_optional_bool(contract.is_editable),
+            readable_text: contract.readable_text,
+            selected_range_available: contract.selected_range_available,
+            caret_bounds_computable: contract.caret_bounds_computable,
+            can_restore_and_write: contract.can_restore_and_write,
+            accepted: false,
+            reject_reason: None,
+        }
+    }
+
+    fn from_error(source: FocusSource, depth: usize, error: ContractError) -> Self {
+        Self {
+            source: source.label(),
+            depth,
+            reject_reason: Some(error.unavailable_reason()),
+            ..Self::default()
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -219,11 +482,15 @@ impl FocusedElementSnapshot {
             .ok_or(AccessibilityError::NotEditable)?;
         let subrole = element
             .string_attribute(AX_SUBROLE_ATTRIBUTE)
-            .map_err(|_| AccessibilityError::NotEditable)?;
+            .ok()
+            .flatten();
         let is_editable = element
             .bool_attribute(AX_IS_EDITABLE_ATTRIBUTE)
-            .map_err(|_| AccessibilityError::NotEditable)?
-            .or_else(|| element.is_attribute_settable(AX_VALUE_ATTRIBUTE).ok());
+            .ok()
+            .flatten()
+            .or_else(|| {
+                editability_from_fallback(element.is_attribute_settable(AX_VALUE_ATTRIBUTE).ok())
+            });
         let selected_range_utf16 = element
             .range_attribute(AX_SELECTED_TEXT_RANGE_ATTRIBUTE)
             .ok()
@@ -249,6 +516,10 @@ impl FocusedElementSnapshot {
             has_selected_range: true,
         }
     }
+}
+
+fn editability_from_fallback(value_settable: Option<bool>) -> Option<bool> {
+    value_settable.filter(|settable| *settable)
 }
 
 #[derive(Debug, Default)]
@@ -348,7 +619,9 @@ pub fn focused_element_diagnostic() -> FocusedElementDiagnostic {
     let Some(system) = axuielement::SystemWideElement::new() else {
         return diagnostic;
     };
-    if let Some(app_element) = system.focused_application().ok().flatten() {
+    let app_element = system.focused_application().ok().flatten();
+    if let Some(app_element) = &app_element {
+        diagnostic.focused_app_pid = app_element.pid().ok();
         if let Some((bundle_id, app_name)) = focused_app_identity(&app_element) {
             diagnostic.app_bundle_id = Some(bundle_id);
             diagnostic.app_name = Some(app_name);
@@ -357,16 +630,136 @@ pub fn focused_element_diagnostic() -> FocusedElementDiagnostic {
     if permission_status == AccessibilityPermissionStatus::NotTrusted {
         return diagnostic;
     }
-    if let Some(element) = system.focused_ui_element().ok().flatten() {
-        if let Ok(snapshot) = FocusedElementSnapshot::from_ax_element(&element) {
-            diagnostic.role = Some(snapshot.role);
-            diagnostic.subrole = snapshot.subrole;
-            diagnostic.is_editable = snapshot.is_editable;
-            diagnostic.selected_range_available = snapshot.has_selected_range;
+    let system_focused = system.focused_ui_element().ok().flatten();
+    let app_focused = app_element.as_ref().and_then(|app| {
+        app.element_attribute(AX_FOCUSED_UI_ELEMENT_ATTRIBUTE)
+            .ok()
+            .flatten()
+    });
+    diagnostic.system_focused = system_focused
+        .as_ref()
+        .map(|element| raw_element_diagnostic("system.focused_ui_element", element));
+    diagnostic.app_focused = app_focused
+        .as_ref()
+        .map(|element| raw_element_diagnostic("focused_application.AXFocusedUIElement", element));
+    if diagnostic.focused_app_pid.is_none() {
+        diagnostic.focused_app_pid = system_focused
+            .as_ref()
+            .or(app_focused.as_ref())
+            .and_then(|element| element.pid().ok());
+    }
+    if diagnostic.app_bundle_id.is_none() {
+        let fallback = system_focused
+            .as_ref()
+            .or(app_focused.as_ref())
+            .and_then(app_identity_from_pid);
+        if let Some((bundle_id, app_name)) = fallback {
+            diagnostic.app_bundle_id = Some(bundle_id);
+            diagnostic.app_name = Some(app_name);
+        }
+    }
+    if let Some(app_id) = diagnostic.app_bundle_id.as_deref() {
+        match resolve_ax_focus(app_id, system_focused, app_focused) {
+            Ok(resolution) => {
+                diagnostic.chosen_source = Some(resolution.source.label());
+                diagnostic.chosen_reason = Some(resolution.reason);
+                diagnostic.resolver_candidates = resolution.diagnostics;
+            }
+            Err(error) => {
+                diagnostic.resolution_error = Some(error.reason.unavailable_reason());
+                diagnostic.resolver_candidates = error.diagnostics;
+            }
         }
     }
 
     diagnostic
+}
+
+fn raw_element_diagnostic(source: &'static str, element: &AXUIElement) -> RawElementDiagnostic {
+    let selected_range = element
+        .range_attribute(AX_SELECTED_TEXT_RANGE_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .and_then(ax_range_to_range);
+    let selected_text_range_settable =
+        raw_settable_diagnostic(element, AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
+    let selected_text_settable = raw_settable_diagnostic(element, AX_SELECTED_TEXT_ATTRIBUTE);
+    let can_restore_and_write = selected_text_range_settable.settable == Some(true)
+        && selected_text_settable.settable == Some(true);
+    RawElementDiagnostic {
+        source,
+        element_pid: element.pid().ok(),
+        role: raw_attribute_diagnostic(element, AX_ROLE_ATTRIBUTE),
+        is_editable: raw_attribute_diagnostic(element, AX_IS_EDITABLE_ATTRIBUTE),
+        value: raw_attribute_diagnostic(element, AX_VALUE_ATTRIBUTE),
+        selected_text_range: raw_attribute_diagnostic(element, AX_SELECTED_TEXT_RANGE_ATTRIBUTE),
+        selected_text_range_settable,
+        selected_text_settable,
+        subrole: element
+            .string_attribute(AX_SUBROLE_ATTRIBUTE)
+            .ok()
+            .flatten(),
+        caret_bounds_computable: selected_range.as_ref().is_some_and(|range| {
+            bounds_for_range(element, range).is_some()
+                || bounds_for_range(element, &(range.end..range.end)).is_some()
+        }),
+        can_restore_and_write,
+    }
+}
+
+fn raw_attribute_diagnostic(element: &AXUIElement, attribute: &str) -> RawAttributeDiagnostic {
+    match element.attribute(attribute) {
+        Ok(Some(value)) => {
+            let kind = format!("{:?}", value.kind());
+            let summary = value_summary(attribute, &value);
+            RawAttributeDiagnostic::ok(kind, summary)
+        }
+        Ok(None) => RawAttributeDiagnostic::none(),
+        Err(error) => RawAttributeDiagnostic::error(format!("{error:?}")),
+    }
+}
+
+fn raw_attribute_from_optional_string(value: Option<&str>) -> RawAttributeDiagnostic {
+    match value {
+        Some(value) => RawAttributeDiagnostic::ok("String", format!("string:{value}")),
+        None => RawAttributeDiagnostic::none(),
+    }
+}
+
+fn raw_attribute_from_optional_bool(value: Option<bool>) -> RawAttributeDiagnostic {
+    match value {
+        Some(value) => RawAttributeDiagnostic::ok("Boolean", format!("bool:{value}")),
+        None => RawAttributeDiagnostic::none(),
+    }
+}
+
+fn raw_settable_diagnostic(element: &AXUIElement, attribute: &str) -> RawSettableDiagnostic {
+    match element.is_attribute_settable(attribute) {
+        Ok(settable) => RawSettableDiagnostic::ok(settable),
+        Err(error) => RawSettableDiagnostic::error(format!("{error:?}")),
+    }
+}
+
+fn value_summary(attribute: &str, value: &AXValue) -> String {
+    match attribute {
+        AX_ROLE_ATTRIBUTE => value
+            .as_string()
+            .map(|value| format!("string:{value}"))
+            .unwrap_or_else(|| "non_string".to_string()),
+        AX_IS_EDITABLE_ATTRIBUTE => value
+            .as_bool()
+            .map(|value| format!("bool:{value}"))
+            .unwrap_or_else(|| "non_bool".to_string()),
+        AX_VALUE_ATTRIBUTE => value
+            .as_string()
+            .map(|value| format!("string_chars:{}", value.chars().count()))
+            .unwrap_or_else(|| "non_string".to_string()),
+        AX_SELECTED_TEXT_RANGE_ATTRIBUTE => value
+            .as_range()
+            .map(|range| format!("range:{}:{}", range.location, range.length))
+            .unwrap_or_else(|| "non_range".to_string()),
+        _ => "present".to_string(),
+    }
 }
 
 #[allow(dead_code)]
@@ -406,23 +799,250 @@ fn validate_focused_editable_element(
     app_id: &str,
     focused: &FocusedElementSnapshot,
 ) -> Result<(), AccessibilityError> {
-    capture_preflight(AccessibilityPermissionStatus::Trusted, app_id)?;
+    let contract = ElementContract {
+        role: focused.role.clone(),
+        subrole: focused.subrole.clone(),
+        is_editable: focused.is_editable,
+        readable_text: true,
+        selected_range_available: focused.has_selected_range,
+        caret_bounds_computable: true,
+        can_restore_and_write: true,
+    };
+    validate_element_contract(app_id, &contract).map_err(Into::into)
+}
 
-    if focused.subrole.as_deref() == Some(AX_SECURE_TEXT_FIELD_SUBROLE) {
-        return Err(AccessibilityError::SecureField);
+fn validate_element_contract(
+    app_id: &str,
+    contract: &ElementContract,
+) -> Result<(), ContractError> {
+    if !is_supported_app(app_id) {
+        return Err(ContractError::UnsupportedApp);
+    }
+    if contract.subrole.as_deref() == Some(AX_SECURE_TEXT_FIELD_SUBROLE) {
+        return Err(ContractError::SecureField);
+    }
+    if !matches!(
+        contract.role.as_str(),
+        AX_TEXT_AREA_ROLE | AX_TEXT_FIELD_ROLE
+    ) {
+        return Err(ContractError::NotTextRole);
+    }
+    if contract.is_editable == Some(false) {
+        return Err(ContractError::ExplicitNotEditable);
+    }
+    if !contract.readable_text {
+        return Err(ContractError::TextUnavailable);
+    }
+    if !contract.selected_range_available {
+        return Err(ContractError::SelectedRangeUnavailable);
+    }
+    if !contract.caret_bounds_computable {
+        return Err(ContractError::CaretUnavailable);
+    }
+    if !contract.can_restore_and_write {
+        return Err(ContractError::CommitUnavailable);
+    }
+    Ok(())
+}
+
+fn contract_from_ax_element(element: &AXUIElement) -> Result<ElementContract, ContractError> {
+    let snapshot = FocusedElementSnapshot::from_ax_element(element)
+        .map_err(|_| ContractError::RoleReadError)?;
+    let readable_text = element
+        .string_attribute(AX_SELECTED_TEXT_ATTRIBUTE)
+        .map(|value| value.is_some())
+        .unwrap_or(false)
+        || element
+            .string_attribute(AX_VALUE_ATTRIBUTE)
+            .map(|value| value.is_some())
+            .unwrap_or(false);
+    let caret_bounds_computable = if snapshot.has_selected_range {
+        bounds_for_range(element, &snapshot.selected_range_utf16).is_some()
+            || bounds_for_range(
+                element,
+                &(snapshot.selected_range_utf16.end..snapshot.selected_range_utf16.end),
+            )
+            .is_some()
+    } else {
+        false
+    };
+    let can_restore_and_write = element
+        .is_attribute_settable(AX_SELECTED_TEXT_RANGE_ATTRIBUTE)
+        .unwrap_or(false)
+        && element
+            .is_attribute_settable(AX_SELECTED_TEXT_ATTRIBUTE)
+            .unwrap_or(false);
+
+    Ok(ElementContract {
+        role: snapshot.role,
+        subrole: snapshot.subrole,
+        is_editable: snapshot.is_editable,
+        readable_text,
+        selected_range_available: snapshot.has_selected_range,
+        caret_bounds_computable,
+        can_restore_and_write,
+    })
+}
+
+fn resolve_contract<T: Clone>(
+    app_id: &str,
+    system_focused: Option<T>,
+    app_focused: Option<T>,
+    evaluate: impl Fn(FocusSource, usize, &T) -> CandidateEvaluation,
+    children: impl Fn(&T) -> Vec<T>,
+) -> Result<FocusResolution<T>, FocusResolutionError> {
+    if !is_supported_app(app_id) {
+        return Err(FocusResolutionError {
+            reason: ContractError::UnsupportedApp,
+            diagnostics: Vec::new(),
+        });
     }
 
-    if is_supported_app(app_id)
-        && matches!(
-            focused.role.as_str(),
-            AX_TEXT_AREA_ROLE | AX_TEXT_FIELD_ROLE
-        )
-        && focused.is_editable.unwrap_or(false)
+    let mut diagnostics = Vec::new();
+    let mut first_reject_reason: Option<ContractError> = None;
+
+    for (source, element) in [
+        (FocusSource::SystemFocused, system_focused),
+        (FocusSource::AppFocused, app_focused),
+    ]
+    .into_iter()
+    .filter_map(|(source, element)| element.map(|element| (source, element)))
     {
-        return Ok(());
+        let evaluation = evaluate(source, 0, &element);
+        match candidate_reject_reason(app_id, &evaluation.contract) {
+            None => {
+                let mut diagnostic = evaluation.diagnostic;
+                diagnostic.accepted = true;
+                diagnostics.push(diagnostic);
+                return Ok(FocusResolution {
+                    element,
+                    source,
+                    reason: "direct",
+                    diagnostics,
+                });
+            }
+            Some(error) => {
+                let mut diagnostic = evaluation.diagnostic;
+                diagnostic.reject_reason = Some(error.unavailable_reason());
+                diagnostics.push(diagnostic);
+                if error == ContractError::SecureField {
+                    return Err(FocusResolutionError {
+                        reason: error,
+                        diagnostics,
+                    });
+                }
+                first_reject_reason.get_or_insert(error);
+            }
+        }
+
+        let mut queue = VecDeque::from(children(&element));
+        let mut visited = 0;
+        while let Some(child) = queue.pop_front() {
+            visited += 1;
+            if visited > DESCENDANT_SEARCH_LIMIT {
+                break;
+            }
+            let evaluation = evaluate(source, visited, &child);
+            match candidate_reject_reason(app_id, &evaluation.contract) {
+                None => {
+                    let mut diagnostic = evaluation.diagnostic;
+                    diagnostic.accepted = true;
+                    diagnostics.push(diagnostic);
+                    return Ok(FocusResolution {
+                        element: child,
+                        source,
+                        reason: "resolved_descendant",
+                        diagnostics,
+                    });
+                }
+                Some(error) => {
+                    let mut diagnostic = evaluation.diagnostic;
+                    diagnostic.reject_reason = Some(error.unavailable_reason());
+                    diagnostics.push(diagnostic);
+                    if error == ContractError::SecureField {
+                        return Err(FocusResolutionError {
+                            reason: error,
+                            diagnostics,
+                        });
+                    }
+                    first_reject_reason.get_or_insert(error);
+                    queue.extend(children(&child));
+                }
+            }
+        }
     }
 
-    Err(AccessibilityError::NotEditable)
+    Err(FocusResolutionError {
+        reason: first_reject_reason.unwrap_or(ContractError::NotTextRole),
+        diagnostics,
+    })
+}
+
+fn candidate_reject_reason(
+    app_id: &str,
+    contract: &Result<ElementContract, ContractError>,
+) -> Option<ContractError> {
+    match contract {
+        Ok(contract) => validate_element_contract(app_id, contract).err(),
+        Err(error) => Some(error.clone()),
+    }
+}
+
+#[cfg(test)]
+fn evaluate_contract_candidate<T>(
+    source: FocusSource,
+    depth: usize,
+    element: &T,
+    contract: impl Fn(&T) -> Result<ElementContract, ContractError>,
+) -> CandidateEvaluation {
+    match contract(element) {
+        Ok(contract) => CandidateEvaluation {
+            diagnostic: ResolverCandidateDiagnostic::from_contract(source, depth, &contract),
+            contract: Ok(contract),
+        },
+        Err(error) => CandidateEvaluation {
+            diagnostic: ResolverCandidateDiagnostic::from_error(source, depth, error.clone()),
+            contract: Err(error),
+        },
+    }
+}
+
+fn ax_candidate_evaluation(
+    source: FocusSource,
+    depth: usize,
+    element: &AXUIElement,
+) -> CandidateEvaluation {
+    let contract = contract_from_ax_element(element);
+    let mut diagnostic = match contract.as_ref() {
+        Ok(contract) => ResolverCandidateDiagnostic::from_contract(source, depth, contract),
+        Err(error) => ResolverCandidateDiagnostic::from_error(source, depth, error.clone()),
+    };
+    diagnostic.role = raw_attribute_diagnostic(element, AX_ROLE_ATTRIBUTE).value_summary;
+    diagnostic.subrole = raw_attribute_diagnostic(element, AX_SUBROLE_ATTRIBUTE);
+    diagnostic.is_editable = raw_attribute_diagnostic(element, AX_IS_EDITABLE_ATTRIBUTE);
+
+    CandidateEvaluation {
+        contract,
+        diagnostic,
+    }
+}
+
+fn resolve_ax_focus(
+    app_id: &str,
+    system_focused: Option<AXUIElement>,
+    app_focused: Option<AXUIElement>,
+) -> Result<FocusResolution<AXUIElement>, FocusResolutionError> {
+    resolve_contract(
+        app_id,
+        system_focused,
+        app_focused,
+        ax_candidate_evaluation,
+        |element| {
+            element
+                .element_array_attribute(AX_CHILDREN_ATTRIBUTE)
+                .unwrap_or_default()
+        },
+    )
 }
 
 #[allow(dead_code)]
@@ -431,19 +1051,27 @@ fn focused_editable_element() -> Result<FocusedEditableElement, AccessibilityErr
     let app_element = system
         .focused_application()
         .map_err(|_| AccessibilityError::NotEditable)?;
+    let system_focused = system
+        .focused_ui_element()
+        .map_err(|_| AccessibilityError::NotEditable)?;
+    let app_focused = app_element.as_ref().and_then(|app| {
+        app.element_attribute(AX_FOCUSED_UI_ELEMENT_ATTRIBUTE)
+            .ok()
+            .flatten()
+    });
     let (app_bundle_id, app_name) = app_element
         .as_ref()
         .and_then(focused_app_identity)
+        .or_else(|| system_focused.as_ref().and_then(app_identity_from_pid))
+        .or_else(|| app_focused.as_ref().and_then(app_identity_from_pid))
         .ok_or(AccessibilityError::UnsupportedApp)?;
 
     capture_preflight(accessibility_permission_status(), &app_bundle_id)?;
-    let element = system
-        .focused_ui_element()
-        .map_err(|_| AccessibilityError::NotEditable)?
-        .ok_or(AccessibilityError::NotEditable)?;
+    let resolution = resolve_ax_focus(&app_bundle_id, system_focused, app_focused)
+        .map_err(|error| AccessibilityError::from(error.reason))?;
+    let element = resolution.element;
     let snapshot = FocusedElementSnapshot::from_ax_element(&element)?;
 
-    validate_focused_editable_element(&app_bundle_id, &snapshot)?;
     let captured_draft = captured_draft_from_element(&element, &snapshot);
     let caret = caret_rect_from_element(&element, &captured_draft.burst_range_utf16)?;
 
@@ -566,12 +1194,22 @@ fn focused_context_snippet(limit: ContextSnippetLimit) -> Option<ContextSnippet>
     }
 
     let system = axuielement::SystemWideElement::new()?;
-    let app_element = system.focused_application().ok().flatten()?;
-    let (app_bundle_id, app_name) = focused_app_identity(&app_element)?;
+    let app_element = system.focused_application().ok().flatten();
+    let system_focused = system.focused_ui_element().ok().flatten();
+    let app_focused = app_element.as_ref().and_then(|app| {
+        app.element_attribute(AX_FOCUSED_UI_ELEMENT_ATTRIBUTE)
+            .ok()
+            .flatten()
+    });
+    let (app_bundle_id, app_name) = app_element
+        .as_ref()
+        .and_then(focused_app_identity)
+        .or_else(|| system_focused.as_ref().and_then(app_identity_from_pid))
+        .or_else(|| app_focused.as_ref().and_then(app_identity_from_pid))?;
     capture_preflight(AccessibilityPermissionStatus::Trusted, &app_bundle_id).ok()?;
-    let element = system.focused_ui_element().ok().flatten()?;
-    let snapshot = FocusedElementSnapshot::from_ax_element(&element).ok()?;
-    validate_focused_editable_element(&app_bundle_id, &snapshot).ok()?;
+    let element = resolve_ax_focus(&app_bundle_id, system_focused, app_focused)
+        .ok()?
+        .element;
 
     let window_title = system
         .focused_window()
@@ -763,10 +1401,12 @@ fn captured_draft_from_element(
 mod tests {
     use super::{
         bound_context_snippets, bound_draft, bounded_suffix_with_range, build_ready_capture_result,
-        capture_preflight, collect_context_snippets, is_supported_app,
-        validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
-        CaptureResult, ContextSnippet, ContextSnippetLimit, DestinationRegistry,
-        DestinationSnapshot, FocusedElementSnapshot,
+        capture_preflight, collect_context_snippets, editability_from_fallback, is_supported_app,
+        resolve_contract, validate_element_contract, validate_focused_editable_element,
+        AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
+        ContextSnippetLimit, ContractError, DestinationRegistry, DestinationSnapshot,
+        ElementContract, FocusResolutionError, FocusSource, FocusedElementSnapshot, ProbeElement,
+        AX_TEXT_AREA_ROLE, AX_TEXT_FIELD_ROLE,
     };
     use quip_contracts::{Rect, Trigger};
 
@@ -777,6 +1417,44 @@ mod tests {
             width: 2.0,
             height: 18.0,
         }
+    }
+
+    fn probe(app_bundle_id: &str, contract: ElementContract) -> ProbeElement {
+        ProbeElement {
+            app_bundle_id: app_bundle_id.to_string(),
+            contract,
+            children: Vec::new(),
+        }
+    }
+
+    fn probe_with_children(
+        app_bundle_id: &str,
+        contract: ElementContract,
+        children: Vec<ProbeElement>,
+    ) -> ProbeElement {
+        ProbeElement {
+            app_bundle_id: app_bundle_id.to_string(),
+            contract,
+            children,
+        }
+    }
+
+    fn resolve_probe(
+        app_id: &str,
+        system_focused: Option<ProbeElement>,
+        app_focused: Option<ProbeElement>,
+    ) -> Result<super::FocusResolution<ProbeElement>, FocusResolutionError> {
+        resolve_contract(
+            app_id,
+            system_focused,
+            app_focused,
+            |source, depth, element| {
+                super::evaluate_contract_candidate(source, depth, element, |element| {
+                    Ok(element.contract.clone())
+                })
+            },
+            |element| element.children.clone(),
+        )
     }
 
     #[test]
@@ -847,6 +1525,192 @@ mod tests {
             panic!("expected ready capture result");
         };
         assert_eq!(registry.release(&destination_id), Ok(()));
+    }
+
+    #[test]
+    fn resolver_falls_back_to_app_level_focused_element() {
+        let system = probe(
+            "com.apple.TextEdit",
+            ElementContract::container("AXWebArea"),
+        );
+        let app = probe(
+            "com.apple.TextEdit",
+            ElementContract::editable_text(AX_TEXT_AREA_ROLE),
+        );
+
+        let resolved = resolve_probe("com.apple.TextEdit", Some(system), Some(app)).unwrap();
+
+        assert_eq!(resolved.source, FocusSource::AppFocused);
+        assert_eq!(resolved.reason, "direct");
+    }
+
+    #[test]
+    fn resolver_rejects_container_only_web_area() {
+        let system = probe(
+            "com.vivaldi.Vivaldi",
+            ElementContract::container("AXWebArea"),
+        );
+
+        let error = resolve_probe("com.vivaldi.Vivaldi", Some(system), None).unwrap_err();
+
+        assert_eq!(error.reason, ContractError::NotTextRole);
+        assert_eq!(error.diagnostics[0].reject_reason, Some("not_text_role"));
+    }
+
+    #[test]
+    fn resolver_accepts_editable_descendant() {
+        let child = probe(
+            "com.vivaldi.Vivaldi",
+            ElementContract::editable_text(AX_TEXT_FIELD_ROLE),
+        );
+        let system = probe_with_children(
+            "com.vivaldi.Vivaldi",
+            ElementContract::container("AXWebArea"),
+            vec![child],
+        );
+
+        let resolved = resolve_probe("com.vivaldi.Vivaldi", Some(system), None).unwrap();
+
+        assert_eq!(resolved.source, FocusSource::SystemFocused);
+        assert_eq!(resolved.reason, "resolved_descendant");
+        assert_eq!(resolved.element.contract.role, AX_TEXT_FIELD_ROLE);
+    }
+
+    #[test]
+    fn resolver_preserves_secure_field_rejection() {
+        let system = probe("com.apple.TextEdit", ElementContract::secure_text());
+
+        let error = resolve_probe("com.apple.TextEdit", Some(system), None).unwrap_err();
+
+        assert_eq!(error.reason, ContractError::SecureField);
+    }
+
+    #[test]
+    fn resolver_keeps_unsupported_app_rejected_after_fallback() {
+        let system = probe(
+            "org.mozilla.firefox",
+            ElementContract::container("AXWebArea"),
+        );
+        let app = probe(
+            "org.mozilla.firefox",
+            ElementContract::editable_text(AX_TEXT_FIELD_ROLE),
+        );
+
+        let error = resolve_probe("org.mozilla.firefox", Some(system), Some(app)).unwrap_err();
+
+        assert_eq!(error.reason, ContractError::UnsupportedApp);
+    }
+
+    #[test]
+    fn textedit_unknown_editable_text_area_passes_with_full_contract() {
+        let contract = ElementContract {
+            is_editable: None,
+            ..ElementContract::editable_text(AX_TEXT_AREA_ROLE)
+        };
+
+        assert_eq!(
+            validate_element_contract("com.apple.TextEdit", &contract),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn text_area_with_missing_subrole_passes_with_full_contract() {
+        let contract = ElementContract {
+            subrole: None,
+            ..ElementContract::editable_text(AX_TEXT_AREA_ROLE)
+        };
+
+        assert_eq!(
+            validate_element_contract("com.apple.TextEdit", &contract),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn unsupported_editable_and_unsettable_value_keeps_unknown_and_full_contract_passes() {
+        let contract = ElementContract {
+            is_editable: editability_from_fallback(Some(false)),
+            ..ElementContract::editable_text(AX_TEXT_AREA_ROLE)
+        };
+
+        assert_eq!(contract.is_editable, None);
+        assert_eq!(
+            validate_element_contract("com.apple.TextEdit", &contract),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn settable_value_promotes_unknown_editability_to_true() {
+        assert_eq!(editability_from_fallback(Some(true)), Some(true));
+        assert_eq!(editability_from_fallback(None), None);
+    }
+
+    #[test]
+    fn explicit_not_editable_rejects_even_with_full_contract() {
+        let contract = ElementContract {
+            is_editable: Some(false),
+            ..ElementContract::editable_text(AX_TEXT_AREA_ROLE)
+        };
+
+        assert_eq!(
+            validate_element_contract("com.apple.TextEdit", &contract),
+            Err(ContractError::ExplicitNotEditable)
+        );
+    }
+
+    #[test]
+    fn resolver_preserves_exact_reject_reason_when_contract_construction_fails() {
+        let system = probe(
+            "com.apple.TextEdit",
+            ElementContract::editable_text(AX_TEXT_AREA_ROLE),
+        );
+
+        let error = resolve_contract(
+            "com.apple.TextEdit",
+            Some(system),
+            None,
+            |source, depth, element| {
+                super::evaluate_contract_candidate(source, depth, element, |_| {
+                    Err(ContractError::SubroleReadError)
+                })
+            },
+            |element| element.children.clone(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.reason, ContractError::SubroleReadError);
+        assert_eq!(
+            error.diagnostics[0].reject_reason,
+            Some("subrole_read_error")
+        );
+    }
+
+    #[test]
+    fn text_area_without_selected_range_fails() {
+        let contract = ElementContract {
+            selected_range_available: false,
+            ..ElementContract::editable_text(AX_TEXT_AREA_ROLE)
+        };
+
+        assert_eq!(
+            validate_element_contract("com.apple.TextEdit", &contract),
+            Err(ContractError::SelectedRangeUnavailable)
+        );
+    }
+
+    #[test]
+    fn secure_text_field_with_unknown_editable_still_fails_secure() {
+        let contract = ElementContract {
+            is_editable: None,
+            ..ElementContract::secure_text()
+        };
+
+        assert_eq!(
+            validate_element_contract("com.apple.TextEdit", &contract),
+            Err(ContractError::SecureField)
+        );
     }
 
     #[test]

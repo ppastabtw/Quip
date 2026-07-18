@@ -165,6 +165,30 @@ fn record_debug(app: &AppHandle, event: &str, summary: impl Into<String>, payloa
     };
 }
 
+fn record_resolver_candidates(
+    app: &AppHandle,
+    parent_event: &'static str,
+    focused: &accessibility::FocusedElementDiagnostic,
+) {
+    for candidate in &focused.resolver_candidates {
+        record_debug(
+            app,
+            "capture_resolver_candidate",
+            format!(
+                "{} {} depth {} -> {}",
+                parent_event,
+                candidate.source,
+                candidate.depth,
+                candidate.reject_reason.unwrap_or("accepted")
+            ),
+            json!({
+                "parent_event": parent_event,
+                "candidate": candidate,
+            }),
+        );
+    }
+}
+
 fn snapshot_phase(snapshot: &Snapshot) -> &'static str {
     match snapshot {
         Snapshot::Idle => "idle",
@@ -255,6 +279,8 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             engine.settings.window_context,
         )
     };
+    let focused = accessibility::focused_element_diagnostic();
+    record_resolver_candidates(&app, "capture_requested", &focused);
     record_debug(
         &app,
         "capture_requested",
@@ -264,7 +290,7 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             "trigger": trigger,
             "profile_id": profile_id,
             "include_context": include_context,
-            "focused": accessibility::focused_element_diagnostic(),
+            "focused": focused,
         }),
     );
     let result = accessibility::capture_focused_destination(&profile_id, trigger);
@@ -390,6 +416,8 @@ async fn run_capture_result(
             .await;
         }
         CaptureResult::Unavailable { reason } => {
+            let focused = accessibility::focused_element_diagnostic();
+            record_resolver_candidates(&app, "capture_unavailable", &focused);
             record_debug(
                 &app,
                 "capture_unavailable",
@@ -397,7 +425,7 @@ async fn run_capture_result(
                 json!({
                     "source": source,
                     "reason": reason,
-                    "focused": accessibility::focused_element_diagnostic(),
+                    "focused": focused,
                 }),
             );
             emit_snapshot(&app, &Snapshot::Unavailable { reason });
