@@ -2,7 +2,7 @@
 
 ## Product statement
 
-Quip is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is restraint. It keeps valid or intentionally unusual text unchanged and proposes minimal replacements only when the model is confident that decoding is useful.
+Quip is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is speed.
 
 ## Locality contract
 
