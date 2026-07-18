@@ -163,7 +163,8 @@
         "destination_id": "destination_textedit",
         "profile_id": "profile_default",
         "draft": "cnt cm tmrw",
-        "trigger": "idle"
+        "trigger": "idle",
+        "caret": { "x": 512, "y": 384, "width": 2, "height": 18 }
       }
     },
     {

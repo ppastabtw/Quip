@@ -8,7 +8,38 @@
   </head>
   <body>
     <h1>Settings</h1>
-    <p class="placeholder">Settings placeholder — enabled state, window context, learning, and profiles land next.</p>
+
+    <label class="row"><input type="checkbox" id="enabled" /> Enabled</label>
+    <label class="row"><input type="checkbox" id="window_context" /> Window context</label>
+    <label class="row"><input type="checkbox" id="learning_paused" /> Pause learning</label>
+
+    <label class="row">Profile
+      <select id="active_profile"></select>
+      <button id="reset_profile">Reset profile…</button>
+    </label>
+    <label class="row">Model variant
+      <select id="model_variant">
+        <option value="base">base</option>
+        <option value="global">global</option>
+        <option value="global_plus_personal">global_plus_personal</option>
+      </select>
+    </label>
+    <label class="row">Backend
+      <select id="backend_mode">
+        <option value="fixture">fixture (deterministic)</option>
+        <option value="live">live (sidecar)</option>
+      </select>
+    </label>
+
+    <h2>Learned patterns</h2>
+    <p class="muted" id="patterns_empty">No stored patterns for this profile.</p>
+    <table id="patterns" hidden>
+      <thead>
+        <tr><th>shorthand</th><th>expansion</th><th>seen</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
     <script type="module" src="./settings.ts"></script>
   </body>
 </html>

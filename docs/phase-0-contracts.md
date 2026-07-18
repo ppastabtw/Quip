@@ -34,7 +34,9 @@ The Accessibility layer exposes an opaque `destination_id`. The UI returns that 
 - A successful `keep` result has no candidates.
 - A successful `replace` result has one to three full-input replacements, ordered best first.
 - Failures use an explicit error result. They do not invent an action or candidates.
-- The application adds the exact draft option independently. A matching model suggestion is not exposed as a candidate.
+- The typed burst stays in the destination as typed (IME model). Doing nothing always keeps it; the UI shows model candidates only, and the model never returns the draft as a candidate.
+- A `ready` capture carries the caret rectangle in screen coordinates so the suggestion bar can be placed above it.
+- Committing a candidate replaces the just-typed burst range in the destination in place. A `keep` result or a dismissal changes nothing.
 - Secure and unsupported fields produce an unavailable capture result and never reach inference.
 - Internal Accessibility state and personal records stay local to the Mac.
 
