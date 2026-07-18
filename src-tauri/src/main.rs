@@ -18,7 +18,7 @@ mod learning;
 mod settings;
 
 use commit::CommitOutcome;
-use composition::{BurstInput, Engine, Snapshot};
+use composition::{ApplyDisposition, BurstInput, Engine, Snapshot};
 use inference::{DemoCase, Metrics, SidecarClient, SideSpec};
 use quip_contracts::{
     CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
@@ -163,10 +163,20 @@ fn cancel_destination(destination_id: String) -> Result<commit::CommitReport, co
     commit::cancel_destination(&destination_id)
 }
 
-/// One full burst: begin → inference → suggest. Fixture latency is replayed;
+/// Broadcast when a burst's prediction settles (offered, skipped, or stale):
+/// the capture side uses it to free its serial request slot and fire the next
+/// queued batch.
+#[derive(Serialize, Clone)]
+struct SettledEvent {
+    burst_id: String,
+    /// True when the result produced (or refreshed) a visible offer.
+    offered: bool,
+}
+
+/// One full burst: begin → inference → offer. Fixture latency is replayed;
 /// live results have already incurred their measured latency. The engine lock
 /// is never held across the optional sleep, and stale results are dropped by
-/// `apply_result` if the burst was dismissed meanwhile.
+/// `apply_result` if the burst was retracted meanwhile.
 async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     let begun = {
         let engine = app.state::<EngineState>();
@@ -227,14 +237,19 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
-    let applied = {
+    let disposition = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
         engine.apply_result(&burst_id, result)
     };
-    if let Some(snapshot) = applied {
-        emit_snapshot(&app, &snapshot);
+    let offered = matches!(disposition, ApplyDisposition::Offered(_));
+    match disposition {
+        ApplyDisposition::Offered(snapshot) | ApplyDisposition::Skipped(snapshot) => {
+            emit_snapshot(&app, &snapshot);
+        }
+        ApplyDisposition::Stale => {}
     }
+    let _ = app.emit("composition://settled", SettledEvent { burst_id, offered });
 }
 
 /// `capture_result` entry point: the playground and demo harness now, real
@@ -278,7 +293,13 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
     };
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
-    emit_snapshot(&app, &Snapshot::Idle);
+    // The next queued offer (or the in-flight burst) becomes the view.
+    let current = {
+        let engine = app.state::<EngineState>();
+        let engine = engine.0.lock().unwrap();
+        engine.current_snapshot()
+    };
+    emit_snapshot(&app, &current);
     Ok(outcome)
 }
 
@@ -300,6 +321,30 @@ fn dismiss_suggestions(app: AppHandle) {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
         engine.dismiss()
+    };
+    emit_snapshot(&app, &snapshot);
+}
+
+/// Sentence boundary or a destroyed destination: the visible offer counts as
+/// a stable dismissal, queued offers and the in-flight burst are dropped.
+#[tauri::command]
+fn end_composition_session(app: AppHandle) {
+    let snapshot = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.end_session()
+    };
+    emit_snapshot(&app, &snapshot);
+}
+
+/// Editing invalidated the words a burst's model saw: drop it wherever it is
+/// (queued offer or in-flight) without recording a label.
+#[tauri::command]
+fn retract_offer(app: AppHandle, burst_id: String) {
+    let snapshot = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.retract(&burst_id)
     };
     emit_snapshot(&app, &snapshot);
 }
@@ -713,6 +758,8 @@ fn main() {
             select_candidate,
             move_selection,
             dismiss_suggestions,
+            end_composition_session,
+            retract_offer,
             get_composition_state,
             get_settings,
             update_settings,
@@ -844,7 +891,36 @@ mod selftest {
         set_simulate_failure(app.clone(), false);
         dismiss_suggestions(app.clone());
 
-        // 6. The two demo profiles produce different candidates.
+        // 6. A batch that settles while an earlier offer is on display queues
+        //    behind it instead of replacing it; resolving the first surfaces
+        //    the second immediately.
+        inject_capture(
+            app.clone(),
+            capture("st_q1", "profile_default", "cnt cm tmrw"),
+        )
+        .await;
+        inject_capture(app.clone(), capture("st_q2", "profile_default", "omw")).await;
+        let (candidates, _) = suggesting(&app)?;
+        check(
+            "the first batch stays on display while the second queues",
+            candidates.first().map(String::as_str) == Some("Can't come tomorrow."),
+            format!("{candidates:?}"),
+        )?;
+        dismiss_suggestions(app.clone());
+        let (candidates, _) = suggesting(&app)?;
+        check(
+            "dismissing the first offer surfaces the queued batch",
+            candidates.first().map(String::as_str) == Some("On my way."),
+            format!("{candidates:?}"),
+        )?;
+        end_composition_session(app.clone());
+        check(
+            "ending the session clears every offer",
+            state(&app) == Snapshot::Idle,
+            format!("{:?}", state(&app)),
+        )?;
+
+        // 7. The two demo profiles produce different candidates.
         let report = run_comparison(app.clone(), "personal".into())?;
         let texts = |side: &ComparisonSide| match &side.result {
             PredictionResult::Ok { candidates, .. } => candidates.clone(),
@@ -856,7 +932,7 @@ mod selftest {
             format!("{:?} vs {:?}", texts(&report.left), texts(&report.right)),
         )?;
 
-        // 7. Metrics counted every prediction, none schema-invalid.
+        // 8. Metrics counted every prediction, none schema-invalid.
         let metrics = get_metrics(app.clone());
         check(
             "metrics counted all predictions",

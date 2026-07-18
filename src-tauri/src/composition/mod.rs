@@ -1,12 +1,14 @@
-//! Workstream 4: composition state machine, IME model
-//! (`Idle -> Predicting -> Suggesting -> applied | dismissed`).
+//! Workstream 4: composition state machine, IME model.
 //!
 //! The user types directly into their own textbox; Quip observes bursts and
-//! floats a candidate bar above the caret. Invariants: an empty successful
-//! result shows nothing, candidates replace the burst in place
-//! only on explicit selection, dismissal and stale results change nothing,
-//! and starting a new burst while suggestions are visible counts as a stable
-//! dismissal (a `keep` learning label).
+//! floats a candidate bar above the caret. Settled predictions become
+//! *offers* that queue oldest-first: the bar always shows the oldest
+//! unresolved offer, later batches wait behind it, and a burst can be
+//! inferring while an earlier offer is still on display. Invariants: a
+//! result whose candidates all equal the typed draft shows nothing,
+//! candidates replace the burst in place only on explicit selection,
+//! dismissal and stale results change nothing, and resolving one offer
+//! surfaces the next already-computed one immediately.
 
 use crate::commit::{self, CommitOutcome};
 use crate::inference::{FixtureBackend, Metrics};
@@ -17,6 +19,7 @@ use quip_contracts::{
     Trigger,
 };
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::path::Path;
 
 /// What the UI renders. Every mutation of the engine returns one of these and
@@ -32,8 +35,9 @@ pub enum Snapshot {
         draft: String,
         model_variant: ModelVariant,
     },
-    /// The candidate bar is visible above `caret`. `candidates` holds one to
-    /// five model replacements (empty only in the error state).
+    /// The candidate bar is visible above `caret`, showing the oldest
+    /// unresolved offer. `candidates` holds one to five model replacements
+    /// (empty only in the error state).
     Suggesting {
         burst_id: String,
         draft: String,
@@ -84,18 +88,28 @@ pub struct BurstInput {
     pub profile_id: Option<String>,
 }
 
-enum State {
-    Idle,
-    Predicting(Burst),
-    Suggesting {
-        burst: Burst,
-        candidates: Vec<String>,
-        recommended: usize,
-        selected: usize,
-        backend: Option<Backend>,
-        latency_ms: Option<u64>,
-        error: Option<ErrorInfo>,
-    },
+/// A settled prediction waiting for the user to act on it.
+struct Offer {
+    burst: Burst,
+    candidates: Vec<String>,
+    selected: usize,
+    backend: Option<Backend>,
+    latency_ms: Option<u64>,
+    error: Option<ErrorInfo>,
+}
+
+/// How `apply_result` disposed of a finished prediction.
+pub enum ApplyDisposition {
+    /// The result produced (or refreshed) an offer; the snapshot is the
+    /// current view, which may still be an older offer at the head of the
+    /// queue.
+    Offered(Snapshot),
+    /// The result was consumed but offered nothing: zero candidates, or every
+    /// candidate equaled the typed draft. The typed text stands.
+    Skipped(Snapshot),
+    /// The burst was retracted or superseded while inference ran; the result
+    /// is dropped, never shown.
+    Stale,
 }
 
 pub struct Engine {
@@ -103,7 +117,12 @@ pub struct Engine {
     pub learning: LearningStore,
     pub backend: FixtureBackend,
     pub metrics: Metrics,
-    state: State,
+    /// The burst currently awaiting a prediction, if any. Independent of the
+    /// offer queue: inference on a new batch overlaps the display of earlier
+    /// offers.
+    in_flight: Option<Burst>,
+    /// Settled offers, oldest first. The front is what the bar shows.
+    offers: VecDeque<Offer>,
     burst_seq: u64,
     data_dir: std::path::PathBuf,
 }
@@ -115,7 +134,8 @@ impl Engine {
             learning: LearningStore::open(data_dir),
             backend: FixtureBackend::new(),
             metrics: Metrics::default(),
-            state: State::Idle,
+            in_flight: None,
+            offers: VecDeque::new(),
             burst_seq: 0,
             data_dir: data_dir.to_path_buf(),
         }
@@ -125,11 +145,10 @@ impl Engine {
         self.settings.save(&self.data_dir);
     }
 
-    /// Starts a burst: builds the bounded prediction request and moves to
-    /// Predicting. Returns the request for the caller to execute so the lock
-    /// is not held during (simulated) inference. Superseding visible
-    /// suggestions is silent (IME model: the burst is still growing and the
-    /// bar simply refreshes); only an explicit dismissal records a keep label.
+    /// Starts a burst: builds the bounded prediction request and puts the
+    /// burst in flight. Returns the request for the caller to execute so the
+    /// lock is not held during inference. Visible offers are untouched: they
+    /// stay on display (and acceptable) while the new burst infers.
     pub fn begin_burst(
         &mut self,
         input: BurstInput,
@@ -141,8 +160,7 @@ impl Engine {
         }
         let draft = input.draft.trim().to_string();
         if draft.is_empty() {
-            self.state = State::Idle;
-            return Err(Snapshot::Idle);
+            return Err(self.current_snapshot());
         }
         self.burst_seq += 1;
         let burst = Burst {
@@ -182,7 +200,7 @@ impl Engine {
             draft: burst.draft.clone(),
             model_variant: burst.model_variant,
         };
-        self.state = State::Predicting(burst);
+        self.in_flight = Some(burst);
         Ok((snapshot, request, self.settings.backend_mode))
     }
 
@@ -221,93 +239,92 @@ impl Engine {
         }
     }
 
-    /// Applies a finished prediction. Returns None when the burst was
-    /// dismissed or superseded while inference ran (stale results are
-    /// dropped, never shown). A zero-candidate result returns Idle: no bar.
-    pub fn apply_result(&mut self, burst_id: &str, result: PredictionResult) -> Option<Snapshot> {
-        let State::Predicting(burst) = &self.state else {
-            return None;
-        };
-        if burst.burst_id != burst_id {
-            return None;
+    /// Applies a finished prediction. Candidates equal to the typed draft are
+    /// filtered out — leaving the text alone is not a correction — and a
+    /// result with nothing left is skipped without an offer. Otherwise the
+    /// result becomes an offer: it replaces an existing offer whose draft it
+    /// extends (a grown burst re-predicting the same words), or queues behind
+    /// unrelated offers so an earlier batch is never skipped by a later one.
+    pub fn apply_result(&mut self, burst_id: &str, result: PredictionResult) -> ApplyDisposition {
+        if self
+            .in_flight
+            .as_ref()
+            .is_none_or(|burst| burst.burst_id != burst_id)
+        {
+            return ApplyDisposition::Stale;
         }
-        let burst = burst.clone();
+        let burst = self.in_flight.take().expect("checked above");
 
         let (candidates, backend, latency_ms, error) = match result {
-            PredictionResult::Ok { candidates, .. } if candidates.is_empty() => {
-                // The typed text stands; the user is never interrupted.
-                self.state = State::Idle;
-                return Some(Snapshot::Idle);
-            }
             PredictionResult::Ok {
                 candidates,
                 backend,
                 latency_ms,
                 ..
-            } => (candidates, Some(backend), Some(latency_ms), None),
+            } => {
+                let changed: Vec<String> = candidates
+                    .into_iter()
+                    .filter(|candidate| candidate.trim() != burst.draft)
+                    .collect();
+                if changed.is_empty() {
+                    // The typed text stands; the user is never interrupted.
+                    return ApplyDisposition::Skipped(self.current_snapshot());
+                }
+                (changed, Some(backend), Some(latency_ms), None)
+            }
             // Failures surface as an explicit error chip in the bar; the
             // typed text is untouched either way.
             PredictionResult::Error { error, .. } => (Vec::new(), None, None, Some(error)),
         };
 
-        let snapshot = Snapshot::Suggesting {
-            burst_id: burst.burst_id.clone(),
-            draft: burst.draft.clone(),
-            candidates: candidates.clone(),
-            recommended: 0,
-            selected: 0,
-            caret: burst.caret,
-            model_variant: burst.model_variant,
-            backend,
-            latency_ms,
-            error: error.clone(),
-        };
-        self.state = State::Suggesting {
+        let offer = Offer {
             burst,
             candidates,
-            recommended: 0,
             selected: 0,
             backend,
             latency_ms,
             error,
         };
-        Some(snapshot)
+        if let Some(existing) = self
+            .offers
+            .iter_mut()
+            .find(|existing| offer.burst.draft.starts_with(&existing.burst.draft))
+        {
+            *existing = offer;
+        } else {
+            self.offers.push_back(offer);
+        }
+        ApplyDisposition::Offered(self.current_snapshot())
     }
 
-    /// Moves the highlight left/right through the candidates with
-    /// wrap-around (arrow keys). Returns None when no candidates are
+    /// Moves the highlight left/right through the shown offer's candidates
+    /// with wrap-around (arrow keys). Returns None when no candidates are
     /// visible.
     pub fn move_selection(&mut self, delta: i64) -> Option<Snapshot> {
-        let State::Suggesting {
-            candidates,
-            selected,
-            ..
-        } = &mut self.state
-        else {
-            return None;
-        };
-        if candidates.is_empty() {
+        let offer = self.offers.front_mut()?;
+        if offer.candidates.is_empty() {
             return None;
         }
-        let len = candidates.len() as i64;
-        *selected = (*selected as i64 + delta).rem_euclid(len) as usize;
+        let len = offer.candidates.len() as i64;
+        offer.selected = (offer.selected as i64 + delta).rem_euclid(len) as usize;
         Some(self.current_snapshot())
     }
 
-    /// Replaces the burst with the selected candidate. Only ever called with
-    /// an explicit selection (number key or click); there is no auto-apply.
+    /// Replaces the shown offer's burst with the selected candidate. Only
+    /// ever called with an explicit selection (number key or click); there is
+    /// no auto-apply. Queued offers and the in-flight burst survive: the next
+    /// offer surfaces right after.
     pub fn select(&mut self, index: usize) -> Result<(Snapshot, CommitOutcome), String> {
-        let State::Suggesting {
-            burst, candidates, ..
-        } = &self.state
-        else {
-            return Err("no suggestions to select".to_string());
-        };
-        let text = candidates
+        let offer = self
+            .offers
+            .front()
+            .ok_or("no suggestions to select")?;
+        let text = offer
+            .candidates
             .get(index)
             .ok_or("candidate index out of range")?
             .clone();
-        let burst = burst.clone();
+        let burst = self.offers.pop_front().expect("checked above").burst;
 
         let outcome = commit::replace_burst(&burst.destination_id, &burst.burst_id, &text);
         if !self.settings.learning_paused {
@@ -326,7 +343,6 @@ impl Engine {
                     .record_pattern(&burst.profile_id, &shorthand, &expansion);
             }
         }
-        self.state = State::Idle;
         Ok((
             Snapshot::Applied {
                 burst_id: burst.burst_id,
@@ -337,66 +353,87 @@ impl Engine {
         ))
     }
 
-    /// Dismisses visible suggestions (Escape, or the caller observed the
-    /// user typing on). Changes nothing in the destination; a stable
-    /// dismissal of real candidates becomes a `keep` example per the spec.
+    /// Dismisses the shown offer (Escape). Changes nothing in the
+    /// destination; a stable dismissal of real candidates becomes a `keep`
+    /// example per the spec. The next queued offer (or the in-flight burst)
+    /// becomes the current view.
     pub fn dismiss(&mut self) -> Snapshot {
-        self.record_dismissal_if_suggesting();
-        self.state = State::Idle;
+        if let Some(offer) = self.offers.pop_front() {
+            self.record_keep(&offer);
+        }
+        self.current_snapshot()
+    }
+
+    /// Ends the composition session (sentence boundary, or the destination
+    /// was edited out from under the tracked burst): the visible offer counts
+    /// as a stable dismissal, queued offers and the in-flight burst are
+    /// dropped without labels.
+    pub fn end_session(&mut self) -> Snapshot {
+        if let Some(offer) = self.offers.pop_front() {
+            self.record_keep(&offer);
+        }
+        self.offers.clear();
+        self.in_flight = None;
         Snapshot::Idle
     }
 
-    fn record_dismissal_if_suggesting(&mut self) {
-        if let State::Suggesting {
-            burst, candidates, ..
-        } = &self.state
+    /// Drops one burst wherever it is — a queued offer or the in-flight
+    /// prediction — without recording a label. Used when editing invalidates
+    /// the words the model saw.
+    pub fn retract(&mut self, burst_id: &str) -> Snapshot {
+        self.offers.retain(|offer| offer.burst.burst_id != burst_id);
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|burst| burst.burst_id == burst_id)
         {
-            if !candidates.is_empty() && !self.settings.learning_paused {
-                self.learning.append_example(&LabeledExample {
-                    ts_ms: learning::now_ms(),
-                    burst_id: burst.burst_id.clone(),
-                    profile_id: burst.profile_id.clone(),
-                    draft: burst.draft.clone(),
-                    label: "keep".to_string(),
-                    committed: String::new(),
-                    source: "dismissal".to_string(),
-                    model_variant: burst.model_variant,
-                });
-            }
+            self.in_flight = None;
+        }
+        self.current_snapshot()
+    }
+
+    fn record_keep(&mut self, offer: &Offer) {
+        if !offer.candidates.is_empty() && !self.settings.learning_paused {
+            self.learning.append_example(&LabeledExample {
+                ts_ms: learning::now_ms(),
+                burst_id: offer.burst.burst_id.clone(),
+                profile_id: offer.burst.profile_id.clone(),
+                draft: offer.burst.draft.clone(),
+                label: "keep".to_string(),
+                committed: String::new(),
+                source: "dismissal".to_string(),
+                model_variant: offer.burst.model_variant,
+            });
         }
     }
 
     /// Rebuilds the current UI snapshot, used to sync a webview on load and
-    /// by the selftest to observe state between steps.
+    /// by the selftest to observe state between steps. The oldest unresolved
+    /// offer outranks the in-flight burst: the bar never flickers back to a
+    /// predicting state while something is still on display.
     pub fn current_snapshot(&self) -> Snapshot {
-        match &self.state {
-            State::Idle => Snapshot::Idle,
-            State::Predicting(burst) => Snapshot::Predicting {
-                burst_id: burst.burst_id.clone(),
-                draft: burst.draft.clone(),
-                model_variant: burst.model_variant,
-            },
-            State::Suggesting {
-                burst,
-                candidates,
-                recommended,
-                selected,
-                backend,
-                latency_ms,
-                error,
-            } => Snapshot::Suggesting {
-                burst_id: burst.burst_id.clone(),
-                draft: burst.draft.clone(),
-                candidates: candidates.clone(),
-                recommended: *recommended,
-                selected: *selected,
-                caret: burst.caret,
-                model_variant: burst.model_variant,
-                backend: *backend,
-                latency_ms: *latency_ms,
-                error: error.clone(),
-            },
+        if let Some(offer) = self.offers.front() {
+            return Snapshot::Suggesting {
+                burst_id: offer.burst.burst_id.clone(),
+                draft: offer.burst.draft.clone(),
+                candidates: offer.candidates.clone(),
+                recommended: 0,
+                selected: offer.selected,
+                caret: offer.burst.caret,
+                model_variant: offer.burst.model_variant,
+                backend: offer.backend,
+                latency_ms: offer.latency_ms,
+                error: offer.error.clone(),
+            };
         }
+        if let Some(burst) = &self.in_flight {
+            return Snapshot::Predicting {
+                burst_id: burst.burst_id.clone(),
+                draft: burst.draft.clone(),
+                model_variant: burst.model_variant,
+            };
+        }
+        Snapshot::Idle
     }
 
     /// Fixture-mode health. Live health is answered by the sidecar client
@@ -442,11 +479,25 @@ mod tests {
         }
     }
 
+    fn settled(disposition: ApplyDisposition) -> Snapshot {
+        match disposition {
+            ApplyDisposition::Offered(snapshot) | ApplyDisposition::Skipped(snapshot) => snapshot,
+            ApplyDisposition::Stale => panic!("result was unexpectedly stale"),
+        }
+    }
+
     fn run_burst(engine: &mut Engine, draft: &str) -> Snapshot {
         let (_, request, _) = engine.begin_burst(typed(draft)).unwrap();
         let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
         let result = engine.predict_fixture(&request);
-        engine.apply_result(&burst_id, result).unwrap()
+        settled(engine.apply_result(&burst_id, result))
+    }
+
+    fn shown_candidates(engine: &Engine) -> Vec<String> {
+        match engine.current_snapshot() {
+            Snapshot::Suggesting { candidates, .. } => candidates,
+            other => panic!("expected suggesting, got {other:?}"),
+        }
     }
 
     #[test]
@@ -483,6 +534,43 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_candidates_are_filtered_and_never_shown() {
+        let (mut engine, dir) = test_engine();
+        let (_, request, _) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        // Every candidate equals the typed draft (modulo whitespace): the
+        // whole result is skipped and no bar appears.
+        let unchanged = PredictionResult::Ok {
+            request_id: request.request_id.clone(),
+            model_variant: request.model_variant,
+            backend: Backend::Live,
+            candidates: vec!["cnt cm tmrw".to_string(), " cnt cm tmrw ".to_string()],
+            latency_ms: 12,
+        };
+        assert!(matches!(
+            engine.apply_result(&burst_id, unchanged),
+            ApplyDisposition::Skipped(Snapshot::Idle)
+        ));
+
+        // A mixed result keeps only the changed candidate.
+        let (_, request, _) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        let mixed = PredictionResult::Ok {
+            request_id: request.request_id.clone(),
+            model_variant: request.model_variant,
+            backend: Backend::Live,
+            candidates: vec![
+                "cnt cm tmrw".to_string(),
+                "Can't come tomorrow.".to_string(),
+            ],
+            latency_ms: 12,
+        };
+        settled(engine.apply_result(&burst_id, mixed));
+        assert_eq!(shown_candidates(&engine), vec!["Can't come tomorrow."]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn error_result_shows_error_bar_with_no_candidates() {
         let (mut engine, dir) = test_engine();
         engine.backend.simulate_failure = true;
@@ -508,7 +596,7 @@ mod tests {
         assert_eq!(outcome.text, "Ship spec tonight.");
         let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
         assert!(raw.contains("\"confirmed_candidate\""));
-        // Selecting twice is impossible: state returned to idle.
+        // Selecting twice is impossible: the offer was consumed.
         assert!(engine.select(0).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -537,7 +625,7 @@ mod tests {
         engine.move_selection(-1).unwrap();
         let (_, outcome) = engine.select(candidates.len() - 1).unwrap();
         assert_eq!(outcome.text, candidates[candidates.len() - 1]);
-        // No selection to move once idle.
+        // No selection to move once the queue is empty.
         assert!(engine.move_selection(1).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -554,12 +642,65 @@ mod tests {
     }
 
     #[test]
-    fn superseding_suggestions_is_silent_continuation() {
+    fn later_batches_queue_behind_the_shown_offer() {
         let (mut engine, dir) = test_engine();
         run_burst(&mut engine, "cnt cm tmrw");
-        // The burst keeps growing while suggestions are visible: the bar
-        // refreshes, but no keep label is recorded (not a stable dismissal).
-        let _ = engine.begin_burst(typed("cnt cm tmrw ok")).unwrap();
+        // A disjoint second batch settles while the first is on display: it
+        // queues behind instead of replacing what the user is looking at.
+        let snapshot = run_burst(&mut engine, "ship spec tn");
+        let Snapshot::Suggesting { candidates, .. } = snapshot else {
+            panic!("expected suggesting");
+        };
+        assert_eq!(candidates[0], "Can't come tomorrow.");
+        // Resolving the first offer surfaces the second immediately.
+        let next = engine.dismiss();
+        let Snapshot::Suggesting { candidates, .. } = next else {
+            panic!("expected the queued offer, got {next:?}");
+        };
+        assert_eq!(candidates[0], "Ship spec tonight.");
+        // Accepting the queued offer works exactly like a fresh one.
+        let (_, outcome) = engine.select(0).unwrap();
+        assert_eq!(outcome.text, "Ship spec tonight.");
+        assert_eq!(engine.current_snapshot(), Snapshot::Idle);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn ok_result(request: &PredictionRequest, candidates: &[&str]) -> PredictionResult {
+        PredictionResult::Ok {
+            request_id: request.request_id.clone(),
+            model_variant: request.model_variant,
+            backend: Backend::Live,
+            candidates: candidates.iter().map(ToString::to_string).collect(),
+            latency_ms: 12,
+        }
+    }
+
+    #[test]
+    fn grown_burst_replaces_its_shorter_offer_in_place() {
+        let (mut engine, dir) = test_engine();
+        let (_, request, _) = engine.begin_burst(typed("cnt cm")).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        settled(engine.apply_result(&burst_id, ok_result(&request, &["Can't come."])));
+        // The typist paused mid-chunk (offer for "cnt cm"), then continued:
+        // the grown burst re-predicts a superset of the same words, so its
+        // result replaces the stale offer instead of queueing behind it.
+        let (_, request, _) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        settled(engine.apply_result(&burst_id, ok_result(&request, &["Can't come tomorrow."])));
+        assert_eq!(shown_candidates(&engine), vec!["Can't come tomorrow."]);
+        engine.dismiss();
+        assert_eq!(engine.current_snapshot(), Snapshot::Idle);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typing_on_leaves_the_shown_offer_standing() {
+        let (mut engine, dir) = test_engine();
+        run_burst(&mut engine, "cnt cm tmrw");
+        // The next batch starts inferring while the offer is on display: the
+        // offer stays, and no keep label is recorded (not a dismissal).
+        let _ = engine.begin_burst(typed("ok going now")).unwrap();
+        assert_eq!(shown_candidates(&engine)[0], "Can't come tomorrow.");
         assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -595,13 +736,47 @@ mod tests {
     }
 
     #[test]
-    fn stale_results_are_dropped_after_dismiss() {
+    fn retracted_bursts_drop_their_results_as_stale() {
         let (mut engine, dir) = test_engine();
         let (_, request, _) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
         let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
         let result = engine.predict_fixture(&request);
-        engine.dismiss();
-        assert!(engine.apply_result(&burst_id, result).is_none());
+        // Editing invalidated the words the model saw before the result
+        // landed: the in-flight burst is retracted and the result dropped.
+        engine.retract(&burst_id);
+        assert!(matches!(
+            engine.apply_result(&burst_id, result),
+            ApplyDisposition::Stale
+        ));
+        // Retract also removes a settled offer without a keep label.
+        run_burst(&mut engine, "cnt cm tmrw");
+        engine.retract("burst_2_unknown"); // unknown ids are a no-op
+        assert!(matches!(
+            engine.current_snapshot(),
+            Snapshot::Suggesting { .. }
+        ));
+        let shown_id = match engine.current_snapshot() {
+            Snapshot::Suggesting { burst_id, .. } => burst_id,
+            _ => unreachable!(),
+        };
+        engine.retract(&shown_id);
+        assert_eq!(engine.current_snapshot(), Snapshot::Idle);
+        assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn end_session_dismisses_shown_and_drops_the_rest() {
+        let (mut engine, dir) = test_engine();
+        run_burst(&mut engine, "cnt cm tmrw");
+        run_burst(&mut engine, "ship spec tn");
+        let _ = engine.begin_burst(typed("still typing mo")).unwrap();
+        assert_eq!(engine.end_session(), Snapshot::Idle);
+        assert_eq!(engine.current_snapshot(), Snapshot::Idle);
+        // Only the visible offer counts as a stable dismissal.
+        let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
+        assert_eq!(raw.matches("\"keep\"").count(), 1);
+        assert!(raw.contains("cnt cm tmrw"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -624,7 +799,7 @@ mod tests {
             },
         };
         let result = engine.record_result(&request, raw);
-        let snapshot = engine.apply_result(&burst_id, result).unwrap();
+        let snapshot = settled(engine.apply_result(&burst_id, result));
         let Snapshot::Suggesting { error, .. } = snapshot else {
             panic!("expected suggesting");
         };

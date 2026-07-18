@@ -102,6 +102,8 @@ export const api = {
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
   moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),
   dismissSuggestions: () => invoke<void>("dismiss_suggestions"),
+  endSession: () => invoke<void>("end_composition_session"),
+  retractOffer: (burstId: string) => invoke<void>("retract_offer", { burstId }),
   getCompositionState: () => invoke<Snapshot>("get_composition_state"),
   getSettings: () => invoke<AppSettings>("get_settings"),
   updateSettings: (settings: AppSettings) => invoke<void>("update_settings", { settings }),
@@ -117,9 +119,18 @@ export const api = {
     invoke<ComparisonReport>("run_comparison", { caseId }),
 };
 
+/** A burst's prediction settled (offered, skipped, or stale): the capture
+ * side's serial request slot is free again. */
+export interface SettledEvent {
+  burst_id: string;
+  offered: boolean;
+}
+
 export const events = {
   onSnapshot: (handler: (snapshot: Snapshot) => void) =>
     listen<Snapshot>("composition://state", (e) => handler(e.payload)),
+  onSettled: (handler: (settled: SettledEvent) => void) =>
+    listen<SettledEvent>("composition://settled", (e) => handler(e.payload)),
   onCommitted: (handler: (outcome: CommitOutcome) => void) =>
     listen<CommitOutcome>("composition://committed", (e) => handler(e.payload)),
   onSettings: (handler: (settings: AppSettings) => void) =>

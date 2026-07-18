@@ -109,25 +109,24 @@ interface ChunkRange {
 
 let settings: AppSettings | undefined;
 let burstStart = 0;
-/** The exact range the in-flight (or shown) candidates would replace, pinned
- * at request time: typing continues past it, so a selection must replace
- * exactly the words the model saw. */
-let firedStart = 0;
-let firedEnd = 0;
+/** The exact range each fired burst's candidates would replace, keyed by
+ * burst id and pinned at request time: typing continues past it, so a
+ * selection must replace exactly the words the model saw. Entries live until
+ * the burst resolves (applied, dismissed, skipped, or invalidated). */
+const firedRanges = new Map<string, ChunkRange>();
 /** Chunks completed while inference was busy; fired oldest-first as the
  * serial slot frees up (15 words typed = three 5-word batches, one at a
  * time, while typing continues). */
 const pendingChunks: ChunkRange[] = [];
-/** The batch whose candidates are currently on offer: underlined in the
- * playground, and acceptable even after the engine has moved on to
- * inferring the next queued batch. */
+/** Mirror of the engine's shown offer (the oldest unresolved batch):
+ * underlined in the playground and the target of the selection keys. The
+ * engine queues later batches behind it, so it survives their inference and
+ * their results. */
 let shownChunk:
   | (ChunkRange & { candidates: string[]; selected: number; burstId: string })
   | undefined;
 let burstSeq = 0;
 let activeBurstId: string | undefined;
-let suggesting = false;
-let selectedIndex = 0;
 let idleTimer: number | undefined;
 
 let strategy: CadenceStrategy = STRATEGIES.chunk_pause;
@@ -223,17 +222,13 @@ async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
   // Trailing whitespace stays outside the replaced range so an accepted
   // candidate keeps its separator from the words typed after it.
   while (end > start && /\s/.test(value[end - 1])) end -= 1;
-  firedStart = start;
-  firedEnd = end;
   const draft = value.slice(start, end).trim();
   if (draft.length === 0) {
     inflight = false;
     return;
   }
-  // Beginning the next burst silently supersedes the engine's visible
-  // suggestions; any still-offered batch lives on in shownChunk.
-  suggesting = false;
   activeBurstId = `pg_${++burstSeq}`;
+  firedRanges.set(activeBurstId, { start, end });
   void api.injectCapture({
     status: "ready",
     burst_id: activeBurstId,
@@ -282,23 +277,22 @@ function chunkBurst(caret: number) {
   void fireTrigger("idle", chunk);
 }
 
-// Ends the composition session at the current caret: visible suggestions
-/// become a stable dismissal (a keep label), and the next keystroke starts a
-/// fresh burst.
+// Ends the composition session at the current caret: the engine records the
+// visible offer as a stable dismissal (a keep label), drops queued offers and
+// the in-flight burst, and the next keystroke starts a fresh burst.
 function endSession() {
   window.clearTimeout(idleTimer);
   dirty = false;
   // A newline is a hard composition boundary. Release the frontend's serial
-  // slot even when the prior request was dismissed while still in flight;
-  // otherwise pipelined strategies can remain wedged forever waiting for a
-  // settled snapshot that the engine correctly drops as stale.
+  // slot even when a request is still in flight; the engine drops its result
+  // as stale.
   inflight = false;
   activeBurstId = undefined;
   pendingChunks.length = 0;
+  firedRanges.clear();
   shownChunk = undefined;
   renderChunkIndicator();
-  if (suggesting) void api.dismissSuggestions();
-  suggesting = false;
+  void api.endSession();
   burstStart = playgroundEl.selectionStart;
 }
 
@@ -324,13 +318,24 @@ playgroundEl.addEventListener("input", () => {
     inflight = false;
     dirty = false;
     activeBurstId = undefined;
-    suggesting = false;
     pendingChunks.length = 0;
+    firedRanges.clear();
     shownChunk = undefined;
+    void api.endSession();
   }
-  // Editing at or before the underlined chunk invalidates its candidates.
-  if (shownChunk && caret <= shownChunk.end) {
-    shownChunk = undefined;
+  // Editing at or before a fired range invalidates its candidates, whether
+  // the batch is on display, queued, or still inferring: the words the model
+  // saw are gone.
+  for (const [burstId, range] of firedRanges) {
+    if (caret <= range.end) {
+      firedRanges.delete(burstId);
+      if (burstId === activeBurstId) {
+        activeBurstId = undefined;
+        inflight = false;
+      }
+      if (shownChunk?.burstId === burstId) shownChunk = undefined;
+      void api.retractOffer(burstId);
+    }
   }
   renderChunkIndicator();
   const draft = playgroundEl.value.slice(burstStart, caret);
@@ -380,34 +385,30 @@ playgroundEl.addEventListener("keydown", (e) => {
   // Pinyin-style keys while candidates are on offer: digits pick, arrow keys
   // move the highlight, Tab accepts the highlighted candidate (Space stays a
   // real character in English, so Tab plays Space's role), Escape keeps the
-  // literal text. While the engine still holds this batch as Suggesting the
-  // keys route through it (commit + learning record); once the engine has
-  // moved on to the next queued batch, the stored candidates apply directly
-  // so earlier batches stay acceptable while later ones infer.
+  // literal text. The engine's suggesting state is always the offer on
+  // display (later batches queue behind it), so every key routes through the
+  // engine — commit, learning record, and the next queued offer surfacing.
   const accept = (index: number) => {
     if (index >= offered.candidates.length) return;
     e.preventDefault();
-    if (suggesting) {
-      void api.selectCandidate(index);
-    } else {
-      applyRangeReplacement(offered.start, offered.end, offered.candidates[index]);
-    }
+    void api.selectCandidate(index);
   };
   if (e.key >= "1" && e.key <= "5") {
     accept(Number(e.key) - 1);
-  } else if (e.key === "ArrowLeft" && suggesting) {
+  } else if (e.key === "ArrowLeft" && offered.candidates.length > 0) {
     e.preventDefault();
     void api.moveSelection(-1);
-  } else if (e.key === "ArrowRight" && suggesting) {
+  } else if (e.key === "ArrowRight" && offered.candidates.length > 0) {
     e.preventDefault();
     void api.moveSelection(1);
   } else if (e.key === "Tab") {
-    accept(suggesting ? selectedIndex : offered.selected);
+    accept(offered.selected);
   } else if (e.key === "Escape") {
     e.preventDefault();
-    if (suggesting) void api.dismissSuggestions();
+    firedRanges.delete(offered.burstId);
     shownChunk = undefined;
     renderChunkIndicator();
+    void api.dismissSuggestions();
   }
 });
 
@@ -427,9 +428,11 @@ function applyRangeReplacement(start: number, end: number, text: string) {
   }
   // The in-flight batch and any queued ones sit after the replaced range;
   // their pinned offsets shift with the edit.
-  if (firedStart >= end) {
-    firedStart += delta;
-    firedEnd += delta;
+  for (const range of firedRanges.values()) {
+    if (range.start >= end) {
+      range.start += delta;
+      range.end += delta;
+    }
   }
   for (const chunk of pendingChunks) {
     if (chunk.start >= end) {
@@ -551,28 +554,50 @@ void events.onSettings((next) => {
 });
 void events.onSnapshot((snapshot) => {
   lastStateEl.textContent = `composition: ${snapshot.phase}`;
+  if (snapshot.phase === "suggesting" && snapshot.backend) {
+    lastStateEl.textContent += ` (${snapshot.backend} · ${snapshot.latency_ms} ms)`;
+  }
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
-  // Any settled phase means the serial slot is free again.
-  inflight = false;
-  if (snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId) {
-    stats.shown += 1;
-    stats.ttbLast = Math.max(0, Math.round(performance.now() - lastKeyAt));
-    stats.ttbSum += stats.ttbLast;
-    renderStrategyStats();
-    // Underline exactly the words these candidates would replace — the
-    // typist may be several words past them by now — and keep the offer
-    // alive across the next batch's inference.
-    shownChunk = {
-      start: firedStart,
-      end: firedEnd,
-      candidates: snapshot.candidates,
-      selected: snapshot.selected,
-      burstId: snapshot.burst_id,
-    };
+  if (snapshot.phase === "applied") {
+    // A candidate was committed: replace exactly the words the model saw.
+    const range = firedRanges.get(snapshot.burst_id);
+    firedRanges.delete(snapshot.burst_id);
+    if (range) applyRangeReplacement(range.start, range.end, snapshot.text);
+    return;
+  }
+  if (snapshot.phase === "suggesting") {
+    // The engine shows the oldest unresolved offer; mirror it and underline
+    // exactly the words its candidates would replace (the typist may be
+    // several words past them by now). Bursts fired outside the playground
+    // (scripted capture buttons) have no range and get no underline.
+    const range = firedRanges.get(snapshot.burst_id);
+    shownChunk = range
+      ? {
+          ...range,
+          candidates: snapshot.candidates,
+          selected: snapshot.selected,
+          burstId: snapshot.burst_id,
+        }
+      : undefined;
   } else {
     shownChunk = undefined;
   }
   renderChunkIndicator();
+});
+// A settled prediction frees the serial slot: fire the next queued batch (or
+// refire a dirty draft) the moment the engine can take it.
+void events.onSettled(({ burst_id, offered }) => {
+  if (offered) {
+    stats.shown += 1;
+    stats.ttbLast = Math.max(0, Math.round(performance.now() - lastKeyAt));
+    stats.ttbSum += stats.ttbLast;
+  } else {
+    // Skipped or stale: nothing will ever resolve this range.
+    firedRanges.delete(burst_id);
+  }
+  renderStrategyStats();
+  if (burst_id !== activeBurstId) return; // a retracted straggler, not the slot
+  inflight = false;
   const next = pendingChunks.shift();
   if (next) {
     inflight = true;
@@ -583,21 +608,9 @@ void events.onSnapshot((snapshot) => {
     dirty = false;
     requestPrediction("idle");
   }
-  suggesting =
-    snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
-  selectedIndex = snapshot.phase === "suggesting" ? snapshot.selected : 0;
-  if (snapshot.phase === "suggesting" && snapshot.backend) {
-    lastStateEl.textContent += ` (${snapshot.backend} · ${snapshot.latency_ms} ms)`;
-  }
 });
 void events.onCommitted((outcome) => {
   lastCommitEl.textContent = `last commit → ${outcome.destination_id}: "${outcome.text}"`;
-  if (outcome.destination_id === "destination_playground") {
-    // An engine-side commit always corresponds to the batch on offer.
-    const start = shownChunk ? shownChunk.start : firedStart;
-    const end = shownChunk ? shownChunk.end : firedEnd;
-    applyRangeReplacement(start, end, outcome.text);
-  }
 });
 
 for (const [id, spec] of Object.entries(STRATEGIES)) {
