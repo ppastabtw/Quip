@@ -19,7 +19,7 @@ class EvaluationTests(unittest.TestCase):
         predictions = [
             {
                 "example_id": row["metadata"]["example_id"],
-                "response": row["output"],
+                "response": json.loads(row["output"])["suggestion"],
                 "latency_ms": 100,
             }
             for row in dataset
@@ -39,7 +39,7 @@ class EvaluationTests(unittest.TestCase):
         )
         prediction = {
             "example_id": unchanged["metadata"]["example_id"],
-            "response": '{"suggestion":"/opt/homebrew/bun"}',
+            "response": "/opt/homebrew/bun",
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "predictions.jsonl"

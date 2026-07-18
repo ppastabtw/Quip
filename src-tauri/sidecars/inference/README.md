@@ -49,8 +49,8 @@ unavailable result for other phrases.
 ## Live phrase inference
 
 After installing `mistral.rs`, run one command from the repository root. It
-starts the loopback-only 4-bit Qwen server when needed and then opens the same
-interactive tester in live mode:
+starts loopback-only Qwen3.5-2B from the prebuilt 4-bit UQFF artifact when
+needed and then opens the same interactive tester in live mode:
 
 ```bash
 src-tauri/sidecars/inference/scripts/run-live-phrase-tester.sh
@@ -66,15 +66,19 @@ The base Qwen result includes measured end-to-end latency. Until a Freesolo
 adapter is installed, the global variant returns `adapter_not_loaded` rather
 than duplicating the base result.
 
+The launcher reuses the Hugging Face cache without replacing model files. Set
+`QUIP_BASE_MODEL_ID=Qwen/Qwen3.5-4B` to run the cached 4B alternative, or point
+`QUIP_BASE_MODEL_ID` at another cached model or local model directory.
+
 Each model completion is constrained to the same single-suggestion JSON schema
 used by Freesolo training:
 
 ```json
-{"suggestion":"best full text"}
+{"suggestion":"send the draft"}
 ```
 
-The Rust inference layer requests exactly five completions concurrently, removes
-exact-draft suggestions, deduplicates changed text, ranks duplicate votes with
+The Rust inference layer requests exactly five choices in one batched completion,
+removes exact-draft suggestions, deduplicates changed text, ranks duplicate votes with
 earliest-completion tie-breaking, and returns zero to five candidates. Zero
 candidates means skip and no suggestion bar.
 

@@ -146,7 +146,7 @@ class PrototypeRequestTests(unittest.TestCase):
         self.assertEqual(payload["temperature"], 0.9)
         self.assertEqual(payload["max_tokens"], 96)
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
-        self.assertEqual(payload["response_format"]["type"], "json_schema")
+        self.assertNotIn("response_format", payload)
 
     def test_rejects_blank_draft(self):
         with self.assertRaisesRegex(PlaygroundError, "draft must be a non-empty string"):
@@ -212,7 +212,7 @@ class PrototypeRequestTests(unittest.TestCase):
             "index": index,
             "latency_ms": 10 + index,
             "suggestion": f"suggestion {index}",
-            "raw": json.dumps({"suggestion": f"suggestion {index}"}),
+            "raw": f"suggestion {index}",
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
@@ -246,7 +246,7 @@ class PrototypeRequestTests(unittest.TestCase):
             "index": index,
             "latency_ms": 10 + index,
             "suggestion": outputs[index],
-            "raw": json.dumps({"suggestion": outputs[index]}),
+            "raw": outputs[index],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
@@ -280,7 +280,7 @@ class PrototypeRequestTests(unittest.TestCase):
             "index": index,
             "latency_ms": 10 + index,
             "suggestion": model_input["text"],
-            "raw": json.dumps({"suggestion": model_input["text"]}),
+            "raw": model_input["text"],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 

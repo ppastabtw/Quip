@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from environment import SYSTEM_PROMPT  # noqa: E402
-from scoring import OUTPUT_JSON_SCHEMA  # noqa: E402
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -34,10 +33,6 @@ def request_payload(row: dict, model: str) -> dict:
         ],
         "temperature": 0.0,
         "max_tokens": 128,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"schema": OUTPUT_JSON_SCHEMA},
-        },
         "chat_template_kwargs": {"enable_thinking": False},
     }
 
