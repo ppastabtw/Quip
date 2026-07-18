@@ -1,0 +1,23 @@
+model = "Qwen/Qwen3.5-2B"
+algorithm = "grpo"
+seed = 42
+
+[environment]
+id = "ariobarin/quip"
+
+[environment.params]
+split = "train"
+
+[train]
+max_examples = 30
+max_steps = 50
+save_at_steps = [10, 25, 50]
+lora_rank = 32
+lora_alpha = 64
+group_size = 8
+max_completion_tokens = 128
+max_context_tokens = 1024
+structured_outputs = { json = { type = "object", properties = { action = { type = "string", enum = ["keep", "replace"] }, candidates = { type = "array", items = { type = "string" }, maxItems = 3 } }, required = ["action", "candidates"], additionalProperties = false }, disable_additional_properties = true }
+
+# After SFT wins on held-out evaluation, set init_from_adapter to its run id
+# and remove lora_rank and lora_alpha because the source adapter owns both.

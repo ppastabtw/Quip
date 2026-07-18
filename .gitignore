@@ -3,8 +3,17 @@
 !AGENTS.md
 !docs/
 !docs/**/*
+!training/
 .workspace/
 .workspace/**/*
 .claude/
 .codex/
 .env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+artifacts/models/
+artifacts/adapters/
+artifacts/logs/
+artifacts/eval/

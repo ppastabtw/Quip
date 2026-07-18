@@ -1,0 +1,13 @@
+[project]
+name = "quip-flash"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "freesolo>=0.2.56,<0.3",
+  "freesolo-flash>=1.0,<2",
+  "httpx>=0.27,<1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
