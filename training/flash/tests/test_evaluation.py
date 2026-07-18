@@ -72,6 +72,28 @@ class EvaluationTests(unittest.TestCase):
         self.assertGreater(report["candidate_recall_at_5"], 0.0)
         self.assertGreater(report["mean_completion_success"], 0.0)
 
+    def test_one_false_edit_interrupts_an_unchanged_candidate_bar(self):
+        dataset = MODULE.load_jsonl(ROOT / "dataset" / "eval.jsonl")
+        unchanged = next(
+            row for row in dataset if row["metadata"]["target_changed"] is False
+        )
+        original = model_text(unchanged["output"])
+        false_edit = model_text(
+            {"suggestion": unchanged["input"]["text"] + " changed"}
+        )
+        prediction = {
+            "example_id": unchanged["metadata"]["example_id"],
+            "responses": [original, original, original, original, false_edit],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "predictions.jsonl"
+            path.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+            report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
+
+        self.assertEqual(report["overall_success"], 0.0)
+        self.assertGreater(report["unnecessary_edit_rate"], 0.0)
+        self.assertGreater(report["mean_completion_success"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

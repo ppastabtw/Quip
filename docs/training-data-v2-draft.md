@@ -105,7 +105,7 @@ python training/flash/scripts/report_dataset_quality.py --dataset-dir training/f
 python -m pytest training/flash/tests -q
 ```
 
-The accepted dry build reports 66 passing tests. A second build with seed 42
+The accepted dry build reports 67 passing tests. A second build with seed 42
 must reproduce all three hashes above. Rebuilding V1 must continue to match the
 three hashes in `docs/training-data-roadmap.md`.
 
