@@ -197,6 +197,11 @@ fn bound_context_snippets(
 }
 
 #[allow(dead_code)]
+pub fn collect_context_snippets(limit: ContextSnippetLimit) -> Vec<ContextSnippet> {
+    bound_context_snippets(Vec::new(), limit)
+}
+
+#[allow(dead_code)]
 pub fn accessibility_permission_status() -> AccessibilityPermissionStatus {
     if axuielement::is_process_trusted() {
         AccessibilityPermissionStatus::Trusted
@@ -319,10 +324,10 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_context_snippets, build_ready_capture_result, capture_preflight, is_supported_app,
-        validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
-        CaptureResult, ContextSnippet, ContextSnippetLimit, DestinationRegistry,
-        DestinationSnapshot, FocusedElementSnapshot,
+        bound_context_snippets, build_ready_capture_result, capture_preflight,
+        collect_context_snippets, is_supported_app, validate_focused_editable_element,
+        AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
+        ContextSnippetLimit, DestinationRegistry, DestinationSnapshot, FocusedElementSnapshot,
     };
     use quip_contracts::Trigger;
 
@@ -438,6 +443,21 @@ mod tests {
             )[0]
             .visible_text,
             "abc"
+        );
+    }
+
+    #[test]
+    fn collect_context_snippets_applies_count_and_text_bounds() {
+        let snippets = collect_context_snippets(ContextSnippetLimit {
+            max_snippets: 1,
+            max_chars_per_snippet: 4,
+        });
+
+        assert!(
+            snippets.len() <= 1
+                && snippets
+                    .iter()
+                    .all(|snippet| snippet.visible_text.len() <= 4)
         );
     }
 
