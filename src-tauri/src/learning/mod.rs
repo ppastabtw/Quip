@@ -31,7 +31,7 @@ pub struct LabeledExample {
     pub burst_id: String,
     pub profile_id: String,
     pub draft: String,
-    /// `keep` or `replace`, mirroring the model contract's action space.
+    /// Internal learning outcome (`keep` or `replace`), separate from inference results.
     pub label: String,
     pub committed: String,
     /// `confirmed_candidate`, `exact_draft`, or `dismissal`.

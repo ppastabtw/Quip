@@ -16,7 +16,6 @@
         "status": "ok",
         "model_variant": "base",
         "backend": "fixture",
-        "action": "replace",
         "candidates": ["I can't come tomorrow."],
         "latency_ms": 620
       }
@@ -36,8 +35,13 @@
         "status": "ok",
         "model_variant": "global",
         "backend": "fixture",
-        "action": "replace",
-        "candidates": ["Can't come tomorrow."],
+        "candidates": [
+          "Can't come tomorrow.",
+          "I can't come tomorrow.",
+          "Cannot come tomorrow.",
+          "Can't make it tomorrow.",
+          "I cannot come tomorrow."
+        ],
         "latency_ms": 612
       }
     },
@@ -56,7 +60,6 @@
         "status": "ok",
         "model_variant": "base",
         "backend": "fixture",
-        "action": "replace",
         "candidates": ["Open /usr/bin and q3_final_v2.pdf."],
         "latency_ms": 401
       }
@@ -76,7 +79,6 @@
         "status": "ok",
         "model_variant": "global",
         "backend": "fixture",
-        "action": "keep",
         "candidates": [],
         "latency_ms": 388
       }
@@ -102,7 +104,6 @@
         "status": "ok",
         "model_variant": "global",
         "backend": "fixture",
-        "action": "replace",
         "candidates": ["Meet at Union Station at 8:30 AM tomorrow."],
         "latency_ms": 731
       }
@@ -127,7 +128,6 @@
         "status": "ok",
         "model_variant": "global_plus_personal",
         "backend": "fixture",
-        "action": "replace",
         "candidates": ["Ship the spec tonight."],
         "latency_ms": 658
       }

@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/quip-contracts", "src-tauri"]
+members = [
+    "crates/quip-contracts",
+    "src-tauri",
+    "src-tauri/sidecars/inference",
+]
 
 [workspace.package]
 version = "0.1.0"

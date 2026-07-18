@@ -20,11 +20,7 @@ def map_exchange(exchange: dict) -> dict | None:
         return None
 
     payload = {"text": request["draft"]}
-    suggestion = (
-        request["draft"]
-        if result["action"] == "keep"
-        else result["candidates"][0]
-    )
+    suggestion = result["candidates"][0] if result["candidates"] else request["draft"]
     output = {"suggestion": suggestion}
     protected_tokens = []
     if exchange["case_id"] == "protected_global":

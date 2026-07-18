@@ -133,7 +133,7 @@ playgroundEl.addEventListener("keydown", (e) => {
   // real character in English, so Tab plays Space's role), Escape keeps the
   // literal text. Any other key types through and the bar simply refreshes
   // with the growing burst.
-  if (e.key >= "1" && e.key <= "3") {
+  if (e.key >= "1" && e.key <= "5") {
     e.preventDefault();
     void api.selectCandidate(Number(e.key) - 1);
   } else if (e.key === "ArrowLeft") {
@@ -201,9 +201,10 @@ function renderResult(side: ComparisonSide): HTMLElement {
   const result: PredictionResult = side.result;
   if (result.status === "ok") {
     const latency = ` · ${result.latency_ms} ms`;
-    box.append(el("div", "action", `action: ${result.action}${latency}`));
-    if (result.action === "keep") {
-      box.append(el("div", "mono", "(keeps the typed text — no bar is shown)"));
+    const summary = result.candidates.length === 0 ? "skip" : `${result.candidates.length} candidates`;
+    box.append(el("div", "summary", `${summary}${latency}`));
+    if (result.candidates.length === 0) {
+      box.append(el("div", "mono", "(no changed suggestion — no bar is shown)"));
     } else {
       const list = el("ul");
       for (const candidate of result.candidates) {
@@ -212,7 +213,7 @@ function renderResult(side: ComparisonSide): HTMLElement {
       box.append(list);
     }
   } else {
-    const err = el("div", "action", `error: ${result.error.code} — ${result.error.message}`);
+    const err = el("div", "summary", `error: ${result.error.code} — ${result.error.message}`);
     err.style.color = "var(--bad)";
     box.append(err);
   }

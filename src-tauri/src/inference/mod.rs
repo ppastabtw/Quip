@@ -3,13 +3,17 @@
 //! The deterministic [`FixtureBackend`] answers from the shared Phase 0
 //! fixtures plus the demo corpus, and applies personal-pattern substitution
 //! for `global_plus_personal` so two profiles diverge before any model
-//! exists. The live sidecar client is a stub that reports an explicit error
-//! until Workstream 2's sidecar lands (transport to be confirmed; the
-//! `predict` seam isolates it). Every result is schema-validated and counted.
+//! exists. Live mode keeps one Workstream 2 sidecar child alive and exchanges
+//! newline-delimited JSON commands over stdin/stdout. Every result is
+//! schema-validated and counted.
+
+mod sidecar_client;
+
+pub use sidecar_client::SidecarClient;
 
 use quip_contracts::{
     Backend, ContextSnippet, ErrorInfo, FixtureFile, HealthStatus, LoadedArtifacts, ModelVariant,
-    PredictionAction, PredictionRequest, PredictionResult, SidecarHealth,
+    PredictionRequest, PredictionResult, SidecarHealth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +27,6 @@ struct CorpusEntry {
     draft: String,
     model_variant: ModelVariant,
     has_context: bool,
-    action: PredictionAction,
     candidates: Vec<String>,
     latency_ms: u64,
 }
@@ -77,7 +80,6 @@ impl FixtureBackend {
         entries.extend(fixtures.prediction_exchanges.iter().filter_map(
             |exchange| match &exchange.result {
                 PredictionResult::Ok {
-                    action,
                     candidates,
                     latency_ms,
                     model_variant,
@@ -86,7 +88,6 @@ impl FixtureBackend {
                     draft: exchange.request.draft.clone(),
                     model_variant: *model_variant,
                     has_context: !exchange.request.context_snippets.is_empty(),
-                    action: *action,
                     candidates: candidates.clone(),
                     latency_ms: *latency_ms,
                 }),
@@ -121,7 +122,7 @@ impl FixtureBackend {
         // profile, so a shared fixture entry must not shadow it.
         if request.model_variant == ModelVariant::GlobalPlusPersonal {
             if let Some(candidates) = personal_substitute(request) {
-                return ok_result(request, PredictionAction::Replace, candidates, 641);
+                return ok_result(request, candidates, 641);
             }
         }
 
@@ -141,11 +142,11 @@ impl FixtureBackend {
             // unknown input instead of restraint.
             let rewritten = base_overedit(&request.draft);
             if rewritten != request.draft {
-                return ok_result(request, PredictionAction::Replace, vec![rewritten], 507);
+                return ok_result(request, vec![rewritten], 507);
             }
         }
 
-        ok_result(request, PredictionAction::Keep, Vec::new(), 356)
+        ok_result(request, Vec::new(), 356)
     }
 
     fn lookup(
@@ -164,7 +165,7 @@ impl FixtureBackend {
                     && e.model_variant == variant
                     && e.has_context == has_context
             })
-            .map(|e| ok_result(request, e.action, e.candidates.clone(), e.latency_ms))
+            .map(|e| ok_result(request, e.candidates.clone(), e.latency_ms))
     }
 
     pub fn case(&self, case_id: &str) -> Option<&DemoCase> {
@@ -201,7 +202,6 @@ impl FixtureBackend {
 
 fn ok_result(
     request: &PredictionRequest,
-    action: PredictionAction,
     candidates: Vec<String>,
     latency_ms: u64,
 ) -> PredictionResult {
@@ -209,7 +209,6 @@ fn ok_result(
         request_id: request.request_id.clone(),
         model_variant: request.model_variant,
         backend: Backend::Fixture,
-        action,
         candidates,
         latency_ms,
     }
@@ -272,36 +271,6 @@ fn base_overedit(draft: &str) -> String {
         text.push('.');
     }
     text
-}
-
-/// The live-mode stand-in until Workstream 2's sidecar exists.
-pub fn sidecar_predict_stub(request: &PredictionRequest) -> PredictionResult {
-    PredictionResult::Error {
-        request_id: request.request_id.clone(),
-        model_variant: request.model_variant,
-        error: ErrorInfo {
-            code: "sidecar_unavailable".to_string(),
-            message: "The local inference sidecar is not running.".to_string(),
-            retryable: true,
-        },
-    }
-}
-
-pub fn sidecar_health_stub() -> SidecarHealth {
-    SidecarHealth {
-        status: HealthStatus::Unavailable,
-        fixture_available: false,
-        loaded: LoadedArtifacts {
-            base: false,
-            global_adapter: false,
-            user_adapter: false,
-        },
-        error: Some(ErrorInfo {
-            code: "sidecar_unavailable".to_string(),
-            message: "The local inference sidecar is not running.".to_string(),
-            retryable: true,
-        }),
-    }
 }
 
 /// Demo-visible counters over every prediction the app has run.
@@ -367,13 +336,7 @@ mod tests {
         let global =
             backend.predict(&request("open usr/bin and q3_finl_v2.pdf", ModelVariant::Global));
         assert_eq!(candidates(&base), vec!["Open /usr/bin and q3_final_v2.pdf."]);
-        assert!(matches!(
-            global,
-            PredictionResult::Ok {
-                action: PredictionAction::Keep,
-                ..
-            }
-        ));
+        assert!(candidates(&global).is_empty());
     }
 
     #[test]
@@ -434,20 +397,14 @@ mod tests {
         let list = candidates(&result);
         assert_eq!(list[0], "Can't come tomorrow.");
         // Corpus overrides the single-candidate fixture with alternatives.
-        assert!(list.len() > 1 && list.len() <= 3);
+        assert_eq!(list.len(), 5);
     }
 
     #[test]
     fn unknown_input_keeps_for_trained_and_overedits_for_base() {
         let backend = FixtureBackend::new();
         let trained = backend.predict(&request("totally novel text", ModelVariant::Global));
-        assert!(matches!(
-            trained,
-            PredictionResult::Ok {
-                action: PredictionAction::Keep,
-                ..
-            }
-        ));
+        assert!(candidates(&trained).is_empty());
         let base = backend.predict(&request("totally novel text", ModelVariant::Base));
         assert_eq!(candidates(&base), vec!["Totally novel text."]);
     }
@@ -473,8 +430,7 @@ mod tests {
             request_id: "req_bad".into(),
             model_variant: ModelVariant::Global,
             backend: Backend::Fixture,
-            action: PredictionAction::Keep,
-            candidates: vec!["should not be here".into()],
+            candidates: (0..6).map(|index| format!("candidate {index}")).collect(),
             latency_ms: 1,
         };
         assert!(!metrics.record(&invalid));

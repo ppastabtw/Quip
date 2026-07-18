@@ -125,7 +125,6 @@
             "status",
             "model_variant",
             "backend",
-            "action",
             "candidates",
             "latency_ms"
           ],
@@ -134,24 +133,13 @@
             "status": { "const": "ok" },
             "model_variant": { "$ref": "#/$defs/model_variant" },
             "backend": { "enum": ["fixture", "live"] },
-            "action": { "enum": ["keep", "replace"] },
             "candidates": {
               "type": "array",
-              "maxItems": 3,
+              "maxItems": 5,
               "items": { "type": "string" }
             },
             "latency_ms": { "type": "number", "minimum": 0 }
-          },
-          "allOf": [
-            {
-              "if": { "properties": { "action": { "const": "keep" } } },
-              "then": { "properties": { "candidates": { "maxItems": 0 } } }
-            },
-            {
-              "if": { "properties": { "action": { "const": "replace" } } },
-              "then": { "properties": { "candidates": { "minItems": 1 } } }
-            }
-          ]
+          }
         },
         {
           "type": "object",

@@ -34,6 +34,7 @@ class FixtureMappingTests(unittest.TestCase):
         )
         row = MODULE.map_exchange(scenario)
         self.assertEqual(row["metadata"]["protected_tokens"], ["usr/bin", "q3_finl_v2.pdf"])
+        self.assertEqual(json.loads(row["output"]), {"suggestion": scenario["request"]["draft"]})
 
 
 if __name__ == "__main__":

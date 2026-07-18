@@ -30,7 +30,7 @@ pub enum Backend {
     Live,
 }
 
-/// Explicit failure payload. Failures never invent an action or candidates.
+/// Explicit failure payload. Failures never invent candidates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorInfo {
@@ -68,17 +68,9 @@ pub struct PredictionRequest {
     pub personal_patterns: Vec<PersonalPattern>,
 }
 
-/// The model's decision for a successful prediction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PredictionAction {
-    Keep,
-    Replace,
-}
-
-/// Result of one prediction. `keep` carries no candidates; `replace` carries
-/// one to three full-input replacements ordered best first. The application,
-/// not the model, adds the exact-draft option.
+/// Result of one prediction. A successful result carries zero to five ranked,
+/// deduplicated full-input replacements. Zero candidates means skip; the
+/// exact draft is never repeated because it already remains in the destination.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PredictionResult {
@@ -86,7 +78,6 @@ pub enum PredictionResult {
         request_id: String,
         model_variant: ModelVariant,
         backend: Backend,
-        action: PredictionAction,
         candidates: Vec<String>,
         // The schema allows any non-negative number; producers emit whole
         // milliseconds so fixtures round-trip as integers.
@@ -103,19 +94,8 @@ impl PredictionResult {
     /// Checks the candidate-count invariants from `docs/phase-0-contracts.md`.
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            PredictionResult::Ok {
-                action: PredictionAction::Keep,
-                candidates,
-                ..
-            } if !candidates.is_empty() => {
-                Err(format!("keep result has {} candidates", candidates.len()))
-            }
-            PredictionResult::Ok {
-                action: PredictionAction::Replace,
-                candidates,
-                ..
-            } if candidates.is_empty() || candidates.len() > 3 => {
-                Err(format!("replace result has {} candidates", candidates.len()))
+            PredictionResult::Ok { candidates, .. } if candidates.len() > 5 => {
+                Err(format!("result has {} candidates", candidates.len()))
             }
             _ => Ok(()),
         }
