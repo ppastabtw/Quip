@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase-0.schema.json",
+  "title": "Quip phase 0 fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "prediction_exchanges", "capture_results", "health_cases"],
+  "properties": {
+    "version": { "const": 0 },
+    "prediction_exchanges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "request", "result"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "request": { "$ref": "#/$defs/prediction_request" },
+          "result": { "$ref": "#/$defs/prediction_result" }
+        }
+      }
+    },
+    "capture_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "result"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "result": { "$ref": "#/$defs/capture_result" }
+        }
+      }
+    },
+    "health_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "health"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "health": { "$ref": "#/$defs/sidecar_health" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "model_variant": {
+      "enum": ["base", "global", "global_plus_personal"]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "context_snippet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_name", "window_title", "visible_text"],
+      "properties": {
+        "app_name": { "type": "string" },
+        "window_title": { "type": "string" },
+        "visible_text": { "type": "string" }
+      }
+    },
+    "personal_pattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shorthand", "expansion"],
+      "properties": {
+        "shorthand": { "type": "string" },
+        "expansion": { "type": "string" }
+      }
+    },
+    "prediction_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "profile_id",
+        "model_variant",
+        "draft",
+        "context_snippets",
+        "personal_patterns"
+      ],
+      "properties": {
+        "request_id": { "type": "string" },
+        "profile_id": { "type": "string" },
+        "model_variant": { "$ref": "#/$defs/model_variant" },
+        "draft": { "type": "string" },
+        "context_snippets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/context_snippet" }
+        },
+        "personal_patterns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/personal_pattern" }
+        }
+      }
+    },
+    "prediction_result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "status",
+            "model_variant",
+            "backend",
+            "action",
+            "candidates",
+            "latency_ms"
+          ],
+          "properties": {
+            "request_id": { "type": "string" },
+            "status": { "const": "ok" },
+            "model_variant": { "$ref": "#/$defs/model_variant" },
+            "backend": { "enum": ["fixture", "live"] },
+            "action": { "enum": ["keep", "replace"] },
+            "candidates": {
+              "type": "array",
+              "maxItems": 3,
+              "items": { "type": "string" }
+            },
+            "latency_ms": { "type": "number", "minimum": 0 }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "action": { "const": "keep" } } },
+              "then": { "properties": { "candidates": { "maxItems": 0 } } }
+            },
+            {
+              "if": { "properties": { "action": { "const": "replace" } } },
+              "then": { "properties": { "candidates": { "minItems": 1 } } }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "status", "model_variant", "error"],
+          "properties": {
+            "request_id": { "type": "string" },
+            "status": { "const": "error" },
+            "model_variant": { "$ref": "#/$defs/model_variant" },
+            "error": { "$ref": "#/$defs/error" }
+          }
+        }
+      ]
+    },
+    "capture_result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "burst_id",
+            "destination_id",
+            "profile_id",
+            "draft",
+            "trigger"
+          ],
+          "properties": {
+            "status": { "const": "ready" },
+            "burst_id": { "type": "string" },
+            "destination_id": { "type": "string" },
+            "profile_id": { "type": "string" },
+            "draft": { "type": "string" },
+            "trigger": { "enum": ["idle", "punctuation", "return", "shortcut"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": { "const": "unavailable" },
+            "reason": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "sidecar_health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "fixture_available", "loaded"],
+      "properties": {
+        "status": { "enum": ["ready", "degraded", "unavailable"] },
+        "fixture_available": { "type": "boolean" },
+        "loaded": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["base", "global_adapter", "user_adapter"],
+          "properties": {
+            "base": { "type": "boolean" },
+            "global_adapter": { "type": "boolean" },
+            "user_adapter": { "type": "boolean" }
+          }
+        },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    }
+  }
+}

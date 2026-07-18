@@ -37,7 +37,7 @@ Source: `docs/SPEC.md`
 
 **narrow judged app scope**: The demo targets TextEdit, Notes, and one standard browser input. Rich editors, terminals, PDFs, secure fields, canvas editors, unusual Electron controls, and universal macOS support are explicitly out of scope.
 
-**parallel workstreams with explicit contracts**: The four builders should work in parallel around stable request/response boundaries: Flash artifacts, inference sidecar API, Accessibility capture/commit API, and Tauri composition UI state. A purely sequential agenda was rejected because it would idle teammates and make late integration too risky.
+**parallel workstreams with narrow contracts**: The four builders should work in parallel around the inference, capture, and health boundaries. Accessibility restoration, UI state, storage, tuning, and other internal details stay with their workstream until integration proves they must be shared.
 
 ## Architecture overview
 
@@ -92,7 +92,7 @@ docs/
 
 **demo integration**: Failure looks like all subsystems work separately but the live flow cannot complete in the allotted pitch time. Roll back to a deterministic corpus comparison plus a fallback recording. De-risk with a final integration phase, scripted examples from real model outputs, rehearsal, and compatibility testing.
 
-**parallel integration drift**: Failure looks like four builders completing local pieces whose data contracts do not line up. Roll back to deterministic fixtures for sidecar responses, Accessibility events, and candidate state. De-risk by defining schemas, fixture files, and smoke tests before independent work starts.
+**parallel integration drift**: Failure looks like four builders completing local pieces whose boundary data does not line up. Roll back to deterministic fixtures for inference, capture, and health. De-risk by validating the shared fixtures before independent work starts.
 
 ## Assumptions
 
@@ -109,10 +109,10 @@ docs/
 
 ### Phase 0: shared contracts and fixtures
 
-1. Define the JSON schemas for model input, model output, candidate state, Accessibility destination snapshots, window-context snippets, personal examples, and sidecar health responses.
-2. Create deterministic fixtures for base output, trained-model output, protected-token examples, context examples, and two user profiles so UI, inference, and Accessibility work can proceed independently.
-3. Agree on the sidecar request/response boundary, artifact paths, local profile storage shape, and error states for missing models or adapters.
-4. Add local smoke checks for schema validation, fixture loading, sidecar health, and candidate rendering before the four workstreams diverge.
+1. Define provisional v0 schemas only for prediction exchange, capture result, and sidecar health.
+2. Add paired base and trained fixtures plus capture, health, and missing-adapter cases.
+3. Validate the fixtures with one producer and one consumer before workstreams diverge.
+4. Keep workstream internals and tuning values out of the shared contract until integration requires them.
 
 ### Workstream 1: Flash training and evaluation
 
