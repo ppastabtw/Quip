@@ -11,6 +11,7 @@ use std::ops::Range;
 use axuielement::ax_attribute::attributes::{
     AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE, AX_VALUE_ATTRIBUTE,
 };
+use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
 use axuielement::AXUIElement;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,10 @@ fn validate_focused_editable_element(
 ) -> Result<(), AccessibilityError> {
     capture_preflight(AccessibilityPermissionStatus::Trusted, bundle_id)?;
 
+    if focused.subrole.as_deref() == Some(AX_SECURE_TEXT_FIELD_SUBROLE) {
+        return Err(AccessibilityError::SecureField);
+    }
+
     if bundle_id == "com.apple.TextEdit"
         && focused.role == "AXTextArea"
         && focused.is_editable.unwrap_or(false)
@@ -342,6 +347,20 @@ mod tests {
         assert_eq!(
             validate_focused_editable_element("com.apple.TextEdit", &focused),
             Err(AccessibilityError::NotEditable)
+        );
+    }
+
+    #[test]
+    fn secure_text_field_focus_is_secure_field() {
+        let focused = FocusedElementSnapshot::new_for_test(
+            "AXTextField",
+            Some("AXSecureTextField"),
+            Some(true),
+        );
+
+        assert_eq!(
+            validate_focused_editable_element("com.apple.TextEdit", &focused),
+            Err(AccessibilityError::SecureField)
         );
     }
 }
