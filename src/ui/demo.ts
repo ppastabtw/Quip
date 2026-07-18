@@ -1,6 +1,6 @@
-// Demo harness (Workstream 4): the typing playground (stand-in for any macOS
-// textbox until Workstream 3 lands), deterministic corpus comparison, sidecar
-// health and schema-validity counters, and scripted capture_result drivers.
+// Demo harness (Workstream 4): the typing playground, manual focused-capture
+// integration, deterministic corpus comparison, sidecar health and
+// schema-validity counters, and scripted capture_result drivers.
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -43,6 +43,15 @@ let selectedIndex = 0;
 let idleTimer: number | undefined;
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
+
+async function selectCandidate(index: number) {
+  try {
+    await api.selectCandidate(index);
+  } catch (error) {
+    lastStateEl.textContent = `commit failed: ${String(error)}`;
+    lastCommitEl.textContent = "";
+  }
+}
 
 function caretClientPoint(): { x: number; y: number } {
   const style = getComputedStyle(playgroundEl);
@@ -136,7 +145,7 @@ playgroundEl.addEventListener("keydown", (e) => {
   // with the growing burst.
   if (e.key >= "1" && e.key <= "5") {
     e.preventDefault();
-    void api.selectCandidate(Number(e.key) - 1);
+    void selectCandidate(Number(e.key) - 1);
   } else if (e.key === "ArrowLeft") {
     e.preventDefault();
     void api.moveSelection(-1);
@@ -145,7 +154,7 @@ playgroundEl.addEventListener("keydown", (e) => {
     void api.moveSelection(1);
   } else if (e.key === "Tab") {
     e.preventDefault();
-    void api.selectCandidate(selectedIndex);
+    void selectCandidate(selectedIndex);
   } else if (e.key === "Escape") {
     e.preventDefault();
     endSession();
@@ -256,6 +265,11 @@ byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {
     trigger: "idle",
     caret: { x: 512, y: 384, width: 2, height: 18 },
   });
+});
+
+byId<HTMLButtonElement>("capture_focused").addEventListener("click", () => {
+  activeBurstId = undefined;
+  void api.captureActiveDestination("shortcut");
 });
 
 byId<HTMLButtonElement>("fire_secure").addEventListener("click", () => {

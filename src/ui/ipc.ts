@@ -98,6 +98,8 @@ export interface CommitOutcome {
 }
 
 export const api = {
+  captureActiveDestination: (trigger: "idle" | "punctuation" | "return" | "shortcut") =>
+    invoke<void>("capture_active_destination", { trigger }),
   injectCapture: (result: CaptureResult) => invoke<void>("inject_capture", { result }),
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
   moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),

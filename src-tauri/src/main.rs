@@ -146,6 +146,20 @@ fn cancel_destination(destination_id: String) -> Result<commit::CommitReport, co
     commit::cancel_destination(&destination_id)
 }
 
+#[tauri::command]
+async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
+    let (profile_id, include_context) = {
+        let engine = app.state::<EngineState>();
+        let engine = engine.0.lock().unwrap();
+        (
+            engine.settings.active_profile.clone(),
+            engine.settings.window_context,
+        )
+    };
+    let result = accessibility::capture_focused_destination(&profile_id, trigger);
+    run_capture_result(app, result, include_context).await;
+}
+
 /// One full burst: begin → inference → suggest. Fixture latency is replayed;
 /// live results have already incurred their measured latency. The engine lock
 /// is never held across the optional sleep, and stale results are dropped by
@@ -198,10 +212,7 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     }
 }
 
-/// `capture_result` entry point: the playground and demo harness now, real
-/// Accessibility observation from Workstream 3 later, same shape either way.
-#[tauri::command]
-async fn inject_capture(app: AppHandle, result: CaptureResult) {
+async fn run_capture_result(app: AppHandle, result: CaptureResult, include_context: bool) {
     match result {
         CaptureResult::Ready {
             burst_id,
@@ -211,12 +222,18 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
             trigger,
             caret,
         } => {
+            let context_snippets = if include_context {
+                accessibility::collect_context_snippets(accessibility::DEFAULT_CONTEXT_LIMIT)
+            } else {
+                Vec::new()
+            };
             run_burst_flow(
                 app,
                 BurstInput {
                     draft,
                     trigger,
                     caret,
+                    context_snippets,
                     burst_id: Some(burst_id),
                     destination_id: Some(destination_id),
                     profile_id: Some(profile_id),
@@ -230,12 +247,31 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
     }
 }
 
+/// Demo entry point: accepts a caller-provided `capture_result` fixture and
+/// feeds it through the same burst flow as real Accessibility capture.
+#[tauri::command]
+async fn inject_capture(app: AppHandle, result: CaptureResult) {
+    run_capture_result(app, result, false).await;
+}
+
 #[tauri::command]
 fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, String> {
-    let (snapshot, outcome) = {
+    let selected = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        engine.select(index)?
+        engine.select(index)
+    };
+    let (snapshot, outcome) = match selected {
+        Ok(selected) => selected,
+        Err(error) => {
+            emit_snapshot(
+                &app,
+                &Snapshot::Unavailable {
+                    reason: error.clone(),
+                },
+            );
+            return Err(error);
+        }
     };
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
@@ -474,6 +510,13 @@ fn build_tray(
 
     let open_settings = MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
     let open_demo = MenuItem::with_id(app, "open_demo", "Demo & Playground…", true, None::<&str>)?;
+    let capture_focused = MenuItem::with_id(
+        app,
+        "capture_focused",
+        "Manual focused capture",
+        true,
+        Some("CmdOrCtrl+Shift+Space"),
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit Quip", true, None::<&str>)?;
 
     let menu = Menu::with_items(
@@ -483,6 +526,8 @@ fn build_tray(
             &window_context,
             &pause_learning,
             &profile_menu,
+            &PredefinedMenuItem::separator(app)?,
+            &capture_focused,
             &PredefinedMenuItem::separator(app)?,
             &open_settings,
             &open_demo,
@@ -512,6 +557,12 @@ fn on_tray_menu(app: &AppHandle, id: &str) {
     match id {
         "open_settings" => show_window(app, "settings"),
         "open_demo" => show_window(app, "demo"),
+        "capture_focused" => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                capture_active_destination(handle, Trigger::Shortcut).await;
+            });
+        }
         "quit" => app.exit(0),
         "toggle_enabled" | "toggle_context" | "toggle_learning" => {
             {
@@ -655,6 +706,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             capture_focused_destination,
+            capture_active_destination,
             commit_confirmed_text,
             cancel_destination,
             inject_capture,

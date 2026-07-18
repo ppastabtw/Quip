@@ -12,19 +12,19 @@ use std::sync::{Mutex, OnceLock};
 use axuielement::ax_attribute::attributes::{
     AX_FOCUSED_ATTRIBUTE, AX_IS_EDITABLE_ATTRIBUTE, AX_ROLE_ATTRIBUTE, AX_SELECTED_TEXT_ATTRIBUTE,
     AX_SELECTED_TEXT_RANGE_ATTRIBUTE, AX_SUBROLE_ATTRIBUTE, AX_TITLE_ATTRIBUTE, AX_VALUE_ATTRIBUTE,
+    AX_VISIBLE_TEXT_ATTRIBUTE, AX_WINDOW_ATTRIBUTE,
 };
+use axuielement::ax_attribute::parameterized::AX_BOUNDS_FOR_RANGE_PARAMETERIZED_ATTRIBUTE;
 use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
-use axuielement::ax_value::AXRange;
+use axuielement::ax_value::{AXRange, AXRect, AXValue};
 use axuielement::AXUIElement;
 use objc2_app_kit::NSRunningApplication;
 use quip_contracts::{CaptureResult, ContextSnippet, Rect, Trigger};
 
 const DRAFT_MAX_CHARS: usize = 80;
-const FALLBACK_CARET: Rect = Rect {
-    x: 0.0,
-    y: 0.0,
-    width: 2.0,
-    height: 18.0,
+pub(crate) const DEFAULT_CONTEXT_LIMIT: ContextSnippetLimit = ContextSnippetLimit {
+    max_snippets: 1,
+    max_chars_per_snippet: 240,
 };
 
 #[allow(dead_code)]
@@ -79,6 +79,7 @@ pub enum AccessibilityError {
     UnsupportedApp,
     SecureField,
     NotEditable,
+    CaretUnavailable,
     CommitFailed,
 }
 
@@ -92,9 +93,17 @@ impl AccessibilityError {
             Self::UnsupportedApp => "unsupported_app",
             Self::SecureField => "secure_field",
             Self::NotEditable => "not_editable",
+            Self::CaretUnavailable => "caret_unavailable",
             Self::CommitFailed => "commit_failed",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+struct CapturedDraft {
+    text: String,
+    burst_range_utf16: Range<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +115,7 @@ pub(crate) struct DestinationSnapshot {
     app_bundle_id: String,
     app_name: String,
     role: String,
+    burst_range_utf16: Range<usize>,
     selected_range_utf16: Range<usize>,
     insertion_range_utf16: Range<usize>,
 }
@@ -120,6 +130,7 @@ impl DestinationSnapshot {
             app_bundle_id: focused.app_bundle_id.clone(),
             app_name: focused.app_name.clone(),
             role: focused.snapshot.role.clone(),
+            burst_range_utf16: focused.captured_draft.burst_range_utf16.clone(),
             selected_range_utf16: focused.snapshot.selected_range_utf16.clone(),
             insertion_range_utf16: focused.snapshot.selected_range_utf16.end
                 ..focused.snapshot.selected_range_utf16.end,
@@ -135,12 +146,13 @@ impl DestinationSnapshot {
             app_bundle_id: app_bundle_id.to_string(),
             app_name: app_name.to_string(),
             role: role.to_string(),
+            burst_range_utf16: 0..0,
             selected_range_utf16: 0..0,
             insertion_range_utf16: 0..0,
         }
     }
 
-    fn restore_focus_and_range(&self) -> Result<(), AccessibilityError> {
+    fn restore_focus_and_range(&self, range: &Range<usize>) -> Result<(), AccessibilityError> {
         if let Some(app_element) = &self.app_element {
             let _ = app_element.set_bool_attribute(AX_FOCUSED_ATTRIBUTE, true);
         }
@@ -153,15 +165,20 @@ impl DestinationSnapshot {
             .set_bool_attribute(AX_FOCUSED_ATTRIBUTE, true)
             .map_err(|_| AccessibilityError::CommitFailed)?;
         element
-            .set_range_attribute(
-                AX_SELECTED_TEXT_RANGE_ATTRIBUTE,
-                range_to_ax_range(&self.selected_range_utf16),
-            )
+            .set_range_attribute(AX_SELECTED_TEXT_RANGE_ATTRIBUTE, range_to_ax_range(range))
             .map_err(|_| AccessibilityError::CommitFailed)
     }
 
+    fn restore_original_focus_and_range(&self) -> Result<(), AccessibilityError> {
+        self.restore_focus_and_range(&self.selected_range_utf16)
+    }
+
+    fn restore_burst_focus_and_range(&self) -> Result<(), AccessibilityError> {
+        self.restore_focus_and_range(&self.burst_range_utf16)
+    }
+
     fn write_confirmed_text(&self, confirmed_text: &str) -> Result<(), AccessibilityError> {
-        self.restore_focus_and_range()?;
+        self.restore_burst_focus_and_range()?;
         let element = self
             .element
             .as_ref()
@@ -179,6 +196,7 @@ struct FocusedElementSnapshot {
     subrole: Option<String>,
     is_editable: Option<bool>,
     selected_range_utf16: Range<usize>,
+    has_selected_range: bool,
 }
 
 impl FocusedElementSnapshot {
@@ -198,14 +216,14 @@ impl FocusedElementSnapshot {
             .range_attribute(AX_SELECTED_TEXT_RANGE_ATTRIBUTE)
             .ok()
             .flatten()
-            .and_then(ax_range_to_range)
-            .unwrap_or(0..0);
+            .and_then(ax_range_to_range);
 
         Ok(Self {
             role,
             subrole,
             is_editable,
-            selected_range_utf16,
+            selected_range_utf16: selected_range_utf16.clone().unwrap_or(0..0),
+            has_selected_range: selected_range_utf16.is_some(),
         })
     }
 
@@ -216,6 +234,7 @@ impl FocusedElementSnapshot {
             subrole: subrole.map(str::to_string),
             is_editable,
             selected_range_utf16: 0..0,
+            has_selected_range: true,
         }
     }
 }
@@ -292,10 +311,7 @@ fn bound_context_snippets(
 
 #[allow(dead_code)]
 pub fn collect_context_snippets(limit: ContextSnippetLimit) -> Vec<ContextSnippet> {
-    // real visible-window context collection is intentionally out of scope for
-    // this capture + commit phase. keep the public surface bounded and empty
-    // until the context-collection phase wires supported AX windows.
-    bound_context_snippets(Vec::new(), limit)
+    focused_context_snippet(limit).into_iter().collect()
 }
 
 #[allow(dead_code)]
@@ -335,6 +351,8 @@ struct FocusedEditableElement {
     app_name: String,
     element: AXUIElement,
     snapshot: FocusedElementSnapshot,
+    captured_draft: CapturedDraft,
+    caret: Rect,
 }
 
 #[allow(dead_code)]
@@ -380,6 +398,8 @@ fn focused_editable_element() -> Result<FocusedEditableElement, AccessibilityErr
     let snapshot = FocusedElementSnapshot::from_ax_element(&element)?;
 
     validate_focused_editable_element(&app_bundle_id, &snapshot)?;
+    let captured_draft = captured_draft_from_element(&element, &snapshot);
+    let caret = caret_rect_from_element(&element, &captured_draft.burst_range_utf16)?;
 
     Ok(FocusedEditableElement {
         app_element,
@@ -387,6 +407,8 @@ fn focused_editable_element() -> Result<FocusedEditableElement, AccessibilityErr
         app_name,
         element,
         snapshot,
+        captured_draft,
+        caret,
     })
 }
 
@@ -397,15 +419,17 @@ fn destination_registry() -> &'static Mutex<DestinationRegistry> {
 
 #[allow(dead_code)]
 fn draft_from_element(element: &AXUIElement) -> String {
-    bound_draft(
-        &element
-            .string_attribute(AX_SELECTED_TEXT_ATTRIBUTE)
-            .ok()
-            .flatten()
-            .filter(|text| !text.is_empty())
-            .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())
-            .unwrap_or_default(),
+    captured_draft_from_element(
+        element,
+        &FocusedElementSnapshot {
+            role: String::new(),
+            subrole: None,
+            is_editable: None,
+            selected_range_utf16: 0..0,
+            has_selected_range: false,
+        },
     )
+    .text
 }
 
 #[allow(dead_code)]
@@ -418,7 +442,8 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
             };
         }
     };
-    let draft = draft_from_element(&focused.element);
+    let draft = focused.captured_draft.text.clone();
+    let caret = focused.caret;
     let snapshot = DestinationSnapshot::from_focused_editable_element(&focused);
 
     let Ok(mut registry) = destination_registry().lock() else {
@@ -427,14 +452,7 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
         };
     };
 
-    build_ready_capture_result(
-        &mut registry,
-        profile_id,
-        trigger,
-        &draft,
-        FALLBACK_CARET,
-        snapshot,
-    )
+    build_ready_capture_result(&mut registry, profile_id, trigger, &draft, caret, snapshot)
 }
 
 #[allow(dead_code)]
@@ -471,7 +489,7 @@ pub(crate) fn restore_destination(destination_id: &str) -> Result<(), Accessibil
         .cloned()
         .ok_or(AccessibilityError::DestinationNotFound)?;
 
-    snapshot.restore_focus_and_range()
+    snapshot.restore_burst_focus_and_range()
 }
 
 #[allow(dead_code)]
@@ -484,8 +502,67 @@ pub fn release_destination(destination_id: &str) -> Result<(), AccessibilityErro
 
 #[allow(dead_code)]
 pub(crate) fn cancel_destination(destination_id: &str) -> Result<(), AccessibilityError> {
-    restore_destination(destination_id)?;
+    let snapshot = destination_registry()
+        .lock()
+        .map_err(|_| AccessibilityError::DestinationRegistryUnavailable)?
+        .snapshots
+        .get(destination_id)
+        .cloned()
+        .ok_or(AccessibilityError::DestinationNotFound)?;
+
+    snapshot.restore_original_focus_and_range()?;
     release_destination(destination_id)
+}
+
+fn focused_context_snippet(limit: ContextSnippetLimit) -> Option<ContextSnippet> {
+    if accessibility_permission_status() != AccessibilityPermissionStatus::Trusted {
+        return None;
+    }
+
+    let system = axuielement::SystemWideElement::new()?;
+    let app_element = system.focused_application().ok().flatten()?;
+    let (app_bundle_id, app_name) = focused_app_identity(&app_element)?;
+    capture_preflight(AccessibilityPermissionStatus::Trusted, &app_bundle_id).ok()?;
+    let element = system.focused_ui_element().ok().flatten()?;
+    let snapshot = FocusedElementSnapshot::from_ax_element(&element).ok()?;
+    validate_focused_editable_element(&app_bundle_id, &snapshot).ok()?;
+
+    let window_title = system
+        .focused_window()
+        .ok()
+        .flatten()
+        .and_then(|window| window.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten())
+        .or_else(|| {
+            system
+                .focused_ui_element()
+                .ok()
+                .flatten()
+                .and_then(|element| {
+                    element
+                        .element_attribute(AX_WINDOW_ATTRIBUTE)
+                        .ok()
+                        .flatten()
+                        .and_then(|window| {
+                            window.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten()
+                        })
+                })
+        })
+        .unwrap_or_default();
+    let visible_text = element
+        .string_attribute(AX_VISIBLE_TEXT_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())?;
+    let snippets = bound_context_snippets(
+        vec![ContextSnippet {
+            app_name,
+            window_title,
+            visible_text,
+        }],
+        limit,
+    );
+
+    snippets.into_iter().next()
 }
 
 fn focused_app_identity(app_element: &AXUIElement) -> Option<(String, String)> {
@@ -525,6 +602,15 @@ fn ax_range_to_range(range: AXRange) -> Option<Range<usize>> {
     Some(start..start.saturating_add(length))
 }
 
+fn ax_rect_to_rect(rect: AXRect) -> Rect {
+    Rect {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        width: rect.size.width,
+        height: rect.size.height,
+    }
+}
+
 fn range_to_ax_range(range: &Range<usize>) -> AXRange {
     AXRange {
         location: isize::try_from(range.start).unwrap_or(isize::MAX),
@@ -532,6 +618,28 @@ fn range_to_ax_range(range: &Range<usize>) -> AXRange {
     }
 }
 
+fn bounds_for_range(element: &AXUIElement, range: &Range<usize>) -> Option<Rect> {
+    let parameter = AXValue::from_range(range_to_ax_range(range))?;
+    element
+        .parameterized_attribute(AX_BOUNDS_FOR_RANGE_PARAMETERIZED_ATTRIBUTE, &parameter)
+        .ok()
+        .flatten()
+        .and_then(|value| value.as_rect())
+        .map(ax_rect_to_rect)
+}
+
+fn caret_rect_from_element(
+    element: &AXUIElement,
+    burst_range_utf16: &Range<usize>,
+) -> Result<Rect, AccessibilityError> {
+    let caret_position = burst_range_utf16.end;
+    let caret_range = caret_position..caret_position;
+    bounds_for_range(element, &caret_range)
+        .or_else(|| bounds_for_range(element, burst_range_utf16))
+        .ok_or(AccessibilityError::CaretUnavailable)
+}
+
+#[cfg(test)]
 fn bound_draft(draft: &str) -> String {
     draft
         .chars()
@@ -543,16 +651,87 @@ fn bound_draft(draft: &str) -> String {
         .collect()
 }
 
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+fn prefix_at_utf16(text: &str, end_utf16: usize) -> String {
+    let mut used_utf16 = 0;
+    let mut prefix = String::new();
+    for ch in text.chars() {
+        let next_used_utf16 = used_utf16 + ch.len_utf16();
+        if next_used_utf16 > end_utf16 {
+            break;
+        }
+        prefix.push(ch);
+        used_utf16 = next_used_utf16;
+    }
+    prefix
+}
+
+fn bounded_suffix_with_range(text: &str, full_range_utf16: Range<usize>) -> CapturedDraft {
+    let total_chars = text.chars().count();
+    let skipped_chars = total_chars.saturating_sub(DRAFT_MAX_CHARS);
+    let skipped_utf16 = text
+        .chars()
+        .take(skipped_chars)
+        .map(char::len_utf16)
+        .sum::<usize>();
+    let bounded_text = text.chars().skip(skipped_chars).collect::<String>();
+
+    CapturedDraft {
+        text: bounded_text,
+        burst_range_utf16: full_range_utf16.start + skipped_utf16..full_range_utf16.end,
+    }
+}
+
+fn captured_draft_from_element(
+    element: &AXUIElement,
+    snapshot: &FocusedElementSnapshot,
+) -> CapturedDraft {
+    if let Some(selected_text) = element
+        .string_attribute(AX_SELECTED_TEXT_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .filter(|text| !text.is_empty())
+    {
+        return bounded_suffix_with_range(&selected_text, snapshot.selected_range_utf16.clone());
+    }
+
+    let value = element
+        .string_attribute(AX_VALUE_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let prefix = if snapshot.has_selected_range {
+        prefix_at_utf16(&value, snapshot.selected_range_utf16.end)
+    } else {
+        value
+    };
+    let prefix_range = 0..utf16_len(&prefix);
+
+    bounded_suffix_with_range(&prefix, prefix_range)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_context_snippets, bound_draft, build_ready_capture_result, capture_preflight,
-        collect_context_snippets, is_supported_app, validate_focused_editable_element,
-        AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
-        ContextSnippetLimit, DestinationRegistry, DestinationSnapshot, FocusedElementSnapshot,
-        FALLBACK_CARET,
+        bound_context_snippets, bound_draft, bounded_suffix_with_range, build_ready_capture_result,
+        capture_preflight, collect_context_snippets, is_supported_app,
+        validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
+        CaptureResult, ContextSnippet, ContextSnippetLimit, DestinationRegistry,
+        DestinationSnapshot, FocusedElementSnapshot,
     };
-    use quip_contracts::Trigger;
+    use quip_contracts::{Rect, Trigger};
+
+    fn test_caret() -> Rect {
+        Rect {
+            x: 512.0,
+            y: 384.0,
+            width: 2.0,
+            height: 18.0,
+        }
+    }
 
     #[test]
     fn destination_registry_returns_opaque_destination_id() {
@@ -567,6 +746,7 @@ mod tests {
             AccessibilityError::UnsupportedApp,
             AccessibilityError::SecureField,
             AccessibilityError::NotEditable,
+            AccessibilityError::CaretUnavailable,
             AccessibilityError::CommitFailed,
         ];
         let _snippet_limit = ContextSnippetLimit {
@@ -613,7 +793,7 @@ mod tests {
             "profile_default",
             Trigger::Idle,
             "cnt cm tmrw",
-            FALLBACK_CARET,
+            test_caret(),
             DestinationSnapshot::new_for_test("com.apple.TextEdit", "TextEdit", "AXTextArea"),
         );
 
@@ -683,7 +863,7 @@ mod tests {
             snippets.len() <= 1
                 && snippets
                     .iter()
-                    .all(|snippet| snippet.visible_text.len() <= 4)
+                    .all(|snippet| snippet.visible_text.chars().count() <= 4)
         );
     }
 
@@ -692,6 +872,17 @@ mod tests {
         let draft = format!("{}{}", "a".repeat(30), "b".repeat(80));
 
         assert_eq!(bound_draft(&draft), "b".repeat(80));
+    }
+
+    #[test]
+    fn bounded_draft_tracks_matching_utf16_burst_range() {
+        let two_unit_char = char::from_u32(0x1D11E).unwrap();
+        let suffix = two_unit_char.to_string().repeat(80);
+        let draft = format!("{}{}", "a".repeat(30), suffix);
+        let captured = bounded_suffix_with_range(&draft, 10..200);
+
+        assert_eq!(captured.text, two_unit_char.to_string().repeat(80));
+        assert_eq!(captured.burst_range_utf16, 40..200);
     }
 
     #[test]

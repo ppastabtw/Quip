@@ -138,19 +138,41 @@ pub fn cancel_destination(destination_id: &str) -> Result<CommitReport, CommitEr
     cancel_destination_with_session(destination_id, &mut session)
 }
 
-pub fn replace_burst(destination_id: &str, _burst_id: &str, text: &str) -> CommitOutcome {
-    if let Err(error) = commit_confirmed_text(destination_id, text) {
+pub fn replace_burst(
+    destination_id: &str,
+    _burst_id: &str,
+    text: &str,
+) -> Result<CommitOutcome, String> {
+    if is_virtual_destination(destination_id) {
+        return Ok(CommitOutcome {
+            destination_id: destination_id.to_string(),
+            text: text.to_string(),
+        });
+    }
+
+    commit_confirmed_text(destination_id, text).map_err(|error| {
         tracing::warn!(
             destination_id,
             error = ?error,
-            "real accessibility commit failed; returning selected text for playground state"
+            "real accessibility commit failed"
         );
-    }
+        format!("real accessibility commit failed: {error:?}")
+    })?;
 
-    CommitOutcome {
+    Ok(CommitOutcome {
         destination_id: destination_id.to_string(),
         text: text.to_string(),
-    }
+    })
+}
+
+fn is_virtual_destination(destination_id: &str) -> bool {
+    matches!(
+        destination_id,
+        "destination_playground"
+            | "destination_selftest"
+            | "destination_textedit"
+            | "destination_test"
+    )
 }
 
 struct LiveCommitSession;
