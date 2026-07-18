@@ -59,6 +59,7 @@ class DatasetContract:
 
 
 CONTRACT = DatasetContract()
+MAX_AUGMENTATION_EVENTS = 10
 
 URL_RE = re.compile(r"(?:https?://|www\.|\b[a-z0-9.-]+\.(?:com|org|net|io)\b)", re.I)
 EMAIL_RE = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
@@ -71,6 +72,9 @@ MARKUP_RE = re.compile(
 CODE_RE = re.compile(r"(?:\b(?:def|class|import|return|const|let|var)\b|[{};]{2,}|\w+\([^)]*\)\s*[;{])")
 WORDLIKE_RE = re.compile(r"[A-Za-z]")
 ENGLISH_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+ENGLISH_PHRASE_RE = re.compile(
+    r"[A-Za-z]+(?:'[A-Za-z]+)?(?:\s+[A-Za-z]+(?:'[A-Za-z]+)?)*"
+)
 
 ALLOWED_ROW_KEYS = {"input", "output", "metadata"}
 REQUIRED_METADATA_KEYS = {
@@ -186,6 +190,40 @@ def window_rejection_reason(
     return None
 
 
+def draft_rejection_reason(value: str, *, check_profanity: bool = True) -> str | None:
+    reason = source_rejection_reason(value, check_profanity=check_profanity)
+    if reason:
+        return reason
+    if value != re.sub(r"\s+", " ", value).strip():
+        return "irregular_whitespace"
+    if len(value) > 160:
+        return "too_long"
+    return None
+
+
+def ambiguity_rejection_reason(
+    value: str,
+    *,
+    minimum_zipf_frequency: float | None,
+    valid_vocabulary: set[str] | None = None,
+) -> str | None:
+    if minimum_zipf_frequency is None or not ENGLISH_PHRASE_RE.fullmatch(value):
+        return None
+    from wordfreq import zipf_frequency
+
+    tokens = ENGLISH_TOKEN_RE.findall(value)
+    if valid_vocabulary is not None and any(
+        token.casefold() not in valid_vocabulary for token in tokens
+    ):
+        return None
+    if all(
+        zipf_frequency(token.casefold(), "en") >= minimum_zipf_frequency
+        for token in tokens
+    ):
+        return "all_tokens_common_valid_words"
+    return None
+
+
 def make_row(candidate: Candidate, *, generation: dict[str, Any]) -> dict[str, Any]:
     suggestion = candidate.target if candidate.target_changed else candidate.text
     output_payload = {"suggestion": suggestion}
@@ -211,7 +249,7 @@ def make_row(candidate: Candidate, *, generation: dict[str, Any]) -> dict[str, A
             "category": candidate.category,
             "target_changed": candidate.target_changed,
             "accepted_suggestions": [suggestion],
-            "window_size": word_count(candidate.text),
+            "window_size": word_count(candidate.target),
         },
     }
 
@@ -236,15 +274,18 @@ def validate_generation_metadata(generation: Any, path: Path, line_number: int) 
     method = generation.get("method")
     if method == "sourced":
         valid = set(generation) == {"method"}
-    elif method == "qwerty_augmentation":
+    elif method in {"qwerty_augmentation", "deterministic_typing_augmentation"}:
         operations = generation.get("operations")
+        requested_events = generation.get("requested_events")
         valid = (
             set(generation) == {"method", "seed", "requested_events", "operations"}
             and isinstance(generation["seed"], int)
             and not isinstance(generation["seed"], bool)
-            and generation["requested_events"] == CONTRACT.augmentation_events
+            and isinstance(requested_events, int)
+            and not isinstance(requested_events, bool)
+            and 1 <= requested_events <= MAX_AUGMENTATION_EVENTS
             and isinstance(operations, list)
-            and len(operations) == CONTRACT.augmentation_events
+            and len(operations) == requested_events
             and all(
                 isinstance(operation, dict)
                 and set(operation) == {"event", "operator", "index", "source", "replacement"}
@@ -284,10 +325,16 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
             size = metadata["window_size"]
             if not isinstance(size, int) or isinstance(size, bool):
                 raise ValueError(f"{path}:{line_number}: window_size must be an integer")
-            for value in (text, suggestion):
-                reason = window_rejection_reason(value, expected_size=size)
-                if reason:
-                    raise ValueError(f"{path}:{line_number}: rejected text: {reason}")
+            input_reason = draft_rejection_reason(text)
+            if input_reason:
+                raise ValueError(
+                    f"{path}:{line_number}: rejected input text: {input_reason}"
+                )
+            target_reason = window_rejection_reason(suggestion, expected_size=size)
+            if target_reason:
+                raise ValueError(
+                    f"{path}:{line_number}: rejected target text: {target_reason}"
+                )
             if not isinstance(metadata["target_changed"], bool):
                 raise ValueError(f"{path}:{line_number}: target_changed must be boolean")
             if metadata["target_changed"] != (suggestion != text):
@@ -325,7 +372,12 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_split(name: str, rows: list[dict[str, Any]]) -> None:
+def validate_split(
+    name: str,
+    rows: list[dict[str, Any]],
+    *,
+    expected_event_counts_by_size: dict[int, dict[int, int]] | None = None,
+) -> None:
     expected = CONTRACT.expected_counts(name)
     changes = Counter(row["metadata"]["target_changed"] for row in rows)
     sizes = Counter(row["metadata"]["window_size"] for row in rows)
@@ -346,6 +398,26 @@ def validate_split(name: str, rows: list[dict[str, Any]]) -> None:
     inputs = [normalize_text(row_text(row, Path(name), index)) for index, row in enumerate(rows, 1)]
     if len(inputs) != len(set(inputs)):
         raise ValueError(f"{name}: normalized duplicate inputs exist")
+    if expected_event_counts_by_size is not None:
+        actual_event_counts_by_size: dict[int, Counter[int]] = {
+            size: Counter() for size in CONTRACT.window_sizes
+        }
+        for row in rows:
+            if not row["metadata"]["target_changed"]:
+                continue
+            generation = row["metadata"]["generation"]
+            actual_event_counts_by_size[row["metadata"]["window_size"]][
+                generation["requested_events"]
+            ] += 1
+        actual_event_counts = {
+            size: dict(sorted(counts.items()))
+            for size, counts in actual_event_counts_by_size.items()
+        }
+        if actual_event_counts != expected_event_counts_by_size:
+            raise ValueError(
+                f"{name}: augmentation-event quota mismatch: "
+                f"expected {expected_event_counts_by_size}, got {actual_event_counts}"
+            )
 
 
 def validate_compiled_datasets(
@@ -354,13 +426,28 @@ def validate_compiled_datasets(
     eval_path: Path,
     test_path: Path,
     report_path: Path,
+    expected_policy: str = "massive_window_augmentation_v1",
+    expected_event_counts: dict[str, dict[int, dict[int, int]]] | None = None,
+    require_normalized_surface_isolation: bool = False,
 ) -> None:
     train_rows = load_rows(train_path)
     eval_rows = load_rows(eval_path)
     test_rows = load_rows(test_path)
-    validate_split("train", train_rows)
-    validate_split("eval", eval_rows)
-    validate_split("test", test_rows)
+    validate_split(
+        "train",
+        train_rows,
+        expected_event_counts_by_size=(expected_event_counts or {}).get("train"),
+    )
+    validate_split(
+        "eval",
+        eval_rows,
+        expected_event_counts_by_size=(expected_event_counts or {}).get("eval"),
+    )
+    validate_split(
+        "test",
+        test_rows,
+        expected_event_counts_by_size=(expected_event_counts or {}).get("test"),
+    )
 
     all_rows = train_rows + eval_rows + test_rows
     ids = [row["metadata"]["example_id"] for row in all_rows]
@@ -368,21 +455,18 @@ def validate_compiled_datasets(
         raise ValueError("metadata.example_id values must be globally unique")
     split_rows = {"train": train_rows, "eval": eval_rows, "test": test_rows}
     expected_partitions = {"train": {"train"}, "eval": {"dev"}, "test": {"test"}}
-    family_sets: dict[str, set[str]] = {}
     for name, rows in split_rows.items():
         if {row["metadata"]["source_partition"] for row in rows} != expected_partitions[name]:
             raise ValueError(f"{name} rows come from the wrong MASSIVE partition")
-        family_sets[name] = {row["metadata"]["family_id"] for row in rows}
-    split_names = tuple(split_rows)
-    for index, left in enumerate(split_names):
-        for right in split_names[index + 1 :]:
-            if family_sets[left] & family_sets[right]:
-                raise ValueError(f"{left} and {right} contain source-family leakage")
+    validate_cross_split_isolation(
+        split_rows,
+        require_normalized_surface_isolation=require_normalized_surface_isolation,
+    )
 
     if not report_path.is_file():
         raise ValueError("dataset build report is missing")
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("dataset_policy") != "massive_window_augmentation_v1":
+    if report.get("dataset_policy") != expected_policy:
         raise ValueError("dataset build report policy is incorrect")
     for name, path in (("train", train_path), ("eval", eval_path), ("test", test_path)):
         split_report = report.get("splits", {}).get(name, {})
@@ -400,3 +484,38 @@ def validate_compiled_datasets(
             f"{name}: {len(rows)} rows "
             f"(categories={dict(sorted(categories.items()))}, windows={dict(sorted(sizes.items()))})"
         )
+
+
+def validate_cross_split_isolation(
+    split_rows: dict[str, list[dict[str, Any]]],
+    *,
+    require_normalized_surface_isolation: bool,
+) -> None:
+    split_names = tuple(split_rows)
+    family_sets = {
+        name: {row["metadata"]["family_id"] for row in rows}
+        for name, rows in split_rows.items()
+    }
+    for index, left in enumerate(split_names):
+        for right in split_names[index + 1 :]:
+            if family_sets[left] & family_sets[right]:
+                raise ValueError(f"{left} and {right} contain source-family leakage")
+            if require_normalized_surface_isolation:
+                left_surfaces = {
+                    normalize_text(row_text(row, Path(left), row_index))
+                    for row_index, row in enumerate(split_rows[left], 1)
+                } | {
+                    normalize_text(row_suggestion(row, Path(left), row_index))
+                    for row_index, row in enumerate(split_rows[left], 1)
+                }
+                right_surfaces = {
+                    normalize_text(row_text(row, Path(right), row_index))
+                    for row_index, row in enumerate(split_rows[right], 1)
+                } | {
+                    normalize_text(row_suggestion(row, Path(right), row_index))
+                    for row_index, row in enumerate(split_rows[right], 1)
+                }
+                if left_surfaces & right_surfaces:
+                    raise ValueError(
+                        f"{left} and {right} contain normalized input or target leakage"
+                    )

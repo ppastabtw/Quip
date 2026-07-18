@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import urllib.request
 import random
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -100,7 +101,7 @@ def sample_massive_windows(
     partition: str,
     required_by_size: dict[int, int],
     rng: random.Random,
-    buffer_rows: int | None = None,
+    buffer_rows: int | Mapping[int, int] | None = None,
 ) -> dict[int, list[Candidate]]:
     windows: dict[int, list[Candidate]] = {size: [] for size in CONTRACT.window_sizes}
     seen: dict[int, set[str]] = {size: set() for size in CONTRACT.window_sizes}
@@ -109,6 +110,8 @@ def sample_massive_windows(
         + (
             max(10, required_by_size[size] // 5)
             if buffer_rows is None
+            else buffer_rows[size]
+            if isinstance(buffer_rows, Mapping)
             else buffer_rows
         )
         for size in CONTRACT.window_sizes

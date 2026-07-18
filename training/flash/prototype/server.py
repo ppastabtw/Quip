@@ -28,7 +28,7 @@ from augmentation import (  # noqa: E402
     normalize_weights,
 )
 from environment import SYSTEM_PROMPT  # noqa: E402
-from scoring import parse_prediction  # noqa: E402
+from scoring import parse_prediction, rank_candidate_items  # noqa: E402
 
 
 INDEX_PATH = Path(__file__).with_name("index.html")
@@ -207,29 +207,7 @@ def _run_suggestion(
 def _rank_candidates(
     suggestions: list[dict[str, Any]], original: str
 ) -> list[dict[str, Any]]:
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for item in suggestions:
-        suggestion = item["suggestion"]
-        if suggestion == original:
-            continue
-        groups.setdefault(suggestion, []).append(item)
-
-    ordered_groups = sorted(
-        groups.values(),
-        key=lambda group: (-len(group), group[0]["index"]),
-    )
-    candidates = []
-    for rank, group in enumerate(ordered_groups, start=1):
-        candidate = dict(group[0])
-        candidate.update(
-            {
-                "rank": rank,
-                "vote_count": len(group),
-                "completion_indices": [item["index"] for item in group],
-            }
-        )
-        candidates.append(candidate)
-    return candidates
+    return rank_candidate_items(suggestions, original)
 
 
 def run_prediction(payload: Any) -> dict[str, Any]:

@@ -14,7 +14,9 @@ sys.path.insert(0, str(ROOT))
 
 from benchmarking import (  # noqa: E402
     BackboardTransport,
+    COMPLETION_COUNT,
     FreesoloTransport,
+    complete_candidate_set,
     load_config,
     load_jsonl,
     markdown_report,
@@ -77,9 +79,10 @@ def main() -> int:
     try:
         if backboard is not None:
             backboard.validate_models(backboard_specs)
-        request_count = len(rows) * len(specs)
+        request_count = len(rows) * len(specs) * COMPLETION_COUNT
         print(
-            f"benchmark plan: {len(rows)} examples x {len(specs)} models = "
+            f"benchmark plan: {len(rows)} examples x {len(specs)} models x "
+            f"{COMPLETION_COUNT} completions = "
             f"{request_count} requests"
         )
         for spec in specs:
@@ -114,7 +117,12 @@ def main() -> int:
                 print(f"running {spec.label}")
                 for index, row in enumerate(rows, 1):
                     try:
-                        result = transport.complete(row, spec, config.max_tokens)
+                        result = complete_candidate_set(
+                            transport,
+                            row,
+                            spec,
+                            config.max_tokens,
+                        )
                         record = prediction_record(row=row, spec=spec, result=result)
                         detail = f"{record['latency_ms']}ms"
                     except Exception as error:
