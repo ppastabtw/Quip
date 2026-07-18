@@ -1,392 +1,208 @@
 {
-  "version": 1,
-  "scenarios": [
+  "version": 0,
+  "prediction_exchanges": [
     {
-      "scenario_id": "shorthand_replace",
-      "composition_burst": {
-        "burst_id": "burst_shorthand_001",
-        "profile_id": "profile_ricky",
-        "source_mode": "compose_before_commit",
-        "text": "cnt cm tmrw",
-        "trigger": "idle",
-        "idle_ms": 842,
-        "char_window_limit": 80
+      "case_id": "shorthand_base",
+      "request": {
+        "request_id": "pred_shorthand_base",
+        "profile_id": "profile_default",
+        "model_variant": "base",
+        "draft": "cnt cm tmrw",
+        "context_snippets": [],
+        "personal_patterns": []
       },
-      "destination_snapshot": {
-        "snapshot_id": "dest_textedit_001",
-        "app_name": "TextEdit",
-        "bundle_id": "com.apple.TextEdit",
-        "element_role": "AXTextArea",
-        "selection_text": "",
-        "insertion_point_kind": "text_marker",
-        "commit_capability": "accessibility_insert",
-        "clipboard_restore_required": false,
-        "secure_field": false
-      },
-      "window_context_snippets": [],
-      "prediction_request": {
-        "request_id": "pred_shorthand_001",
-        "profile_id": "profile_ricky",
-        "runtime_mode": "fixture",
-        "composition_burst": {
-          "text": "cnt cm tmrw",
-          "char_window_limit": 80
-        },
-        "window_context_snippets": [],
-        "personal_patterns": [
-          {
-            "shorthand": "cm",
-            "expansion": "come"
-          }
-        ]
-      },
-      "prediction_result": {
-        "request_id": "pred_shorthand_001",
-        "runtime_mode": "fixture",
-        "schema_valid": true,
+      "result": {
+        "request_id": "pred_shorthand_base",
+        "status": "ok",
+        "model_variant": "base",
+        "backend": "fixture",
         "action": "replace",
-        "candidates": [
-          "Can't come tomorrow."
-        ],
+        "candidates": ["I can't come tomorrow."],
+        "latency_ms": 620
+      }
+    },
+    {
+      "case_id": "shorthand_global",
+      "request": {
+        "request_id": "pred_shorthand_global",
+        "profile_id": "profile_default",
+        "model_variant": "global",
+        "draft": "cnt cm tmrw",
+        "context_snippets": [],
+        "personal_patterns": []
+      },
+      "result": {
+        "request_id": "pred_shorthand_global",
+        "status": "ok",
+        "model_variant": "global",
+        "backend": "fixture",
+        "action": "replace",
+        "candidates": ["Can't come tomorrow."],
         "latency_ms": 612
-      },
-      "candidate_state": {
-        "burst_id": "burst_shorthand_001",
-        "status": "ready",
-        "exact_draft_option": {
-          "option_id": "option_exact",
-          "text": "cnt cm tmrw"
-        },
-        "model_options": [
-          {
-            "option_id": "option_model_001",
-            "text": "Can't come tomorrow.",
-            "source": "fixture"
-          }
-        ],
-        "selected_option_id": null,
-        "commit_enabled": true
-      },
-      "personal_example": {
-        "example_id": "personal_profile_ricky_001",
-        "profile_id": "profile_ricky",
-        "source": "confirmed_candidate",
-        "input_text": "cnt cm tmrw",
-        "confirmed_text": "Can't come tomorrow.",
-        "created_at": "2026-07-18T12:00:00-04:00"
       }
     },
     {
-      "scenario_id": "typo_replace",
-      "composition_burst": {
-        "burst_id": "burst_typo_001",
+      "case_id": "protected_base",
+      "request": {
+        "request_id": "pred_protected_base",
         "profile_id": "profile_default",
-        "source_mode": "compose_before_commit",
-        "text": "instaed",
-        "trigger": "punctuation",
-        "idle_ms": null,
-        "char_window_limit": 80
-      },
-      "destination_snapshot": {
-        "snapshot_id": "dest_notes_001",
-        "app_name": "Notes",
-        "bundle_id": "com.apple.Notes",
-        "element_role": "AXTextArea",
-        "selection_text": "",
-        "insertion_point_kind": "text_marker",
-        "commit_capability": "accessibility_insert",
-        "clipboard_restore_required": false,
-        "secure_field": false
-      },
-      "window_context_snippets": [],
-      "prediction_request": {
-        "request_id": "pred_typo_001",
-        "profile_id": "profile_default",
-        "runtime_mode": "fixture",
-        "composition_burst": {
-          "text": "instaed",
-          "char_window_limit": 80
-        },
-        "window_context_snippets": [],
+        "model_variant": "base",
+        "draft": "open usr/bin and q3_finl_v2.pdf",
+        "context_snippets": [],
         "personal_patterns": []
       },
-      "prediction_result": {
-        "request_id": "pred_typo_001",
-        "runtime_mode": "fixture",
-        "schema_valid": true,
+      "result": {
+        "request_id": "pred_protected_base",
+        "status": "ok",
+        "model_variant": "base",
+        "backend": "fixture",
         "action": "replace",
-        "candidates": [
-          "instead"
-        ],
-        "latency_ms": 404
-      },
-      "candidate_state": {
-        "burst_id": "burst_typo_001",
-        "status": "ready",
-        "exact_draft_option": {
-          "option_id": "option_exact",
-          "text": "instaed"
-        },
-        "model_options": [
-          {
-            "option_id": "option_model_001",
-            "text": "instead",
-            "source": "fixture"
-          }
-        ],
-        "selected_option_id": null,
-        "commit_enabled": true
+        "candidates": ["Open /usr/bin and q3_final_v2.pdf."],
+        "latency_ms": 401
       }
     },
     {
-      "scenario_id": "protected_keep",
-      "composition_burst": {
-        "burst_id": "burst_protected_001",
+      "case_id": "protected_global",
+      "request": {
+        "request_id": "pred_protected_global",
         "profile_id": "profile_default",
-        "source_mode": "compose_before_commit",
-        "text": "open usr/bin and q3_finl_v2.pdf",
-        "trigger": "return",
-        "idle_ms": null,
-        "char_window_limit": 80
-      },
-      "destination_snapshot": {
-        "snapshot_id": "dest_textedit_002",
-        "app_name": "TextEdit",
-        "bundle_id": "com.apple.TextEdit",
-        "element_role": "AXTextArea",
-        "selection_text": "",
-        "insertion_point_kind": "text_marker",
-        "commit_capability": "accessibility_insert",
-        "clipboard_restore_required": false,
-        "secure_field": false
-      },
-      "window_context_snippets": [],
-      "prediction_request": {
-        "request_id": "pred_protected_001",
-        "profile_id": "profile_default",
-        "runtime_mode": "fixture",
-        "composition_burst": {
-          "text": "open usr/bin and q3_finl_v2.pdf",
-          "char_window_limit": 80
-        },
-        "window_context_snippets": [],
+        "model_variant": "global",
+        "draft": "open usr/bin and q3_finl_v2.pdf",
+        "context_snippets": [],
         "personal_patterns": []
       },
-      "prediction_result": {
-        "request_id": "pred_protected_001",
-        "runtime_mode": "fixture",
-        "schema_valid": true,
+      "result": {
+        "request_id": "pred_protected_global",
+        "status": "ok",
+        "model_variant": "global",
+        "backend": "fixture",
         "action": "keep",
         "candidates": [],
         "latency_ms": 388
-      },
-      "candidate_state": {
-        "burst_id": "burst_protected_001",
-        "status": "ready",
-        "exact_draft_option": {
-          "option_id": "option_exact",
-          "text": "open usr/bin and q3_finl_v2.pdf"
-        },
-        "model_options": [],
-        "selected_option_id": null,
-        "commit_enabled": true
       }
     },
     {
-      "scenario_id": "context_replace",
-      "composition_burst": {
-        "burst_id": "burst_context_001",
-        "profile_id": "profile_ricky",
-        "source_mode": "compose_before_commit",
-        "text": "meet there tmrw",
-        "trigger": "idle",
-        "idle_ms": 790,
-        "char_window_limit": 80
-      },
-      "destination_snapshot": {
-        "snapshot_id": "dest_chrome_001",
-        "app_name": "Chrome",
-        "bundle_id": "com.google.Chrome",
-        "element_role": "AXTextField",
-        "selection_text": "",
-        "insertion_point_kind": "range",
-        "commit_capability": "paste_fallback",
-        "clipboard_restore_required": true,
-        "secure_field": false
-      },
-      "window_context_snippets": [
-        {
-          "snippet_id": "ctx_notes_trip_001",
-          "app_name": "Notes",
-          "window_title": "Trip planning",
-          "visible_text": "Tomorrow: meet at Union Station at 8:30 AM.",
-          "rank_reason": "recent_focused_relevant",
-          "max_chars": 240
-        }
-      ],
-      "prediction_request": {
-        "request_id": "pred_context_001",
-        "profile_id": "profile_ricky",
-        "runtime_mode": "fixture",
-        "composition_burst": {
-          "text": "meet there tmrw",
-          "char_window_limit": 80
-        },
-        "window_context_snippets": [
+      "case_id": "context_global",
+      "request": {
+        "request_id": "pred_context_global",
+        "profile_id": "profile_default",
+        "model_variant": "global",
+        "draft": "meet there tmrw",
+        "context_snippets": [
           {
-            "snippet_id": "ctx_notes_trip_001",
             "app_name": "Notes",
             "window_title": "Trip planning",
-            "visible_text": "Tomorrow: meet at Union Station at 8:30 AM.",
-            "rank_reason": "recent_focused_relevant",
-            "max_chars": 240
+            "visible_text": "Tomorrow: meet at Union Station at 8:30 AM."
           }
         ],
         "personal_patterns": []
       },
-      "prediction_result": {
-        "request_id": "pred_context_001",
-        "runtime_mode": "fixture",
-        "schema_valid": true,
+      "result": {
+        "request_id": "pred_context_global",
+        "status": "ok",
+        "model_variant": "global",
+        "backend": "fixture",
         "action": "replace",
-        "candidates": [
-          "Meet at Union Station tomorrow."
-        ],
+        "candidates": ["Meet at Union Station at 8:30 AM tomorrow."],
         "latency_ms": 731
-      },
-      "candidate_state": {
-        "burst_id": "burst_context_001",
-        "status": "ready",
-        "exact_draft_option": {
-          "option_id": "option_exact",
-          "text": "meet there tmrw"
-        },
-        "model_options": [
-          {
-            "option_id": "option_model_001",
-            "text": "Meet at Union Station tomorrow.",
-            "source": "fixture"
-          }
-        ],
-        "selected_option_id": null,
-        "commit_enabled": true
       }
     },
     {
-      "scenario_id": "secure_field_unavailable",
-      "composition_burst": null,
-      "destination_snapshot": {
-        "snapshot_id": "dest_secure_001",
-        "app_name": "Chrome",
-        "bundle_id": "com.google.Chrome",
-        "element_role": "AXTextField",
-        "selection_text": "",
-        "insertion_point_kind": "unknown",
-        "commit_capability": "unsupported",
-        "clipboard_restore_required": false,
-        "secure_field": true
-      },
-      "window_context_snippets": [],
-      "prediction_request": null,
-      "prediction_result": null,
-      "candidate_state": {
-        "burst_id": "burst_unavailable_001",
-        "status": "unavailable",
-        "exact_draft_option": {
-          "option_id": "option_exact",
-          "text": ""
-        },
-        "model_options": [],
-        "selected_option_id": null,
-        "commit_enabled": false
-      }
-    },
-    {
-      "scenario_id": "personalized_replace",
-      "composition_burst": {
-        "burst_id": "burst_personal_001",
-        "profile_id": "profile_ario",
-        "source_mode": "compose_before_commit",
-        "text": "ship spec tn",
-        "trigger": "idle",
-        "idle_ms": 865,
-        "char_window_limit": 80
-      },
-      "destination_snapshot": {
-        "snapshot_id": "dest_textedit_003",
-        "app_name": "TextEdit",
-        "bundle_id": "com.apple.TextEdit",
-        "element_role": "AXTextArea",
-        "selection_text": "",
-        "insertion_point_kind": "text_marker",
-        "commit_capability": "accessibility_insert",
-        "clipboard_restore_required": false,
-        "secure_field": false
-      },
-      "window_context_snippets": [],
-      "prediction_request": {
-        "request_id": "pred_personal_001",
-        "profile_id": "profile_ario",
-        "runtime_mode": "fixture",
-        "composition_burst": {
-          "text": "ship spec tn",
-          "char_window_limit": 80
-        },
-        "window_context_snippets": [],
+      "case_id": "personal_global_plus_personal",
+      "request": {
+        "request_id": "pred_personal",
+        "profile_id": "profile_local",
+        "model_variant": "global_plus_personal",
+        "draft": "ship spec tn",
+        "context_snippets": [],
         "personal_patterns": [
           {
             "shorthand": "tn",
             "expansion": "tonight"
-          },
-          {
-            "shorthand": "spec",
-            "expansion": "specification"
           }
         ]
       },
-      "prediction_result": {
-        "request_id": "pred_personal_001",
-        "runtime_mode": "fixture",
-        "schema_valid": true,
+      "result": {
+        "request_id": "pred_personal",
+        "status": "ok",
+        "model_variant": "global_plus_personal",
+        "backend": "fixture",
         "action": "replace",
-        "candidates": [
-          "Ship the specification tonight."
-        ],
+        "candidates": ["Ship the spec tonight."],
         "latency_ms": 658
+      }
+    },
+    {
+      "case_id": "missing_adapter",
+      "request": {
+        "request_id": "pred_missing_adapter",
+        "profile_id": "profile_default",
+        "model_variant": "global",
+        "draft": "cnt cm tmrw",
+        "context_snippets": [],
+        "personal_patterns": []
       },
-      "candidate_state": {
-        "burst_id": "burst_personal_001",
-        "status": "ready",
-        "exact_draft_option": {
-          "option_id": "option_exact",
-          "text": "ship spec tn"
-        },
-        "model_options": [
-          {
-            "option_id": "option_model_001",
-            "text": "Ship the specification tonight.",
-            "source": "fixture"
-          }
-        ],
-        "selected_option_id": null,
-        "commit_enabled": true
-      },
-      "personal_example": {
-        "example_id": "personal_profile_ario_001",
-        "profile_id": "profile_ario",
-        "source": "repeated_pattern",
-        "input_text": "ship spec tn",
-        "confirmed_text": "Ship the specification tonight.",
-        "created_at": "2026-07-18T12:15:00-04:00"
+      "result": {
+        "request_id": "pred_missing_adapter",
+        "status": "error",
+        "model_variant": "global",
+        "error": {
+          "code": "adapter_not_loaded",
+          "message": "The global adapter is unavailable.",
+          "retryable": false
+        }
       }
     }
   ],
-  "sidecar_health": {
-    "sidecar_ready": true,
-    "base_model_loaded": false,
-    "global_adapter_loaded": false,
-    "user_adapter_loaded": false,
-    "fixture_mode": true,
-    "model_family": "fixture"
-  }
+  "capture_results": [
+    {
+      "case_id": "textedit_ready",
+      "result": {
+        "status": "ready",
+        "burst_id": "burst_textedit",
+        "destination_id": "destination_textedit",
+        "profile_id": "profile_default",
+        "draft": "cnt cm tmrw",
+        "trigger": "idle"
+      }
+    },
+    {
+      "case_id": "secure_field",
+      "result": {
+        "status": "unavailable",
+        "reason": "secure_field"
+      }
+    }
+  ],
+  "health_cases": [
+    {
+      "case_id": "fixture_ready",
+      "health": {
+        "status": "ready",
+        "fixture_available": true,
+        "loaded": {
+          "base": false,
+          "global_adapter": false,
+          "user_adapter": false
+        }
+      }
+    },
+    {
+      "case_id": "adapter_degraded",
+      "health": {
+        "status": "degraded",
+        "fixture_available": true,
+        "loaded": {
+          "base": true,
+          "global_adapter": false,
+          "user_adapter": false
+        },
+        "error": {
+          "code": "adapter_not_loaded",
+          "message": "The global adapter is unavailable.",
+          "retryable": false
+        }
+      }
+    }
+  ]
 }
