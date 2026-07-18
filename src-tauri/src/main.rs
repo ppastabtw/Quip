@@ -128,6 +128,24 @@ fn show_window(app: &AppHandle, label: &str) {
     }
 }
 
+#[tauri::command]
+fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
+    accessibility::capture_focused_destination(&profile_id, trigger)
+}
+
+#[tauri::command]
+fn commit_confirmed_text(
+    destination_id: String,
+    confirmed_text: String,
+) -> Result<commit::CommitReport, commit::CommitError> {
+    commit::commit_confirmed_text(&destination_id, &confirmed_text)
+}
+
+#[tauri::command]
+fn cancel_destination(destination_id: String) -> Result<commit::CommitReport, commit::CommitError> {
+    commit::cancel_destination(&destination_id)
+}
+
 /// One full burst: begin → inference → suggest. Fixture latency is replayed;
 /// live results have already incurred their measured latency. The engine lock
 /// is never held across the optional sleep, and stale results are dropped by
@@ -636,6 +654,9 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            capture_focused_destination,
+            commit_confirmed_text,
+            cancel_destination,
             inject_capture,
             select_candidate,
             move_selection,

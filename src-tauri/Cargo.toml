@@ -15,3 +15,6 @@ tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 tracing-appender = "0.2"
+axuielement = "0.9.1"
+arboard = "3.6.1"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSRunningApplication", "libc"] }

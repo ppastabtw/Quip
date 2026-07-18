@@ -76,6 +76,16 @@ export type CaptureResult =
       reason: string;
     };
 
+export const TEXTEDIT_READY_CAPTURE_RESULT = {
+  status: "ready",
+  burst_id: "burst_textedit",
+  destination_id: "destination_textedit",
+  profile_id: "profile_default",
+  draft: "cnt cm tmrw",
+  trigger: "idle",
+  caret: { x: 512, y: 384, width: 2, height: 18 },
+} satisfies CaptureResult;
+
 export type HealthStatus = "ready" | "degraded" | "unavailable";
 
 export interface SidecarHealth {

@@ -2,7 +2,7 @@
 //! acceptance rule in `docs/phase-0-contracts.md`: a boundary is accepted only
 //! after one producer and one consumer validate the same fixture.
 
-use quip_contracts::{FixtureFile, PredictionResult};
+use quip_contracts::{CaptureResult, FixtureFile, PredictionResult, Rect, Trigger};
 
 fn load_raw() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,6 +21,23 @@ fn normalize(value: serde_json::Value) -> serde_json::Value {
             Value::Object(map.into_iter().map(|(k, v)| (k, normalize(v))).collect())
         }
         other => other,
+    }
+}
+
+fn capture_case(case_id: &str) -> CaptureResult {
+    let typed: FixtureFile = serde_json::from_str(&load_raw()).unwrap();
+    typed
+        .capture_results
+        .into_iter()
+        .find(|case| case.case_id == case_id)
+        .unwrap_or_else(|| panic!("missing capture case {case_id}"))
+        .result
+}
+
+fn unavailable_capture_reason(case_id: &str) -> String {
+    match capture_case(case_id) {
+        CaptureResult::Unavailable { reason } => reason,
+        CaptureResult::Ready { .. } => panic!("capture case {case_id} should be unavailable"),
     }
 }
 
@@ -81,4 +98,33 @@ fn fixture_results_satisfy_invariants() {
         candidate_counts.contains(&5),
         "fixtures must prove five candidates"
     );
+}
+
+#[test]
+fn textedit_ready_capture_fixture_matches_shared_rust_contract() {
+    let fixture = capture_case("textedit_ready");
+
+    assert_eq!(
+        fixture,
+        CaptureResult::Ready {
+            burst_id: "burst_textedit".to_string(),
+            destination_id: "destination_textedit".to_string(),
+            profile_id: "profile_default".to_string(),
+            draft: "cnt cm tmrw".to_string(),
+            trigger: Trigger::Idle,
+            caret: Rect {
+                x: 512.0,
+                y: 384.0,
+                width: 2.0,
+                height: 18.0,
+            },
+        }
+    );
+}
+
+#[test]
+fn secure_field_capture_fixture_matches_shared_rust_contract() {
+    let reason = unavailable_capture_reason("secure_field");
+
+    assert_eq!(reason, "secure_field");
 }
