@@ -59,6 +59,17 @@
         "retryable": { "type": "boolean" }
       }
     },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 }
+      }
+    },
     "context_snippet": {
       "type": "object",
       "additionalProperties": false,
@@ -114,7 +125,6 @@
             "status",
             "model_variant",
             "backend",
-            "action",
             "candidates",
             "latency_ms"
           ],
@@ -123,24 +133,14 @@
             "status": { "const": "ok" },
             "model_variant": { "$ref": "#/$defs/model_variant" },
             "backend": { "enum": ["fixture", "live"] },
-            "action": { "enum": ["keep", "replace"] },
             "candidates": {
               "type": "array",
-              "maxItems": 3,
-              "items": { "type": "string" }
+              "maxItems": 5,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
             },
             "latency_ms": { "type": "number", "minimum": 0 }
-          },
-          "allOf": [
-            {
-              "if": { "properties": { "action": { "const": "keep" } } },
-              "then": { "properties": { "candidates": { "maxItems": 0 } } }
-            },
-            {
-              "if": { "properties": { "action": { "const": "replace" } } },
-              "then": { "properties": { "candidates": { "minItems": 1 } } }
-            }
-          ]
+          }
         },
         {
           "type": "object",
@@ -166,7 +166,8 @@
             "destination_id",
             "profile_id",
             "draft",
-            "trigger"
+            "trigger",
+            "caret"
           ],
           "properties": {
             "status": { "const": "ready" },
@@ -174,7 +175,8 @@
             "destination_id": { "type": "string" },
             "profile_id": { "type": "string" },
             "draft": { "type": "string" },
-            "trigger": { "enum": ["idle", "punctuation", "return", "shortcut"] }
+            "trigger": { "enum": ["idle", "punctuation", "return", "shortcut"] },
+            "caret": { "$ref": "#/$defs/rect" }
           }
         },
         {

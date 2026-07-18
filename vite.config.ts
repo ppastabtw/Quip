@@ -14,7 +14,7 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        composition: resolve(import.meta.dirname, "src/ui/composition.html"),
+        suggestions: resolve(import.meta.dirname, "src/ui/suggestions.html"),
         settings: resolve(import.meta.dirname, "src/ui/settings.html"),
         demo: resolve(import.meta.dirname, "src/ui/demo.html"),
       },

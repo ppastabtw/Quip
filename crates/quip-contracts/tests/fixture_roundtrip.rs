@@ -2,13 +2,26 @@
 //! acceptance rule in `docs/phase-0-contracts.md`: a boundary is accepted only
 //! after one producer and one consumer validate the same fixture.
 
-use quip_contracts::{CaptureResult, FixtureFile, PredictionResult, Trigger};
+use quip_contracts::{CaptureResult, FixtureFile, PredictionResult, Rect, Trigger};
 
 fn load_raw() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/fixtures/phase-0-examples.json");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+/// serde_json::Value treats 512 and 512.0 as unequal; the wire format does
+/// not. Normalize every number to f64 before comparing.
+fn normalize(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => serde_json::json!(n.as_f64().unwrap()),
+        Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
+        Value::Object(map) => {
+            Value::Object(map.into_iter().map(|(k, v)| (k, normalize(v))).collect())
+        }
+        other => other,
+    }
 }
 
 fn capture_case(case_id: &str) -> CaptureResult {
@@ -35,7 +48,8 @@ fn fixtures_round_trip_exactly() {
     let original: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let reserialized = serde_json::to_value(&typed).unwrap();
     assert_eq!(
-        original, reserialized,
+        normalize(original),
+        normalize(reserialized),
         "typed contracts must not drop, rename, or invent fields"
     );
 }
@@ -67,6 +81,23 @@ fn fixture_results_satisfy_invariants() {
             exchange.case_id
         );
     }
+
+    let candidate_counts: Vec<usize> = typed
+        .prediction_exchanges
+        .iter()
+        .filter_map(|exchange| match &exchange.result {
+            PredictionResult::Ok { candidates, .. } => Some(candidates.len()),
+            PredictionResult::Error { .. } => None,
+        })
+        .collect();
+    assert!(
+        candidate_counts.contains(&0),
+        "fixtures must prove zero candidates"
+    );
+    assert!(
+        candidate_counts.contains(&5),
+        "fixtures must prove five candidates"
+    );
 }
 
 #[test]
@@ -81,6 +112,12 @@ fn textedit_ready_capture_fixture_matches_shared_rust_contract() {
             profile_id: "profile_default".to_string(),
             draft: "cnt cm tmrw".to_string(),
             trigger: Trigger::Idle,
+            caret: Rect {
+                x: 512.0,
+                y: 384.0,
+                width: 2.0,
+                height: 18.0,
+            },
         }
     );
 }

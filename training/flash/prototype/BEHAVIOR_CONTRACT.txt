@@ -1,0 +1,68 @@
+Behavior Contract: Quip model playground
+
+Target
+
+- Surface: http://127.0.0.1:8765
+- User posture: a developer on the Windows training machine with Flash authenticated in Ubuntu WSL2
+- Build or version: the current checkout's training/flash/prototype files
+
+Setup
+
+- Start the server with ./training/flash/prototype/start.ps1 from PowerShell.
+- Use non-sensitive synthetic text only.
+- The launcher may read the existing Flash credential inside Ubuntu WSL2. The browser must never receive it.
+
+Clauses
+
+- BV-1: Given a running server, when the developer opens the root URL, then separate Augmentation lab and Model playground tabs are visible, the augmentation panel is active, and only the active tab panel is shown.
+  Evidence: visible browser state.
+- BV-2: The page does not show example chips or the phrases Training workbench, shorthand, typo, protected token, or synthetic text only.
+  Evidence: visible browser state.
+- BV-3: Given the Model playground tab and a blank draft, when the developer runs the model, then the page rejects the request without sending an inference call.
+  Evidence: visible validation message.
+- BV-4: Given a valid draft, when managed inference succeeds, then the server runs exactly five completions, drops exact-input outputs, groups identical changed strings, and ranks candidates by vote count descending with earliest completion index as the deterministic tie breaker. The page shows ranks, vote counts, and latency. If every completion is unchanged, it shows a successful zero-candidate state.
+  Evidence: visible result and the API response fields.
+- BV-5: Given a changed system prompt, temperature, or max tokens, when the developer runs again, then the submitted API request and result metadata reflect the changed controls and report five completions plus the candidate count.
+  Evidence: browser-visible controls and API response fields.
+- BV-6: Given a changed draft, when the developer runs the model again, then the displayed suggestions come from new managed completions rather than static fixture text.
+  Evidence: two distinct requests and responses.
+- BV-7: Given an invalid or unavailable model ID, when the developer runs it, then the page shows a useful error without exposing a credential.
+  Evidence: visible error and redacted response inspection.
+- BV-8: Given the model control, when the developer opens it, then Flash catalog models appear as suggestions while a free-form model ID can still be submitted.
+  Evidence: visible suggestions and API request fields for catalog and custom values.
+- AUG-1: Given the same correct text, seed, error count, and weights, when the developer generates twice, then both corrupted drafts and operation traces are identical.
+  Evidence: repeated API responses and visible lab output.
+- AUG-1a: Given a fresh page load, when the augmentation lab initializes, then the seed is randomly generated within the accepted range and remains editable for reproduction.
+  Evidence: two fresh page loads, the visible seed control, and submitted API requests.
+- AUG-2: Given the augmentation lab, when the developer changes the seed, error count, or operator weights, then the API request reflects those controls and the response reports normalized weights and applied operations.
+  Evidence: visible controls and API response fields.
+- AUG-2a: Given the operator weight controls, when the developer hovers or focuses each help control, then a short explanation of that mutation appears.
+  Evidence: visible tooltip text for all six operators.
+- AUG-3: Given a generated corruption, when the developer selects Use as model draft, then the Model playground tab becomes active and its draft field receives the corrupted text without an inference request.
+  Evidence: visible draft field and server request log.
+- AUG-4: Given an augmentation request, when it is handled, then no Flash credential or managed inference function is used.
+  Evidence: focused isolation test and server request log.
+
+Anti-cheat probes
+
+- Submit an empty draft.
+- Run a prediction and verify exactly five completions occur, exact-input outputs are skipped, duplicate changes are grouped, and unique candidates are ranked by vote count then earliest completion index.
+- Change the system prompt and temperature between successful requests.
+- Submit a deliberately invalid model ID.
+- Submit a catalog model and a custom model ID through the same control.
+- Generate twice with identical augmentation inputs, then change only the seed.
+- Set one operator weight to a positive value and all other weights to zero.
+- Use the generated corruption as the model draft.
+- Inspect browser-visible responses for credential-like values.
+
+Exclusions
+
+- Training submissions, deployment, adapter selection, and model export.
+- The macOS app, Accessibility capture, Tauri, Metal, and local adapter loading.
+- Authentication, persistence, history, training submission, streaming, and production security hardening.
+
+Stop conditions
+
+- Flash authentication is missing inside Ubuntu WSL2.
+- Freesolo managed serving is unreachable.
+- No successfully serving model is available for BV-3 and BV-4.

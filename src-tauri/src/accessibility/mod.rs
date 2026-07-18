@@ -17,9 +17,15 @@ use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
 use axuielement::ax_value::AXRange;
 use axuielement::AXUIElement;
 use objc2_app_kit::NSRunningApplication;
-use quip_contracts::{CaptureResult, ContextSnippet, Trigger};
+use quip_contracts::{CaptureResult, ContextSnippet, Rect, Trigger};
 
 const DRAFT_MAX_CHARS: usize = 80;
+const FALLBACK_CARET: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    width: 2.0,
+    height: 18.0,
+};
 
 #[allow(dead_code)]
 const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
@@ -244,6 +250,7 @@ fn build_ready_capture_result(
     profile_id: &str,
     trigger: Trigger,
     draft: &str,
+    caret: Rect,
     snapshot: DestinationSnapshot,
 ) -> CaptureResult {
     let destination_id = registry.register(snapshot);
@@ -253,6 +260,7 @@ fn build_ready_capture_result(
         profile_id: profile_id.to_string(),
         draft: draft.to_string(),
         trigger,
+        caret,
     }
 }
 
@@ -419,7 +427,14 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
         };
     };
 
-    build_ready_capture_result(&mut registry, profile_id, trigger, &draft, snapshot)
+    build_ready_capture_result(
+        &mut registry,
+        profile_id,
+        trigger,
+        &draft,
+        FALLBACK_CARET,
+        snapshot,
+    )
 }
 
 #[allow(dead_code)]
@@ -535,6 +550,7 @@ mod tests {
         collect_context_snippets, is_supported_app, validate_focused_editable_element,
         AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
         ContextSnippetLimit, DestinationRegistry, DestinationSnapshot, FocusedElementSnapshot,
+        FALLBACK_CARET,
     };
     use quip_contracts::Trigger;
 
@@ -597,6 +613,7 @@ mod tests {
             "profile_default",
             Trigger::Idle,
             "cnt cm tmrw",
+            FALLBACK_CARET,
             DestinationSnapshot::new_for_test("com.apple.TextEdit", "TextEdit", "AXTextArea"),
         );
 

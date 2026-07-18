@@ -8,7 +8,39 @@
   </head>
   <body>
     <h1>Demo harness</h1>
-    <p class="placeholder">Demo harness placeholder — corpus comparison, health panel, and scripted capture events land next.</p>
+
+    <h2>Playground: type like in any textbox</h2>
+    <p class="muted" style="margin-bottom: 6px">
+      Simulates a macOS textbox until Workstream 3's Accessibility observer lands. Candidates
+      appear and refresh live above the caret while you type, like the macOS Pinyin IME:
+      1 through 5 or click picks a candidate, Tab accepts the highlighted one, Esc keeps your text,
+      and ending a sentence (or a newline) closes the session.
+    </p>
+    <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+
+    <h2>Sidecar health &amp; metrics</h2>
+    <div class="card statline" id="healthline">
+      <span id="health_status" class="pill"></span>
+      <span id="backend_mode" class="pill"></span>
+      <span id="health_loaded" class="muted"></span>
+      <span id="metrics" class="muted"></span>
+      <label class="row" style="padding: 0">
+        <input type="checkbox" id="simulate_failure" /> Simulate adapter failure
+      </label>
+    </div>
+
+    <h2>Deterministic corpus comparison</h2>
+    <div class="case-list" id="cases"></div>
+    <div id="comparison"></div>
+
+    <h2>Composition driver</h2>
+    <div class="statline">
+      <button id="fire_textedit">Send TextEdit capture fixture</button>
+      <button id="fire_secure">Send secure-field capture</button>
+      <span class="muted" id="last_state"></span>
+    </div>
+    <p class="muted" id="last_commit" style="margin-top: 6px"></p>
+
     <script type="module" src="./demo.ts"></script>
   </body>
 </html>

@@ -6,6 +6,13 @@
 //! composition layer. Never inserts without explicit confirmation.
 
 use crate::accessibility;
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitOutcome {
+    pub destination_id: String,
+    pub text: String,
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -129,6 +136,21 @@ pub fn commit_confirmed_text(
 pub fn cancel_destination(destination_id: &str) -> Result<CommitReport, CommitError> {
     let mut session = LiveCommitSession;
     cancel_destination_with_session(destination_id, &mut session)
+}
+
+pub fn replace_burst(destination_id: &str, _burst_id: &str, text: &str) -> CommitOutcome {
+    if let Err(error) = commit_confirmed_text(destination_id, text) {
+        tracing::warn!(
+            destination_id,
+            error = ?error,
+            "real accessibility commit failed; returning selected text for playground state"
+        );
+    }
+
+    CommitOutcome {
+        destination_id: destination_id.to_string(),
+        text: text.to_string(),
+    }
 }
 
 struct LiveCommitSession;

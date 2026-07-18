@@ -1,0 +1,19 @@
+model = "Qwen/Qwen3.5-2B"
+algorithm = "opd"
+seed = 42
+
+[environment]
+id = "ariobarin/quip"
+
+[environment.params]
+split = "train"
+
+[train]
+max_examples = 30
+lora_rank = 16
+lora_alpha = 32
+max_completion_tokens = 128
+max_context_tokens = 1024
+
+# OPD is a fallback only. Evaluate the teacher on the held-out split first.
+# For a warm start, set init_from_adapter and remove rank and alpha.

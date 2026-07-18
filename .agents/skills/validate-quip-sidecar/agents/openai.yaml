@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate Quip Sidecar"
+  short_description: "Run Quip sidecar integration checks"
+  default_prompt: "Use $validate-quip-sidecar to verify the local fixture inference sidecar end to end."

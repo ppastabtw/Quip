@@ -10,18 +10,24 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
-        "label": "composition",
+        "label": "suggestions",
         "title": "Quip",
-        "url": "composition.html",
-        "width": 480,
-        "height": 240,
+        "url": "suggestions.html",
+        "width": 320,
+        "height": 44,
         "visible": false,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "alwaysOnTop": true,
         "resizable": false,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "focus": false,
+        "focusable": false,
+        "acceptFirstMouse": true
       },
       {
         "label": "settings",

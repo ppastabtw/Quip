@@ -32,16 +32,13 @@ export interface PredictionRequest {
   personal_patterns: PersonalPattern[];
 }
 
-export type PredictionAction = "keep" | "replace";
-
 export type PredictionResult =
   | {
       status: "ok";
       request_id: string;
       model_variant: ModelVariant;
       backend: Backend;
-      action: PredictionAction;
-      /** Empty for `keep`; one to three full-input replacements, best first, for `replace`. */
+      /** Zero through five unique full-input replacements, best first. */
       candidates: string[];
       latency_ms: number;
     }
@@ -54,15 +51,25 @@ export type PredictionResult =
 
 export type Trigger = "idle" | "punctuation" | "return" | "shortcut";
 
+/** Logical screen coordinates, origin top-left. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export type CaptureResult =
   | {
       status: "ready";
       burst_id: string;
-      /** Opaque: return it on commit/cancel without interpreting it. */
+      /** Opaque: return it on commit without interpreting it. */
       destination_id: string;
       profile_id: string;
       draft: string;
       trigger: Trigger;
+      /** Caret rectangle; the suggestion bar is anchored above it. */
+      caret: Rect;
     }
   | {
       status: "unavailable";
@@ -76,6 +83,7 @@ export const TEXTEDIT_READY_CAPTURE_RESULT = {
   profile_id: "profile_default",
   draft: "cnt cm tmrw",
   trigger: "idle",
+  caret: { x: 512, y: 384, width: 2, height: 18 },
 } satisfies CaptureResult;
 
 export type HealthStatus = "ready" | "degraded" | "unavailable";

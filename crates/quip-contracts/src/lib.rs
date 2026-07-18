@@ -30,7 +30,7 @@ pub enum Backend {
     Live,
 }
 
-/// Explicit failure payload. Failures never invent an action or candidates.
+/// Explicit failure payload. Failures never invent candidates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorInfo {
@@ -68,17 +68,9 @@ pub struct PredictionRequest {
     pub personal_patterns: Vec<PersonalPattern>,
 }
 
-/// The model's decision for a successful prediction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PredictionAction {
-    Keep,
-    Replace,
-}
-
-/// Result of one prediction. `keep` carries no candidates; `replace` carries
-/// one to three full-input replacements ordered best first. The application,
-/// not the model, adds the exact-draft option.
+/// Result of one prediction. A successful result carries zero through five
+/// unique full-input replacements ordered best first. Zero candidates means
+/// the five raw generations all resolved to unchanged input after filtering.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PredictionResult {
@@ -86,7 +78,6 @@ pub enum PredictionResult {
         request_id: String,
         model_variant: ModelVariant,
         backend: Backend,
-        action: PredictionAction,
         candidates: Vec<String>,
         // The schema allows any non-negative number; producers emit whole
         // milliseconds so fixtures round-trip as integers.
@@ -102,23 +93,20 @@ pub enum PredictionResult {
 impl PredictionResult {
     /// Checks the candidate-count invariants from `docs/phase-0-contracts.md`.
     pub fn validate(&self) -> Result<(), String> {
-        match self {
-            PredictionResult::Ok {
-                action: PredictionAction::Keep,
-                candidates,
-                ..
-            } if !candidates.is_empty() => {
-                Err(format!("keep result has {} candidates", candidates.len()))
-            }
-            PredictionResult::Ok {
-                action: PredictionAction::Replace,
-                candidates,
-                ..
-            } if candidates.is_empty() || candidates.len() > 3 => {
-                Err(format!("replace result has {} candidates", candidates.len()))
-            }
-            _ => Ok(()),
+        let PredictionResult::Ok { candidates, .. } = self else {
+            return Ok(());
+        };
+        if candidates.len() > 5 {
+            return Err(format!("result has {} candidates", candidates.len()));
         }
+        if candidates.iter().any(String::is_empty) {
+            return Err("result has an empty candidate".to_string());
+        }
+        let unique = candidates.iter().collect::<std::collections::HashSet<_>>();
+        if unique.len() != candidates.len() {
+            return Err("result has duplicate candidates".to_string());
+        }
+        Ok(())
     }
 
     pub fn request_id(&self) -> &str {
@@ -139,8 +127,20 @@ pub enum Trigger {
     Shortcut,
 }
 
+/// A rectangle in logical screen coordinates (origin top-left). Used for the
+/// caret so the suggestion bar can be anchored above it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Result of Accessibility capture for one burst. `destination_id` is opaque:
-/// the UI returns it on commit or cancel without interpreting it. Secure and
+/// the UI returns it on commit without interpreting it. The typed text stays
+/// in the destination; `caret` anchors the candidate bar. Secure and
 /// unsupported fields produce `Unavailable` and never reach inference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -151,6 +151,7 @@ pub enum CaptureResult {
         profile_id: String,
         draft: String,
         trigger: Trigger,
+        caret: Rect,
     },
     Unavailable {
         reason: String,

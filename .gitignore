@@ -3,20 +3,33 @@
 !AGENTS.md
 !docs/
 !docs/**/*
+!training/flash/dataset/ATTRIBUTION.md
+!.agents/skills/**/SKILL.md
 .workspace/
 .workspace/**/*
 .claude/
 .codex/
+.cursor/
+.vscode/
 agent-hooks/
 .env
 
-# build outputs
+# Build and Python outputs
 target/
 node_modules/
 dist/
 src-tauri/gen/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+training/flash/.data-cache/
 
-# local model artifacts, adapters, and personal data are never committed
+# Local model artifacts, adapters, evaluations, and logs
 artifacts/models/*
 !artifacts/models/.gitkeep
+artifacts/adapters/
+artifacts/logs/
+artifacts/eval/
+tmp/eval-*.jsonl
 *.log
