@@ -45,6 +45,8 @@ interface KeyInfo {
   wordBoundary: boolean;
   /** The last typed character is a sentence terminator. */
   sentencePunct: boolean;
+  /** The fifth word was just completed, so the bounded model window is full. */
+  wordLimitReached: boolean;
   /** Rolling median of this typist's recent inter-key gaps. */
   medianGapMs: number;
 }
@@ -62,10 +64,10 @@ interface CadenceStrategy {
 
 const STRATEGIES: Record<string, CadenceStrategy> = {
   pause_150: {
-    label: "Fixed pause, 150 ms (current)",
-    hint: "Fetch 150 ms after typing stops; sentence punctuation is immediate.",
-    pipelined: false,
-    onKey: (key) => (key.sentencePunct ? "now" : 150),
+    label: "Pause, punctuation, or 5 words (current)",
+    hint: "Fetch after a 150 ms pause, or immediately at punctuation and a completed fifth word; coalesce while inference is busy.",
+    pipelined: true,
+    onKey: (key) => (key.sentencePunct || key.wordLimitReached ? "now" : 150),
   },
   pipeline_greedy: {
     label: "Pipelined: every keystroke",
@@ -81,16 +83,18 @@ const STRATEGIES: Record<string, CadenceStrategy> = {
   },
   rhythm: {
     label: "Rhythm-adaptive pause",
-    hint: "Pause threshold tracks your typing rhythm: 2.2× your median inter-key gap, clamped to 180–700 ms.",
+    hint: "Pause threshold tracks your typing rhythm; punctuation and a completed fifth word remain immediate.",
     pipelined: false,
     onKey: (key) =>
-      key.sentencePunct ? "now" : Math.min(700, Math.max(180, 2.2 * key.medianGapMs)),
+      key.sentencePunct || key.wordLimitReached
+        ? "now"
+        : Math.min(700, Math.max(180, 2.2 * key.medianGapMs)),
   },
   sentence_only: {
-    label: "Sentence punctuation only",
-    hint: "Fetch only at . ! ? or the 80-char window — the minimal-interruption extreme.",
+    label: "Boundaries only",
+    hint: "Fetch only at . ! ?, a completed fifth word, or the 80-character backstop.",
     pipelined: false,
-    onKey: (key) => (key.sentencePunct ? "now" : "never"),
+    onKey: (key) => (key.sentencePunct || key.wordLimitReached ? "now" : "never"),
   },
 };
 
@@ -225,7 +229,14 @@ function requestPrediction(trigger: Trigger) {
 function endSession() {
   window.clearTimeout(idleTimer);
   dirty = false;
+  // A newline is a hard composition boundary. Release the frontend's serial
+  // slot even when the prior request was dismissed while still in flight;
+  // otherwise pipelined strategies can remain wedged forever waiting for a
+  // settled snapshot that the engine correctly drops as stale.
+  inflight = false;
+  activeBurstId = undefined;
   if (suggesting) void api.dismissSuggestions();
+  suggesting = false;
   burstStart = playgroundEl.selectionStart;
   burstEnd = burstStart;
 }
@@ -244,6 +255,17 @@ playgroundEl.addEventListener("input", () => {
   stats.keystrokes += 1;
 
   const caret = playgroundEl.selectionStart;
+  // Clearing the textarea, replacing a selection, or editing before the
+  // tracked burst invalidates the old offset. Start a fresh burst at the
+  // current edit instead of slicing from an unreachable prior position.
+  if (caret < burstStart || playgroundEl.value.length < burstStart) {
+    burstStart = Math.max(0, caret - 1);
+    burstEnd = caret;
+    inflight = false;
+    dirty = false;
+    activeBurstId = undefined;
+    suggesting = false;
+  }
   slideBurstWindow(caret);
   const draft = playgroundEl.value.slice(burstStart, caret);
   const last = draft.at(-1) ?? "";
@@ -267,6 +289,8 @@ playgroundEl.addEventListener("input", () => {
   const key: KeyInfo = {
     wordBoundary: /\s/.test(last) && draft.length > 1 && !/\s/.test(draft.at(-2) ?? " "),
     sentencePunct: ".!?".includes(last),
+    wordLimitReached:
+      /\s/.test(last) && draft.trim().split(/\s+/).filter(Boolean).length >= MAX_BURST_WORDS,
     medianGapMs: medianGapMs(),
   };
   const action = strategy.onKey(key);
