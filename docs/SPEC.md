@@ -1,12 +1,8 @@
-# KeepKey specification
-
-Status: ready for implementation
-
-Team constraint: four builders with 30 hackathon hours.
+# Quip specification
 
 ## Product statement
 
-KeepKey is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is restraint. It keeps valid or intentionally unusual text unchanged and proposes minimal replacements only when the model is confident that decoding is useful.
+Quip is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is restraint. It keeps valid or intentionally unusual text unchanged and proposes minimal replacements only when the model is confident that decoding is useful.
 
 ## Locality contract
 
@@ -16,7 +12,7 @@ KeepKey is a local macOS text decoder for compressed, misspelled, or phonetic En
 - The application must remain functional without an internet connection after model installation.
 - Freesolo is used for post-training and adapter export, not as the product's inference endpoint.
 - Managed endpoints may be used only for training-time inspection or debugging and are not part of the judged product path.
-- Training data is a prepared project dataset, not text collected from KeepKey users.
+- Training data is a prepared project dataset, not text collected from Quip users.
 
 ## Core claim
 
@@ -29,7 +25,7 @@ The Freesolo-trained model should outperform base Qwen primarily by making fewer
 
 ## Interaction model
 
-KeepKey runs as a macOS menu-bar application.
+Quip runs as a macOS menu-bar application.
 
 ### Intelligent mode
 
@@ -52,7 +48,7 @@ Single-word corrections should use a stricter confidence threshold. Shorthand de
 
 ### Manual mode
 
-The user can select text in any supported application and invoke KeepKey with a global keyboard shortcut. This is the reliable fallback and the first implementation milestone.
+The user can select text in any supported application and invoke Quip with a global keyboard shortcut. This is the reliable fallback and the first implementation milestone.
 
 ## Replacement behavior
 
@@ -156,7 +152,7 @@ The held-out evaluation must not be identical to the optimized reward. Evaluatio
 
 ### Training artifact and serving
 
-Flash produces a LoRA adapter over the selected Qwen3.5 base. Export the adapter after training. The macOS application must run the base and adapter locally through a compatible inference runtime. Managed Flash deployment is useful for development checks, but it does not satisfy KeepKey's local-product claim.
+Flash produces a LoRA adapter over the selected Qwen3.5 base. Export the adapter after training. The macOS application must run the base and adapter locally through a compatible inference runtime. Managed Flash deployment is useful for development checks, but it does not satisfy Quip's local-product claim.
 
 The Flash catalog currently presented in the sponsor deck includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters. Final checkpoint selection depends on the demo Mac's memory and measured latency.
 
@@ -168,7 +164,7 @@ The live demo should show:
 2. The Freesolo-trained model returning `keep` for that same text.
 3. Both models receiving noisy shorthand or a typo.
 4. The trained model proposing a minimal useful correction.
-5. The user confirming the candidate and KeepKey replacing it in another application.
+5. The user confirming the candidate and Quip replacing it in another application.
 
 The evaluation comparison should run live from a deterministic corpus rather than being prerecorded.
 
@@ -194,7 +190,7 @@ The judged build is complete when:
 1. A global shortcut captures selected text in at least TextEdit and one browser.
 2. Base Qwen and the Freesolo-trained adapter can both process the same local input.
 3. The trained model returns schema-valid `keep` or replacement candidates.
-4. KeepKey remains silent for `keep` and shows a confirmation overlay for replacements.
+4. Quip remains silent for `keep` and shows a confirmation overlay for replacements.
 5. Confirming a candidate replaces the original text in place.
 6. A live comparison demonstrates shorthand decoding and protected-text restraint.
 
@@ -211,7 +207,7 @@ The primary demo should use the M3 Pro machine for its additional memory and str
 
 ## Implementation direction
 
-KeepKey will use a Rust-first architecture.
+Quip will use a Rust-first architecture.
 
 ### Application shell
 
@@ -238,7 +234,7 @@ The leading Rust inference candidate is `mistral.rs` with Metal acceleration. It
 
 The first inference milestone is a compatibility spike that loads the exact Freesolo-exported adapter over the selected Qwen3.5 base and produces schema-constrained output on both target Macs. Do this before coupling inference into the application.
 
-For the first demo implementation, KeepKey may run `mistral.rs` as a bundled local sidecar process and call its loopback API. This preserves a Rust implementation while isolating model startup and inference failures from the overlay. Linking the Rust SDK directly into the application is an optimization after the model path is proven.
+For the first demo implementation, Quip may run `mistral.rs` as a bundled local sidecar process and call its loopback API. This preserves a Rust implementation while isolating model startup and inference failures from the overlay. Linking the Rust SDK directly into the application is an optimization after the model path is proven.
 
 ### Architecture fallback
 
