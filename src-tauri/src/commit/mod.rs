@@ -26,6 +26,7 @@ pub struct CommitReport {
 pub enum CommitError {
     UnknownDestination,
     AccessibilityWriteFailed,
+    ClipboardUnavailable,
     UnsupportedClipboardContent,
 }
 
@@ -37,10 +38,10 @@ enum ClipboardSnapshot {
 
 #[cfg_attr(not(test), allow(dead_code))]
 trait ClipboardSession {
-    fn snapshot(&self) -> ClipboardSnapshot;
-    fn set_plain_text(&mut self, text: &str);
-    fn simulate_paste(&mut self);
-    fn restore(&mut self, snapshot: ClipboardSnapshot);
+    fn snapshot(&mut self) -> Result<ClipboardSnapshot, CommitError>;
+    fn set_plain_text(&mut self, text: &str) -> Result<(), CommitError>;
+    fn simulate_paste(&mut self) -> Result<(), CommitError>;
+    fn restore(&mut self, snapshot: ClipboardSnapshot) -> Result<(), CommitError>;
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -104,10 +105,10 @@ fn simulated_paste_fallback(
     confirmed_text: &str,
     clipboard: &mut impl ClipboardSession,
 ) -> Result<CommitReport, CommitError> {
-    let previous_clipboard = clipboard.snapshot();
-    clipboard.set_plain_text(confirmed_text);
-    clipboard.simulate_paste();
-    clipboard.restore(previous_clipboard);
+    let previous_clipboard = clipboard.snapshot()?;
+    clipboard.set_plain_text(confirmed_text)?;
+    clipboard.simulate_paste()?;
+    clipboard.restore(previous_clipboard)?;
 
     Ok(CommitReport {
         destination_id: destination_id.to_string(),
@@ -116,9 +117,86 @@ fn simulated_paste_fallback(
     })
 }
 
+#[allow(dead_code)]
+pub fn commit_confirmed_text(
+    destination_id: &str,
+    confirmed_text: &str,
+) -> Result<CommitReport, CommitError> {
+    let mut session = LiveCommitSession;
+    if !session.has_destination(destination_id) {
+        return Err(CommitError::UnknownDestination);
+    }
+
+    let mut clipboard = ArboardClipboardSession::new()?;
+    commit_confirmed_text_with_session(destination_id, confirmed_text, &mut session, &mut clipboard)
+}
+
+struct LiveCommitSession;
+
+impl CommitSession for LiveCommitSession {
+    fn has_destination(&self, _destination_id: &str) -> bool {
+        false
+    }
+
+    fn write_accessibility(
+        &mut self,
+        _destination_id: &str,
+        _confirmed_text: &str,
+    ) -> Result<(), CommitError> {
+        Err(CommitError::UnknownDestination)
+    }
+
+    fn release_destination(&mut self, _destination_id: &str) {}
+}
+
+struct ArboardClipboardSession {
+    clipboard: arboard::Clipboard,
+}
+
+impl ArboardClipboardSession {
+    fn new() -> Result<Self, CommitError> {
+        Ok(Self {
+            clipboard: arboard::Clipboard::new().map_err(|_| CommitError::ClipboardUnavailable)?,
+        })
+    }
+}
+
+impl ClipboardSession for ArboardClipboardSession {
+    fn snapshot(&mut self) -> Result<ClipboardSnapshot, CommitError> {
+        let text = self
+            .clipboard
+            .get_text()
+            .map_err(|_| CommitError::UnsupportedClipboardContent)?;
+        Ok(ClipboardSnapshot::PlainText(text))
+    }
+
+    fn set_plain_text(&mut self, text: &str) -> Result<(), CommitError> {
+        self.clipboard
+            .set_text(text)
+            .map_err(|_| CommitError::ClipboardUnavailable)
+    }
+
+    fn simulate_paste(&mut self) -> Result<(), CommitError> {
+        Ok(())
+    }
+
+    fn restore(&mut self, snapshot: ClipboardSnapshot) -> Result<(), CommitError> {
+        match snapshot {
+            ClipboardSnapshot::PlainText(text) => self.set_plain_text(&text),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_confirmed_text_rejects_unknown_live_destination() {
+        let result = commit_confirmed_text("destination_missing", "confirmed text");
+
+        assert_eq!(result, Err(CommitError::UnknownDestination));
+    }
 
     #[test]
     fn commit_refuses_unknown_destination_id() {
@@ -202,22 +280,26 @@ mod tests {
     }
 
     impl ClipboardSession for FakeClipboardSession {
-        fn snapshot(&self) -> ClipboardSnapshot {
-            ClipboardSnapshot::PlainText(self.text.clone())
+        fn snapshot(&mut self) -> Result<ClipboardSnapshot, CommitError> {
+            Ok(ClipboardSnapshot::PlainText(self.text.clone()))
         }
 
-        fn set_plain_text(&mut self, text: &str) {
+        fn set_plain_text(&mut self, text: &str) -> Result<(), CommitError> {
             self.text = text.to_string();
+            Ok(())
         }
 
-        fn simulate_paste(&mut self) {}
+        fn simulate_paste(&mut self) -> Result<(), CommitError> {
+            Ok(())
+        }
 
-        fn restore(&mut self, snapshot: ClipboardSnapshot) {
+        fn restore(&mut self, snapshot: ClipboardSnapshot) -> Result<(), CommitError> {
             match snapshot {
                 ClipboardSnapshot::PlainText(text) => {
                     self.text = text;
                 }
             }
+            Ok(())
         }
     }
 
