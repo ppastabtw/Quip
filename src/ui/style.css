@@ -122,25 +122,71 @@ th {
   font-size: 12px;
 }
 
-/* ---- composition box ---- */
+/* ---- candidate bar (IME-style) ---- */
 
-.compose-header {
+.bar-body {
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.bar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  gap: 4px;
+  height: 40px;
+  margin: 2px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: rgba(38, 38, 44, 0.96);
+  color: #f2f2f5;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.compose-header .title {
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chip b {
+  font-size: 11px;
   font-weight: 600;
+  color: rgba(242, 242, 245, 0.55);
 }
 
-#draft {
+.chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.chip.recommended {
+  background: rgba(91, 91, 214, 0.45);
+}
+
+.chip.recommended b {
+  color: #fff;
+}
+
+.error-chip {
+  color: #ff9b8e;
+  cursor: default;
+}
+
+/* ---- playground ---- */
+
+#playground {
   width: 100%;
   resize: none;
-  font: inherit;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  padding: 8px;
+  font-size: 14px;
+  line-height: 20px;
+  padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: transparent;
@@ -149,59 +195,9 @@ th {
   user-select: text;
 }
 
-#draft:focus {
+#playground:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-#status {
-  min-height: 18px;
-  font-size: 12px;
-  color: var(--muted);
-  margin: 6px 0 4px;
-}
-
-#status.error {
-  color: var(--bad);
-}
-
-#options {
-  list-style: none;
-}
-
-#options li {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-#options li.selected {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-#options li .tag {
-  flex: none;
-  font-size: 11px;
-  color: var(--muted);
-  width: 52px;
-}
-
-#options li.recommended .tag {
-  color: var(--accent);
-}
-
-#commit-flash {
-  position: fixed;
-  inset: auto 12px 10px 12px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--ok) 18%, transparent);
-  color: var(--ok);
-  font-size: 12px;
-  display: none;
 }
 
 /* ---- demo harness ---- */

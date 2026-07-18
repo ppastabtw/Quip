@@ -9,6 +9,14 @@
   <body>
     <h1>Demo harness</h1>
 
+    <h2>Playground — type like in any textbox</h2>
+    <p class="muted" style="margin-bottom: 6px">
+      Simulates a macOS textbox until Workstream 3's Accessibility observer lands: type, pause
+      (or hit punctuation / Return), and the candidate bar appears above the caret.
+      Press 1–3 or click to replace in place, Esc or keep typing to dismiss.
+    </p>
+    <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+
     <h2>Sidecar health &amp; metrics</h2>
     <div class="card statline" id="healthline">
       <span id="health_status" class="pill"></span>

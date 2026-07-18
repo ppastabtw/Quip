@@ -2,10 +2,12 @@
 //! Accessibility insertion or selection replacement, with a simulated-paste
 //! fallback that preserves and restores the previous clipboard.
 //!
-//! Until that lands, this stub receives the opaque `destination_id` and the
-//! confirmed text, logs the commit, and returns it for display. The contract
-//! it must keep: never insert without explicit confirmation, and never
-//! interpret `destination_id`.
+//! IME model: commit means replacing the just-typed burst range in the
+//! destination in place (the text is already there as typed). Until that
+//! lands, this stub receives the opaque `destination_id` plus the selected
+//! candidate, logs it, and returns it for display — the playground applies
+//! the replacement itself. The contract it must keep: never replace without
+//! an explicit selection, and never interpret `destination_id`.
 
 use serde::Serialize;
 
@@ -15,8 +17,13 @@ pub struct CommitOutcome {
     pub text: String,
 }
 
-pub fn commit_text(destination_id: &str, text: &str) -> CommitOutcome {
-    tracing::info!(destination_id, chars = text.len(), "commit (stub: Workstream 3 lands the real insertion)");
+pub fn replace_burst(destination_id: &str, burst_id: &str, text: &str) -> CommitOutcome {
+    tracing::info!(
+        destination_id,
+        burst_id,
+        chars = text.len(),
+        "replace burst (stub: Workstream 3 lands the real in-place replacement)"
+    );
     CommitOutcome {
         destination_id: destination_id.to_string(),
         text: text.to_string(),

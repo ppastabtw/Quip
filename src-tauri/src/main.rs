@@ -1,9 +1,11 @@
 //! Quip: a local-first macOS composition layer. Tray-only Tauri shell.
 //!
-//! The webviews are pure renderers: every mutation goes through a command
-//! into the [`composition::Engine`], and every state change is broadcast as
-//! an event. Dev/validation hooks: `QUIP_DATA_DIR` overrides the data dir,
-//! `QUIP_SHOW=composition,demo` shows windows at startup, `QUIP_SELFTEST=1`
+//! IME model: the user types in their own textbox; the `suggestions` window
+//! is a small non-focusable candidate bar anchored above the caret. The
+//! webviews are pure renderers: every mutation goes through a command into
+//! the [`composition::Engine`], and every state change is broadcast as an
+//! event. Dev/validation hooks: `QUIP_DATA_DIR` overrides the data dir,
+//! `QUIP_SHOW=demo,settings` shows windows at startup, `QUIP_SELFTEST=1`
 //! drives the full fixture flow headlessly and exits.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -19,7 +21,7 @@ use commit::CommitOutcome;
 use composition::{BurstInput, Engine, Snapshot};
 use inference::{DemoCase, Metrics, SideSpec};
 use quip_contracts::{
-    CaptureResult, PredictionRequest, PredictionResult, SidecarHealth, Trigger,
+    CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
 };
 use serde::Serialize;
 use settings::{AppSettings, BackendMode};
@@ -28,8 +30,11 @@ use std::sync::Mutex;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, WindowEvent, Wry,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WindowEvent, Wry,
 };
+
+const BAR_HEIGHT: f64 = 44.0;
+const BAR_GAP: f64 = 10.0;
 
 struct EngineState(Mutex<Engine>);
 
@@ -53,7 +58,49 @@ impl TrayHandles {
 
 struct TrayState(Mutex<Option<TrayHandles>>);
 
+/// Estimates the bar's logical width from its chip contents.
+fn bar_width(candidates: &[String], has_error: bool) -> f64 {
+    if has_error {
+        return 300.0;
+    }
+    let chips: f64 = candidates
+        .iter()
+        .map(|c| c.chars().count() as f64 * 7.2 + 38.0)
+        .sum();
+    (chips + 20.0).clamp(180.0, 780.0)
+}
+
+/// Positions, sizes, and shows/hides the candidate bar to match the
+/// snapshot. The bar is `focusable: false`, so showing it never steals key
+/// focus from the textbox the user is typing in.
+fn sync_bar(app: &AppHandle, snapshot: &Snapshot) {
+    let Some(bar) = app.get_webview_window("suggestions") else {
+        return;
+    };
+    match snapshot {
+        Snapshot::Suggesting {
+            caret,
+            candidates,
+            error,
+            ..
+        } => {
+            let width = bar_width(candidates, error.is_some());
+            let _ = bar.set_size(LogicalSize::new(width, BAR_HEIGHT));
+            let _ = bar.set_position(LogicalPosition::new(
+                (caret.x - 8.0).max(0.0),
+                (caret.y - BAR_HEIGHT - BAR_GAP).max(0.0),
+            ));
+            let _ = bar.show();
+        }
+        Snapshot::Predicting { .. } => {} // nothing shown until there is something to say
+        _ => {
+            let _ = bar.hide();
+        }
+    }
+}
+
 fn emit_snapshot(app: &AppHandle, snapshot: &Snapshot) {
+    sync_bar(app, snapshot);
     let _ = app.emit("composition://state", snapshot);
 }
 
@@ -81,9 +128,9 @@ fn show_window(app: &AppHandle, label: &str) {
     }
 }
 
-/// One full burst: begin → (simulated) inference latency → present.
+/// One full burst: begin → (simulated) inference latency → suggest.
 /// The engine lock is never held across the sleep, and stale results are
-/// dropped by `apply_result` if the burst was cancelled meanwhile.
+/// dropped by `apply_result` if the burst was dismissed meanwhile.
 async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     let begun = {
         let engine = app.state::<EngineState>();
@@ -111,7 +158,7 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     };
     emit_metrics(&app);
 
-    // Fixture latencies are replayed in real time so the loading state is
+    // Fixture latencies are replayed in real time so the bar's arrival is
     // honest about what live inference will feel like.
     let delay_ms = match &result {
         PredictionResult::Ok { latency_ms, .. } => (*latency_ms).min(900),
@@ -119,33 +166,18 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     };
     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
-    let presented = {
+    let applied = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
         engine.apply_result(&burst_id, result)
     };
-    if let Some(snapshot) = presented {
+    if let Some(snapshot) = applied {
         emit_snapshot(&app, &snapshot);
     }
 }
 
-#[tauri::command]
-async fn submit_burst(app: AppHandle, draft: String, trigger: Trigger) {
-    run_burst_flow(
-        app,
-        BurstInput {
-            draft,
-            trigger,
-            burst_id: None,
-            destination_id: None,
-            profile_id: None,
-        },
-    )
-    .await;
-}
-
-/// Scripted `capture_result` entry point: the demo harness now, real
-/// Accessibility captures from Workstream 3 later, same shape either way.
+/// `capture_result` entry point: the playground and demo harness now, real
+/// Accessibility observation from Workstream 3 later, same shape either way.
 #[tauri::command]
 async fn inject_capture(app: AppHandle, result: CaptureResult) {
     match result {
@@ -155,13 +187,14 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
             profile_id,
             draft,
             trigger,
+            caret,
         } => {
-            show_window(&app, "composition");
             run_burst_flow(
                 app,
                 BurstInput {
                     draft,
                     trigger,
+                    caret,
                     burst_id: Some(burst_id),
                     destination_id: Some(destination_id),
                     profile_id: Some(profile_id),
@@ -176,11 +209,11 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
 }
 
 #[tauri::command]
-fn confirm_option(app: AppHandle, index: usize) -> Result<CommitOutcome, String> {
+fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, String> {
     let (snapshot, outcome) = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        engine.confirm(index)?
+        engine.select(index)?
     };
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
@@ -189,11 +222,11 @@ fn confirm_option(app: AppHandle, index: usize) -> Result<CommitOutcome, String>
 }
 
 #[tauri::command]
-fn cancel_composition(app: AppHandle) {
+fn dismiss_suggestions(app: AppHandle) {
     let snapshot = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        engine.cancel()
+        engine.dismiss()
     };
     emit_snapshot(&app, &snapshot);
 }
@@ -378,16 +411,13 @@ fn build_tray(app: &tauri::App, settings: &AppSettings, profiles: &[String]) -> 
         .collect();
     let profile_menu = Submenu::with_id_and_items(app, "profile_menu", "Profile", true, &profile_refs)?;
 
-    let compose = MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
-    let open_demo = MenuItem::with_id(app, "open_demo", "Demo…", true, None::<&str>)?;
+    let open_demo = MenuItem::with_id(app, "open_demo", "Demo & Playground…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Quip", true, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,
         &[
-            &compose,
-            &PredefinedMenuItem::separator(app)?,
             &enabled,
             &window_context,
             &pause_learning,
@@ -419,7 +449,6 @@ fn build_tray(app: &tauri::App, settings: &AppSettings, profiles: &[String]) -> 
 
 fn on_tray_menu(app: &AppHandle, id: &str) {
     match id {
-        "compose" => show_window(app, "composition"),
         "open_settings" => show_window(app, "settings"),
         "open_demo" => show_window(app, "demo"),
         "quit" => app.exit(0),
@@ -494,6 +523,32 @@ fn main() {
                 }
             }
 
+            // Dev/validation hook: fire the TextEdit capture fixture shortly
+            // after startup so the bar can be inspected without a typist.
+            if std::env::var("QUIP_DEMO_CAPTURE").as_deref() == Ok("1") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    inject_capture(
+                        handle,
+                        CaptureResult::Ready {
+                            burst_id: "burst_demo_env".into(),
+                            destination_id: "destination_textedit".into(),
+                            profile_id: "profile_default".into(),
+                            draft: "cnt cm tmrw".into(),
+                            trigger: Trigger::Idle,
+                            caret: Rect {
+                                x: 512.0,
+                                y: 384.0,
+                                width: 2.0,
+                                height: 18.0,
+                            },
+                        },
+                    )
+                    .await;
+                });
+            }
+
             if std::env::var("QUIP_SELFTEST").as_deref() == Ok("1") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -519,10 +574,9 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            submit_burst,
             inject_capture,
-            confirm_option,
-            cancel_composition,
+            select_candidate,
+            dismiss_suggestions,
             get_composition_state,
             get_settings,
             update_settings,
@@ -539,20 +593,44 @@ fn main() {
         .expect("error while running Quip");
 }
 
-/// Headless validation of the full fixture flow through the real app runtime:
-/// composition engine, fixture backend, learning store, commit stub, events.
+/// Headless validation of the full IME flow through the real app runtime:
+/// capture → engine → fixture backend → bar state, selection with in-place
+/// replacement semantics, learning records, failure path, metrics.
 mod selftest {
     use super::*;
 
-    fn presenting(app: &AppHandle) -> Result<(Vec<String>, Option<String>), String> {
+    fn test_caret() -> Rect {
+        Rect {
+            x: 512.0,
+            y: 384.0,
+            width: 2.0,
+            height: 18.0,
+        }
+    }
+
+    fn capture(burst_id: &str, profile_id: &str, draft: &str) -> CaptureResult {
+        CaptureResult::Ready {
+            burst_id: burst_id.to_string(),
+            destination_id: "destination_selftest".to_string(),
+            profile_id: profile_id.to_string(),
+            draft: draft.to_string(),
+            trigger: Trigger::Idle,
+            caret: test_caret(),
+        }
+    }
+
+    fn state(app: &AppHandle) -> Snapshot {
         let engine = app.state::<EngineState>();
         let engine = engine.0.lock().unwrap();
-        match engine.current_snapshot() {
-            Snapshot::Presenting { options, error, .. } => Ok((
-                options.into_iter().map(|o| o.text).collect(),
-                error.map(|e| e.code),
-            )),
-            other => Err(format!("expected presenting state, got {other:?}")),
+        engine.current_snapshot()
+    }
+
+    fn suggesting(app: &AppHandle) -> Result<(Vec<String>, Option<String>), String> {
+        match state(app) {
+            Snapshot::Suggesting {
+                candidates, error, ..
+            } => Ok((candidates, error.map(|e| e.code))),
+            other => Err(format!("expected suggesting state, got {other:?}")),
         }
     }
 
@@ -566,66 +644,59 @@ mod selftest {
     }
 
     pub async fn run(app: AppHandle) -> Result<(), String> {
-        // 1. Shorthand burst: exact draft first, fixture candidate second.
-        submit_burst(app.clone(), "cnt cm tmrw".into(), Trigger::Idle).await;
-        let (options, error) = presenting(&app)?;
+        // 1. Shorthand burst: candidates appear (no exact-draft option —
+        //    the typed text is already in the destination).
+        inject_capture(app.clone(), capture("st_1", "profile_default", "cnt cm tmrw")).await;
+        let (candidates, error) = suggesting(&app)?;
         check(
-            "shorthand presents exact draft + candidate",
-            options == vec!["cnt cm tmrw".to_string(), "Can't come tomorrow.".to_string()]
-                && error.is_none(),
-            format!("{options:?} {error:?}"),
+            "shorthand suggests the fixture candidate",
+            candidates == vec!["Can't come tomorrow.".to_string()] && error.is_none(),
+            format!("{candidates:?} {error:?}"),
         )?;
 
-        // 2. Confirm the candidate: commit stub runs, example is recorded.
-        let outcome = confirm_option(app.clone(), 1)?;
+        // 2. Selecting replaces the burst in place and records learning.
+        let outcome = select_candidate(app.clone(), 0)?;
         check(
-            "confirm commits the candidate",
+            "selection replaces the burst",
             outcome.text == "Can't come tomorrow."
-                && outcome.destination_id == composition::LOCAL_DESTINATION,
+                && outcome.destination_id == "destination_selftest",
             format!("{outcome:?}"),
         )?;
 
-        // 3. Personal patterns from the seeded profile personalize a burst.
-        submit_burst(app.clone(), "ship spec tn".into(), Trigger::Return).await;
-        let (options, _) = presenting(&app)?;
+        // 3. Personal patterns from the seeded profile personalize a burst,
+        //    then a dismissal records a keep example.
+        inject_capture(app.clone(), capture("st_2", "profile_a", "ship spec tn")).await;
+        let (candidates, _) = suggesting(&app)?;
         check(
             "profile_a personalizes tn -> tonight",
-            options.get(1).map(String::as_str) == Some("Ship spec tonight."),
-            format!("{options:?}"),
+            candidates.first().map(String::as_str) == Some("Ship spec tonight."),
+            format!("{candidates:?}"),
         )?;
-        cancel_composition(app.clone());
+        dismiss_suggestions(app.clone());
 
-        // 4. Simulated adapter failure: explicit error, exact draft only.
-        set_simulate_failure(app.clone(), true);
-        submit_burst(app.clone(), "cnt cm tmrw".into(), Trigger::Idle).await;
-        let (options, error) = presenting(&app)?;
-        check(
-            "failure presents exact draft with explicit error",
-            options.len() == 1 && error.as_deref() == Some("adapter_not_loaded"),
-            format!("{options:?} {error:?}"),
-        )?;
-        set_simulate_failure(app.clone(), false);
-        cancel_composition(app.clone());
-
-        // 5. Scripted capture fixture drives the same pipeline.
+        // 4. A keep result shows no bar at all.
         inject_capture(
             app.clone(),
-            CaptureResult::Ready {
-                burst_id: "burst_textedit".into(),
-                destination_id: "destination_textedit".into(),
-                profile_id: "profile_default".into(),
-                draft: "cnt cm tmrw".into(),
-                trigger: Trigger::Idle,
-            },
+            capture("st_3", "profile_default", "open usr/bin and q3_finl_v2.pdf"),
         )
         .await;
-        let (options, _) = presenting(&app)?;
         check(
-            "injected capture reaches presenting",
-            options.len() == 2,
-            format!("{options:?}"),
+            "keep shows nothing",
+            state(&app) == Snapshot::Idle,
+            format!("{:?}", state(&app)),
         )?;
-        cancel_composition(app.clone());
+
+        // 5. Simulated adapter failure: explicit error bar, no candidates.
+        set_simulate_failure(app.clone(), true);
+        inject_capture(app.clone(), capture("st_4", "profile_default", "cnt cm tmrw")).await;
+        let (candidates, error) = suggesting(&app)?;
+        check(
+            "failure shows explicit error with no candidates",
+            candidates.is_empty() && error.as_deref() == Some("adapter_not_loaded"),
+            format!("{candidates:?} {error:?}"),
+        )?;
+        set_simulate_failure(app.clone(), false);
+        dismiss_suggestions(app.clone());
 
         // 6. The two demo profiles produce different candidates.
         let report = run_comparison(app.clone(), "personal".into())?;

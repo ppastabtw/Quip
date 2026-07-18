@@ -11,27 +11,27 @@ import type {
   ModelVariant,
   PredictionRequest,
   PredictionResult,
+  Rect,
   SidecarHealth,
-  Trigger,
 } from "./contracts";
-
-export type OptionItem = { text: string; kind: "exact" | "candidate" };
 
 export type Snapshot =
   | { phase: "idle" }
   | { phase: "predicting"; burst_id: string; draft: string; model_variant: ModelVariant }
   | {
-      phase: "presenting";
+      phase: "suggesting";
       burst_id: string;
       draft: string;
-      options: OptionItem[];
+      /** One to three model replacements; empty only in the error state. */
+      candidates: string[];
       recommended: number;
+      caret: Rect;
       model_variant: ModelVariant;
       backend: Backend | null;
       latency_ms: number | null;
       error: ErrorInfo | null;
     }
-  | { phase: "committed"; burst_id: string; destination_id: string; text: string }
+  | { phase: "applied"; burst_id: string; destination_id: string; text: string }
   | { phase: "unavailable"; reason: string };
 
 export interface AppSettings {
@@ -96,11 +96,9 @@ export interface CommitOutcome {
 }
 
 export const api = {
-  submitBurst: (draft: string, trigger: Trigger) =>
-    invoke<void>("submit_burst", { draft, trigger }),
   injectCapture: (result: CaptureResult) => invoke<void>("inject_capture", { result }),
-  confirmOption: (index: number) => invoke<CommitOutcome>("confirm_option", { index }),
-  cancelComposition: () => invoke<void>("cancel_composition"),
+  selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
+  dismissSuggestions: () => invoke<void>("dismiss_suggestions"),
   getCompositionState: () => invoke<Snapshot>("get_composition_state"),
   getSettings: () => invoke<AppSettings>("get_settings"),
   updateSettings: (settings: AppSettings) => invoke<void>("update_settings", { settings }),

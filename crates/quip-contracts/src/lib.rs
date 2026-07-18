@@ -139,8 +139,20 @@ pub enum Trigger {
     Shortcut,
 }
 
+/// A rectangle in logical screen coordinates (origin top-left). Used for the
+/// caret so the suggestion bar can be anchored above it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Result of Accessibility capture for one burst. `destination_id` is opaque:
-/// the UI returns it on commit or cancel without interpreting it. Secure and
+/// the UI returns it on commit without interpreting it. The typed text stays
+/// in the destination; `caret` anchors the candidate bar. Secure and
 /// unsupported fields produce `Unavailable` and never reach inference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -151,6 +163,7 @@ pub enum CaptureResult {
         profile_id: String,
         draft: String,
         trigger: Trigger,
+        caret: Rect,
     },
     Unavailable {
         reason: String,

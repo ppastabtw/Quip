@@ -59,6 +59,17 @@
         "retryable": { "type": "boolean" }
       }
     },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 }
+      }
+    },
     "context_snippet": {
       "type": "object",
       "additionalProperties": false,
@@ -166,7 +177,8 @@
             "destination_id",
             "profile_id",
             "draft",
-            "trigger"
+            "trigger",
+            "caret"
           ],
           "properties": {
             "status": { "const": "ready" },
@@ -174,7 +186,8 @@
             "destination_id": { "type": "string" },
             "profile_id": { "type": "string" },
             "draft": { "type": "string" },
-            "trigger": { "enum": ["idle", "punctuation", "return", "shortcut"] }
+            "trigger": { "enum": ["idle", "punctuation", "return", "shortcut"] },
+            "caret": { "$ref": "#/$defs/rect" }
           }
         },
         {

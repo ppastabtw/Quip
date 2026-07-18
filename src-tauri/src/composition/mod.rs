@@ -1,64 +1,53 @@
-//! Workstream 4: composition state machine
-//! (`Idle → Predicting → Presenting → committed | cancelled`).
+//! Workstream 4: composition state machine, IME model
+//! (`Idle → Predicting → Suggesting → applied | dismissed`).
 //!
-//! Consumes capture input (typed into the box pre-Workstream 3, scripted
-//! fixtures from the demo harness, or real `CaptureResult`s later), owns
-//! candidate state, and enforces the UI invariants: the exact draft is always
-//! the first option, `keep` never bypasses confirmation, errors render an
-//! explicit unavailable state with only the exact draft, and cancel commits
-//! nothing.
+//! The user types directly into their own textbox; Quip observes bursts and
+//! floats a candidate bar above the caret. Invariants: a `keep` result shows
+//! nothing (the typed text stands), candidates replace the burst in place
+//! only on explicit selection, dismissal and stale results change nothing,
+//! and starting a new burst while suggestions are visible counts as a stable
+//! dismissal (a `keep` learning label).
 
 use crate::commit::{self, CommitOutcome};
 use crate::inference::{sidecar_predict_stub, FixtureBackend, Metrics};
 use crate::learning::{self, LabeledExample, LearningStore};
 use crate::settings::{AppSettings, BackendMode};
 use quip_contracts::{
-    Backend, ErrorInfo, ModelVariant, PredictionAction, PredictionRequest, PredictionResult,
+    Backend, ErrorInfo, ModelVariant, PredictionAction, PredictionRequest, PredictionResult, Rect,
     SidecarHealth, Trigger,
 };
 use serde::Serialize;
 use std::path::Path;
-
-/// Destination used for text typed directly into the box before Workstream 3
-/// provides real captures.
-pub const LOCAL_DESTINATION: &str = "destination_local_box";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OptionKind {
-    Exact,
-    Candidate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct OptionItem {
-    pub text: String,
-    pub kind: OptionKind,
-}
 
 /// What the UI renders. Every mutation of the engine returns one of these and
 /// the command layer broadcasts it; the webview holds no authoritative state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum Snapshot {
+    /// No bar visible. Also the result of a `keep` prediction: the typed
+    /// text stands and the user is never interrupted.
     Idle,
     Predicting {
         burst_id: String,
         draft: String,
         model_variant: ModelVariant,
     },
-    Presenting {
+    /// The candidate bar is visible above `caret`. `candidates` holds one to
+    /// three model replacements (empty only in the error state).
+    Suggesting {
         burst_id: String,
         draft: String,
-        options: Vec<OptionItem>,
-        /// Index into `options` of the model's recommendation (0 = exact draft).
+        candidates: Vec<String>,
+        /// Index into `candidates` of the model's best option.
         recommended: usize,
+        caret: Rect,
         model_variant: ModelVariant,
         backend: Option<Backend>,
         latency_ms: Option<u64>,
         error: Option<ErrorInfo>,
     },
-    Committed {
+    /// A candidate was selected; the burst was replaced in the destination.
+    Applied {
         burst_id: String,
         destination_id: String,
         text: String,
@@ -76,15 +65,17 @@ pub struct Burst {
     pub profile_id: String,
     pub draft: String,
     pub trigger: Trigger,
+    pub caret: Rect,
     pub model_variant: ModelVariant,
 }
 
-/// Input to `begin_burst`: either typed text (most fields defaulted) or a
-/// full capture from the demo harness / Workstream 3.
+/// Input to `begin_burst`: a `capture_result.ready` from the playground now,
+/// Workstream 3's Accessibility observer later.
 #[derive(Debug, Clone)]
 pub struct BurstInput {
     pub draft: String,
     pub trigger: Trigger,
+    pub caret: Rect,
     pub burst_id: Option<String>,
     pub destination_id: Option<String>,
     pub profile_id: Option<String>,
@@ -93,9 +84,9 @@ pub struct BurstInput {
 enum State {
     Idle,
     Predicting(Burst),
-    Presenting {
+    Suggesting {
         burst: Burst,
-        options: Vec<OptionItem>,
+        candidates: Vec<String>,
         recommended: usize,
         backend: Option<Backend>,
         latency_ms: Option<u64>,
@@ -132,7 +123,8 @@ impl Engine {
 
     /// Starts a burst: builds the bounded prediction request and moves to
     /// Predicting. Returns the request for the caller to execute so the lock
-    /// is not held during (simulated) inference.
+    /// is not held during (simulated) inference. If suggestions were still
+    /// visible, the user kept typing over them: record a stable dismissal.
     pub fn begin_burst(
         &mut self,
         input: BurstInput,
@@ -142,8 +134,10 @@ impl Engine {
                 reason: "disabled".to_string(),
             });
         }
+        self.record_dismissal_if_suggesting();
         let draft = input.draft.trim().to_string();
         if draft.is_empty() {
+            self.state = State::Idle;
             return Err(Snapshot::Idle);
         }
         self.burst_seq += 1;
@@ -153,12 +147,13 @@ impl Engine {
                 .unwrap_or_else(|| format!("burst_{}_{}", self.burst_seq, learning::now_ms())),
             destination_id: input
                 .destination_id
-                .unwrap_or_else(|| LOCAL_DESTINATION.to_string()),
+                .unwrap_or_else(|| "destination_unknown".to_string()),
             profile_id: input
                 .profile_id
                 .unwrap_or_else(|| self.settings.active_profile.clone()),
             draft,
             trigger: input.trigger,
+            caret: input.caret,
             model_variant: self.settings.model_variant,
         };
         let request = PredictionRequest {
@@ -212,8 +207,8 @@ impl Engine {
     }
 
     /// Applies a finished prediction. Returns None when the burst was
-    /// cancelled or superseded while inference ran (stale results are
-    /// dropped, never presented).
+    /// dismissed or superseded while inference ran (stale results are
+    /// dropped, never shown). A `keep` result returns Idle: no bar.
     pub fn apply_result(&mut self, burst_id: &str, result: PredictionResult) -> Option<Snapshot> {
         let State::Predicting(burst) = &self.state else {
             return None;
@@ -223,48 +218,41 @@ impl Engine {
         }
         let burst = burst.clone();
 
-        // Invariant: the application adds the exact draft as option 0; the
-        // model never returns it.
-        let mut options = vec![OptionItem {
-            text: burst.draft.clone(),
-            kind: OptionKind::Exact,
-        }];
-        let (recommended, backend, latency_ms, error) = match result {
+        let (candidates, backend, latency_ms, error) = match result {
             PredictionResult::Ok {
-                action,
+                action: PredictionAction::Keep,
+                ..
+            } => {
+                // The typed text stands; the user is never interrupted.
+                self.state = State::Idle;
+                return Some(Snapshot::Idle);
+            }
+            PredictionResult::Ok {
                 candidates,
                 backend,
                 latency_ms,
                 ..
-            } => {
-                options.extend(candidates.into_iter().map(|text| OptionItem {
-                    text,
-                    kind: OptionKind::Candidate,
-                }));
-                let recommended = match action {
-                    PredictionAction::Keep => 0,
-                    PredictionAction::Replace => 1,
-                };
-                (recommended, Some(backend), Some(latency_ms), None)
-            }
-            // Failures present explicitly: exact draft only, error visible.
-            PredictionResult::Error { error, .. } => (0, None, None, Some(error)),
+            } => (candidates, Some(backend), Some(latency_ms), None),
+            // Failures surface as an explicit error chip in the bar; the
+            // typed text is untouched either way.
+            PredictionResult::Error { error, .. } => (Vec::new(), None, None, Some(error)),
         };
 
-        let snapshot = Snapshot::Presenting {
+        let snapshot = Snapshot::Suggesting {
             burst_id: burst.burst_id.clone(),
             draft: burst.draft.clone(),
-            options: options.clone(),
-            recommended,
+            candidates: candidates.clone(),
+            recommended: 0,
+            caret: burst.caret,
             model_variant: burst.model_variant,
             backend,
             latency_ms,
             error: error.clone(),
         };
-        self.state = State::Presenting {
+        self.state = State::Suggesting {
             burst,
-            options,
-            recommended,
+            candidates,
+            recommended: 0,
             backend,
             latency_ms,
             error,
@@ -272,21 +260,41 @@ impl Engine {
         Some(snapshot)
     }
 
-    /// Commits the selected option. Only ever called with explicit user
-    /// confirmation; there is no auto-commit path.
-    pub fn confirm(&mut self, index: usize) -> Result<(Snapshot, CommitOutcome), String> {
-        let State::Presenting { burst, options, .. } = &self.state else {
-            return Err("nothing to confirm".to_string());
+    /// Replaces the burst with the selected candidate. Only ever called with
+    /// an explicit selection (number key or click); there is no auto-apply.
+    pub fn select(&mut self, index: usize) -> Result<(Snapshot, CommitOutcome), String> {
+        let State::Suggesting {
+            burst, candidates, ..
+        } = &self.state
+        else {
+            return Err("no suggestions to select".to_string());
         };
-        let option = options.get(index).ok_or("option index out of range")?.clone();
+        let text = candidates
+            .get(index)
+            .ok_or("candidate index out of range")?
+            .clone();
         let burst = burst.clone();
-        let had_candidates = options.len() > 1;
 
-        let outcome = commit::commit_text(&burst.destination_id, &option.text);
-        self.record_confirmation(&burst, &option, had_candidates);
+        let outcome = commit::replace_burst(&burst.destination_id, &burst.burst_id, &text);
+        if !self.settings.learning_paused {
+            self.learning.append_example(&LabeledExample {
+                ts_ms: learning::now_ms(),
+                burst_id: burst.burst_id.clone(),
+                profile_id: burst.profile_id.clone(),
+                draft: burst.draft.clone(),
+                label: "replace".to_string(),
+                committed: text.clone(),
+                source: "confirmed_candidate".to_string(),
+                model_variant: burst.model_variant,
+            });
+            for (shorthand, expansion) in learning::extract_patterns(&burst.draft, &text) {
+                self.learning
+                    .record_pattern(&burst.profile_id, &shorthand, &expansion);
+            }
+        }
         self.state = State::Idle;
         Ok((
-            Snapshot::Committed {
+            Snapshot::Applied {
                 burst_id: burst.burst_id,
                 destination_id: outcome.destination_id.clone(),
                 text: outcome.text.clone(),
@@ -295,39 +303,21 @@ impl Engine {
         ))
     }
 
-    fn record_confirmation(&mut self, burst: &Burst, option: &OptionItem, had_candidates: bool) {
-        if self.settings.learning_paused {
-            return;
-        }
-        let (label, source) = match option.kind {
-            // Choosing the exact draft over offered candidates is a `keep` label.
-            OptionKind::Exact if had_candidates => ("keep", "exact_draft"),
-            OptionKind::Exact => return, // nothing was suggested; nothing to learn
-            OptionKind::Candidate => ("replace", "confirmed_candidate"),
-        };
-        self.learning.append_example(&LabeledExample {
-            ts_ms: learning::now_ms(),
-            burst_id: burst.burst_id.clone(),
-            profile_id: burst.profile_id.clone(),
-            draft: burst.draft.clone(),
-            label: label.to_string(),
-            committed: option.text.clone(),
-            source: source.to_string(),
-            model_variant: burst.model_variant,
-        });
-        if option.kind == OptionKind::Candidate {
-            for (shorthand, expansion) in learning::extract_patterns(&burst.draft, &option.text) {
-                self.learning
-                    .record_pattern(&burst.profile_id, &shorthand, &expansion);
-            }
-        }
+    /// Dismisses visible suggestions (Escape, or the caller observed the
+    /// user typing on). Changes nothing in the destination; a stable
+    /// dismissal of real candidates becomes a `keep` example per the spec.
+    pub fn dismiss(&mut self) -> Snapshot {
+        self.record_dismissal_if_suggesting();
+        self.state = State::Idle;
+        Snapshot::Idle
     }
 
-    /// Cancels the current burst. Inserts nothing; a dismissal of visible
-    /// candidates becomes a `keep` example per the spec.
-    pub fn cancel(&mut self) -> Snapshot {
-        if let State::Presenting { burst, options, .. } = &self.state {
-            if options.len() > 1 && !self.settings.learning_paused {
+    fn record_dismissal_if_suggesting(&mut self) {
+        if let State::Suggesting {
+            burst, candidates, ..
+        } = &self.state
+        {
+            if !candidates.is_empty() && !self.settings.learning_paused {
                 self.learning.append_example(&LabeledExample {
                     ts_ms: learning::now_ms(),
                     burst_id: burst.burst_id.clone(),
@@ -340,8 +330,6 @@ impl Engine {
                 });
             }
         }
-        self.state = State::Idle;
-        Snapshot::Idle
     }
 
     /// Rebuilds the current UI snapshot, used to sync a webview on load and
@@ -354,18 +342,19 @@ impl Engine {
                 draft: burst.draft.clone(),
                 model_variant: burst.model_variant,
             },
-            State::Presenting {
+            State::Suggesting {
                 burst,
-                options,
+                candidates,
                 recommended,
                 backend,
                 latency_ms,
                 error,
-            } => Snapshot::Presenting {
+            } => Snapshot::Suggesting {
                 burst_id: burst.burst_id.clone(),
                 draft: burst.draft.clone(),
-                options: options.clone(),
+                candidates: candidates.clone(),
                 recommended: *recommended,
+                caret: burst.caret,
                 model_variant: burst.model_variant,
                 backend: *backend,
                 latency_ms: *latency_ms,
@@ -398,12 +387,22 @@ mod tests {
         (engine, dir)
     }
 
+    fn caret() -> Rect {
+        Rect {
+            x: 100.0,
+            y: 200.0,
+            width: 2.0,
+            height: 18.0,
+        }
+    }
+
     fn typed(draft: &str) -> BurstInput {
         BurstInput {
             draft: draft.to_string(),
             trigger: Trigger::Idle,
+            caret: caret(),
             burst_id: None,
-            destination_id: None,
+            destination_id: Some("destination_test".to_string()),
             profile_id: None,
         }
     }
@@ -416,83 +415,98 @@ mod tests {
     }
 
     #[test]
-    fn replace_result_presents_exact_draft_first() {
+    fn replace_result_shows_candidates_at_the_caret() {
         let (mut engine, dir) = test_engine();
         let snapshot = run_burst(&mut engine, "cnt cm tmrw");
-        let Snapshot::Presenting {
-            options,
+        let Snapshot::Suggesting {
+            candidates,
             recommended,
+            caret: at,
             error,
             ..
         } = snapshot
         else {
-            panic!("expected presenting");
+            panic!("expected suggesting");
         };
-        assert_eq!(options[0].kind, OptionKind::Exact);
-        assert_eq!(options[0].text, "cnt cm tmrw");
-        assert_eq!(options[1].text, "Can't come tomorrow.");
-        assert_eq!(recommended, 1);
+        assert_eq!(candidates, vec!["Can't come tomorrow."]);
+        assert_eq!(recommended, 0);
+        assert_eq!(at, caret());
         assert!(error.is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn keep_result_still_requires_confirmation() {
+    fn keep_result_shows_no_bar_at_all() {
         let (mut engine, dir) = test_engine();
         engine.settings.model_variant = ModelVariant::Global;
         let snapshot = run_burst(&mut engine, "open usr/bin and q3_finl_v2.pdf");
-        let Snapshot::Presenting {
-            options,
-            recommended,
-            ..
-        } = snapshot
-        else {
-            panic!("expected presenting");
-        };
-        // keep: exact draft is the only option and the recommendation,
-        // but nothing commits until confirm() is called.
-        assert_eq!(options.len(), 1);
-        assert_eq!(recommended, 0);
+        assert_eq!(snapshot, Snapshot::Idle);
+        // Nothing was suggested, so nothing was learned either.
+        assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn error_result_presents_exact_draft_with_explicit_error() {
+    fn error_result_shows_error_bar_with_no_candidates() {
         let (mut engine, dir) = test_engine();
         engine.backend.simulate_failure = true;
         let snapshot = run_burst(&mut engine, "cnt cm tmrw");
-        let Snapshot::Presenting { options, error, .. } = snapshot else {
-            panic!("expected presenting");
+        let Snapshot::Suggesting {
+            candidates, error, ..
+        } = snapshot
+        else {
+            panic!("expected suggesting");
         };
-        assert_eq!(options.len(), 1);
+        assert!(candidates.is_empty());
         assert_eq!(error.unwrap().code, "adapter_not_loaded");
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn confirming_candidate_commits_and_learns() {
+    fn selecting_a_candidate_replaces_and_learns() {
         let (mut engine, dir) = test_engine();
         run_burst(&mut engine, "ship spec tn");
-        let (snapshot, outcome) = engine.confirm(1).unwrap();
-        assert!(matches!(snapshot, Snapshot::Committed { .. }));
-        assert_eq!(outcome.destination_id, LOCAL_DESTINATION);
+        let (snapshot, outcome) = engine.select(0).unwrap();
+        assert!(matches!(snapshot, Snapshot::Applied { .. }));
+        assert_eq!(outcome.destination_id, "destination_test");
         assert_eq!(outcome.text, "Ship spec tonight.");
-        // The confirmed replacement was mined back into the dictionary.
         let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
         assert!(raw.contains("\"confirmed_candidate\""));
-        // Confirming twice is impossible: state returned to idle.
-        assert!(engine.confirm(1).is_err());
+        // Selecting twice is impossible: state returned to idle.
+        assert!(engine.select(0).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn cancel_commits_nothing_and_records_dismissal() {
+    fn dismiss_changes_nothing_and_records_keep() {
         let (mut engine, dir) = test_engine();
         run_burst(&mut engine, "cnt cm tmrw");
-        assert_eq!(engine.cancel(), Snapshot::Idle);
+        assert_eq!(engine.dismiss(), Snapshot::Idle);
         let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
         assert!(raw.contains("\"dismissal\""));
         assert!(raw.contains("\"keep\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typing_over_suggestions_counts_as_dismissal() {
+        let (mut engine, dir) = test_engine();
+        run_burst(&mut engine, "cnt cm tmrw");
+        // A new burst arrives while suggestions are visible.
+        let _ = engine.begin_burst(typed("more typing here")).unwrap();
+        let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
+        assert!(raw.contains("\"dismissal\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn error_bar_dismissal_is_not_a_keep_example() {
+        let (mut engine, dir) = test_engine();
+        engine.backend.simulate_failure = true;
+        run_burst(&mut engine, "cnt cm tmrw");
+        engine.dismiss();
+        // No candidates were shown, so there is no keep signal to record.
+        assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -501,7 +515,7 @@ mod tests {
         let (mut engine, dir) = test_engine();
         engine.settings.learning_paused = true;
         run_burst(&mut engine, "cnt cm tmrw");
-        engine.confirm(1).unwrap();
+        engine.select(0).unwrap();
         assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -516,12 +530,12 @@ mod tests {
     }
 
     #[test]
-    fn stale_results_are_dropped_after_cancel() {
+    fn stale_results_are_dropped_after_dismiss() {
         let (mut engine, dir) = test_engine();
         let (_, request, mode) = engine.begin_burst(typed("cnt cm tmrw")).unwrap();
         let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
         let result = engine.predict(&request, mode);
-        engine.cancel();
+        engine.dismiss();
         assert!(engine.apply_result(&burst_id, result).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -531,8 +545,8 @@ mod tests {
         let (mut engine, dir) = test_engine();
         engine.settings.backend_mode = BackendMode::Live;
         let snapshot = run_burst(&mut engine, "cnt cm tmrw");
-        let Snapshot::Presenting { error, .. } = snapshot else {
-            panic!("expected presenting");
+        let Snapshot::Suggesting { error, .. } = snapshot else {
+            panic!("expected suggesting");
         };
         assert_eq!(error.unwrap().code, "sidecar_unavailable");
         assert_eq!(
