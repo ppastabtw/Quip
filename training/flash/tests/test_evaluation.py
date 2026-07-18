@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scoring import model_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "evaluate_predictions.py"
@@ -19,7 +21,7 @@ class EvaluationTests(unittest.TestCase):
         predictions = [
             {
                 "example_id": row["metadata"]["example_id"],
-                "response": row["output"],
+                "response": model_text(row["output"]),
                 "latency_ms": 100,
             }
             for row in dataset

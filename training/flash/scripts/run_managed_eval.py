@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from environment import SYSTEM_PROMPT  # noqa: E402
-from scoring import OUTPUT_JSON_SCHEMA  # noqa: E402
+from scoring import OUTPUT_JSON_SCHEMA, model_text  # noqa: E402
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -30,7 +30,7 @@ def request_payload(row: dict, model: str) -> dict:
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": row["input"]},
+            {"role": "user", "content": model_text(row["input"])},
         ],
         "temperature": 0.0,
         "max_tokens": 128,

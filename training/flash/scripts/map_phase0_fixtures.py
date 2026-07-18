@@ -26,8 +26,8 @@ def map_exchange(exchange: dict) -> dict | None:
     if exchange["case_id"] == "protected_global":
         protected_tokens = ["usr/bin", "q3_finl_v2.pdf"]
     return {
-        "input": json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
-        "output": json.dumps(output, separators=(",", ":"), ensure_ascii=False),
+        "input": payload,
+        "output": output,
         "metadata": {
             "example_id": f"phase0_{exchange['case_id']}",
             "category": exchange["case_id"],

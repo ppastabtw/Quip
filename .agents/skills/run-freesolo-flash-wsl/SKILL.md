@@ -47,7 +47,10 @@ Authenticate only inside an interactive WSL shell. Read the key silently, export
 ## Operate the training lane
 
 1. Run `scripts/validate_datasets.py`, all tests, `flash --version`, `flash whoami`, and `flash models` before training.
+   Keep JSONL `input` and `output` values structured when they are JSON. Freesolo serializes structured values into model-facing text.
 2. Publish `ariobarin/quip` again only when the environment or packaged dataset changes.
+   If a remote run fails before model load because its published runtime path is missing, republish once and resubmit unchanged.
+   If read-only control calls time out while workers keep heartbeating, back off and retry the read without resubmitting training.
 3. Run `flash train <config> --dry-run` before submission. Obtain approval for
    paid work unless the active goal already records an explicit user waiver.
 4. Use explicit checkpoints. Inspect with `flash status <run-id>`, stream with
