@@ -34,7 +34,6 @@ class ScoreCompletionTests(unittest.TestCase):
             metadata={
                 "target_changed": False,
                 "accepted_suggestions": ["usr/bin"],
-                "protected_tokens": ["usr/bin"],
             },
             response_text='{ "suggestion": "usr/bin" }',
         )
@@ -48,7 +47,6 @@ class ScoreCompletionTests(unittest.TestCase):
             metadata={
                 "target_changed": False,
                 "accepted_suggestions": ["q3_finl_v2.pdf"],
-                "protected_tokens": ["q3_finl_v2.pdf"],
             },
             response_text='{ "suggestion": "q3_final_v2.pdf" }',
         )
@@ -62,27 +60,11 @@ class ScoreCompletionTests(unittest.TestCase):
             metadata={
                 "target_changed": True,
                 "accepted_suggestions": ["Can't come tomorrow."],
-                "protected_tokens": [],
             },
             response_text='{ "suggestion": "Can\'t come tomorrow." }',
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
-
-    def test_protected_token_change_fails_success(self):
-        result = score_completion(
-            input_text=input_json("send AC742"),
-            expected_output='{ "suggestion": "Send AC742." }',
-            metadata={
-                "target_changed": True,
-                "accepted_suggestions": ["Send AC 742."],
-                "protected_tokens": ["AC742"],
-            },
-            response_text='{ "suggestion": "Send AC 742." }',
-        )
-        self.assertFalse(result.protected_preserved)
-        self.assertFalse(result.success)
-
 
 if __name__ == "__main__":
     unittest.main()

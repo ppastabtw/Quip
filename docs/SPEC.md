@@ -4,7 +4,9 @@
 
 Quip is a fast, local macOS composition layer for compressed, misspelled, or phonetic English. It learns each user's confirmed language patterns and uses relevant text from open windows as temporary context.
 
-The Freesolo-trained model should beat base Qwen by decoding noisy text while making fewer unnecessary edits. The live comparison reports unnecessary edit rate, protected-token preservation, shorthand and phonetic decoding, and latency.
+The Freesolo-trained model should beat base Qwen on useful correction behavior
+while making fewer unnecessary edits. The live comparison reports correction
+success, unnecessary edit rate, schema validity, and latency.
 
 ### Prototype data posture
 
@@ -28,7 +30,7 @@ Quip runs as a menu-bar app and, when enabled, augments typing in place the way 
 4. Add relevant open-window context and learned user patterns.
 5. Show up to five deduplicated and ranked changed suggestions as numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus, and it keeps its current candidates visible while the next predictions compute.
 6. If every suggestion equals the input, the inference layer skips them and shows no candidate. The typed text stands and the user is not interrupted.
-7. While candidates are visible, keys 1 through 5 or a click select one, Tab accepts the highlighted candidate, and Escape dismisses the bar. Any other key types through and the bar refreshes with the growing burst. Space stays an ordinary character because English needs it, so Tab plays the role Space has in the Pinyin IME.
+7. While candidates are visible, keys 1 through 5 or a click select one, Tab accepts the highlighted candidate, and Escape dismisses the bar. Acceptance or dismissal closes the current burst and resets its correction window to zero. Any other key types through and the bar refreshes with the growing burst. Space stays an ordinary character because English needs it, so Tab plays the role Space has in the Pinyin IME.
 8. A sentence boundary (whitespace after a terminator, or a newline) closes the composition session: visible candidates count as a stable dismissal and the next keystroke starts a fresh burst.
 
 Keeping the typed text is always available by doing nothing; there is no separate exact-draft option because the draft is already committed keystroke-by-keystroke by the user themselves.
@@ -59,8 +61,6 @@ The input contains the bounded draft or selection, relevant window snippets, and
 
 The inference layer compares the five completions with the input, drops exact matches, deduplicates changed suggestions, and ranks them by vote count with earliest completion as the tie breaker. It exposes zero through five candidates. The typed text is never repeated as a candidate because doing nothing already preserves it. The shared wire invariants live in `docs/phase-0-contracts.md`.
 
-Protected tokens include names, paths, filenames, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`. Preservation remains orthogonal evaluation coverage, not a model action or a fixed training quota.
-
 ### Window context
 
 For each prediction, Quip may collect the application name, window title, and a bounded accessible visible-text snippet from open windows. It ranks windows locally by focus, recency, and relevance, then passes only the most relevant snippets to the model.
@@ -84,15 +84,20 @@ If the runtime cannot stack adapters, Quip merges the global adapter into the ba
 
 ### Global Freesolo adapter
 
-The initial corpus is correction-heavy and includes identity targets for slang, names, abbreviations, filenames, commands, URLs, versions, and ambiguous fragments. Identity targets use the same suggestion contract and are not a separate action. Executable row quotas live in `training/flash/dataset_compiler/contract.py`; the checked-in JSONL files are smoke fixtures, not the completed corpus.
-
-Most correction rows are generated deterministically from correct US QWERTY text. Operators include adjacent substitution, deletion, nearest-key insertion, adjacent transposition, repeat, and spacing changes. Each generated row records its seed and operator provenance. A small optional LLM or teacher lane covers semantic shorthand and phonetic forms that mechanical augmentation cannot produce. Clean phrase and pair sources remain under research; every source must be pinned, licensed, attributed, filtered, and split by source family before use.
+The global dataset policy lives only in `docs/training-data-contract.md`.
+Executable quotas live in `training/flash/dataset_compiler/contract.py`, pinned
+source identity lives in `training/flash/dataset/source_manifest.json`, and one
+build's generated facts live in `training/flash/dataset/build_report.json`.
 
 Baseline Qwen3.5, run SFT, and use development results to choose steps, checkpoint cadence, and whether OPD or warm-started GRPO is worth trying. Evaluate the selected checkpoint once on the locked test split, inspect failures, and export the strongest credible checkpoint rather than automatically choosing the last one.
 
 ### Evaluation
 
-Keep iterative development evaluation separate from the locked final comparison. Evaluation is more identity-heavy than training so unnecessary edits are visible, but Quip does not claim to know the exact natural identity prior. Report correction accuracy separately from false-correction rate, plus category results, schema validity, protected-token preservation, and latency. Deduplicate normalized patterns, separate source families across splits, and exclude evaluation prompts and close variants from training. Any later optimized reward remains distinct from this evaluation.
+Keep iterative development evaluation separate from the locked final comparison.
+Report correction success separately from unnecessary edit rate, plus schema
+validity and latency. Separate source families across splits and exclude
+evaluation inputs and targets from training. Any later optimized reward remains
+distinct from this evaluation.
 
 ### Artifacts
 
@@ -148,10 +153,9 @@ The build is complete when it can:
 1. Observe a writing burst typed directly into TextEdit and one browser input, and place the candidate bar at the caret without stealing focus or altering the typed text.
 2. Run base Qwen and the global Freesolo adapter locally on the same input with schema-valid output.
 3. Show nothing when the suggestion equals the input, and replace the burst in place only on an explicit candidate selection; dismissal changes nothing.
-4. Show base Qwen over-editing protected text while the trained model preserves it.
-5. Compare base and trained outputs on noisy shorthand or a typo, with the trained model producing the minimal useful correction.
-6. Use accessible text from an open window to resolve an ambiguous prediction.
-7. Show two local user profiles producing different candidates from learned patterns.
+4. Compare base and trained outputs on a typing error, with the trained model producing the minimal useful correction.
+5. Use accessible text from an open window to resolve an ambiguous prediction.
+6. Show two local user profiles producing different candidates from learned patterns.
 
 The comparison runs live from a deterministic corpus rather than a recording. The presentation also shows the Flash environment, training configuration, checkpoint evaluation, and exported adapter.
 

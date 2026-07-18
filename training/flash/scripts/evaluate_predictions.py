@@ -59,7 +59,6 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
             ("schema_valid", result.schema_valid),
             ("change_correct", result.change_correct),
             ("content_correct", result.content_correct),
-            ("protected_preserved", result.protected_preserved),
             ("success", result.success),
         ):
             if value:
@@ -87,7 +86,6 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
         "schema_validity": _rate(totals["schema_valid"], totals["examples"]),
         "change_accuracy": _rate(totals["change_correct"], totals["examples"]),
         "decode_success": _rate(totals["content_correct"], totals["examples"]),
-        "protected_token_preservation": _rate(totals["protected_preserved"], totals["examples"]),
         "unnecessary_edit_rate": _rate(
             totals["unnecessary_edits"], totals["unchanged_examples"]
         ),

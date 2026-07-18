@@ -26,6 +26,16 @@ $quipFlash = "$quipVenv/bin/flash"
 $quipPython = "$quipVenv/bin/python"
 ```
 
+After resolving the paths, invoke Linux executables directly through WSL. This
+keeps PowerShell from consuming Linux shell variables:
+
+```powershell
+wsl -d Ubuntu -- $quipFlash --version
+wsl -d Ubuntu --cd "$quipWslRepo/training/flash" -- $quipPython scripts/validate_datasets.py
+```
+
+Use `bash -lc` only when the operation actually needs Linux shell syntax.
+
 If the environment is absent, create it with the project-tested versions:
 
 ```powershell
@@ -38,8 +48,11 @@ Authenticate only inside an interactive WSL shell. Read the key silently, export
 
 1. Run `scripts/validate_datasets.py`, all tests, `flash --version`, `flash whoami`, and `flash models` before training.
 2. Publish `ariobarin/quip` again only when the environment or packaged dataset changes.
-3. Run `flash train <config> --dry-run` and `--cost`, then obtain approval for the quote before a paid submission.
-4. Use explicit checkpoints. Inspect status and logs until the run reaches a terminal state.
+3. Run `flash train <config> --dry-run` before submission. Obtain approval for
+   paid work unless the active goal already records an explicit user waiver.
+4. Use explicit checkpoints. Inspect with `flash status <run-id>`, stream with
+   `flash log -f <run-id>`, and list saved adapters with
+   `flash checkpoints <run-id>` after training.
 5. Evaluate promising checkpoints on the untouched split with `run_managed_eval.py` and `evaluate_predictions.py`. Inspect outputs and undeploy rejected adapters. Never select the final checkpoint automatically.
 6. Use GRPO only after SFT beats the base evaluation. Keep profile runs separate from the global held-out set, then export the chosen adapter promptly.
 

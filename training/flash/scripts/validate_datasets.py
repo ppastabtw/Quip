@@ -22,7 +22,6 @@ SMOKE_METADATA_KEYS = {
     "category",
     "target_changed",
     "accepted_suggestions",
-    "protected_tokens",
 }
 
 
@@ -52,7 +51,7 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
                 raise ValueError(f"{path}:{line_number}: invalid input")
             prediction = parse_prediction(row["output"])
             metadata = row["metadata"]
-            if not isinstance(metadata, dict) or set(metadata) != SMOKE_METADATA_KEYS:
+            if not isinstance(metadata, dict) or not SMOKE_METADATA_KEYS.issubset(metadata):
                 raise ValueError(f"{path}:{line_number}: invalid smoke metadata")
             if not isinstance(metadata["target_changed"], bool):
                 raise ValueError(f"{path}:{line_number}: target_changed must be boolean")
@@ -68,10 +67,6 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
                 or normalize(prediction.suggestion) not in {normalize(item) for item in accepted}
             ):
                 raise ValueError(f"{path}:{line_number}: invalid accepted_suggestions")
-            if not isinstance(metadata["protected_tokens"], list) or not all(
-                isinstance(item, str) and item for item in metadata["protected_tokens"]
-            ):
-                raise ValueError(f"{path}:{line_number}: invalid protected_tokens")
             result = score_completion(
                 input_text=row["input"],
                 expected_output=row["output"],
@@ -120,6 +115,7 @@ def main() -> int:
     validate_compiled_datasets(
         train_path=DATASET_DIR / "train.jsonl",
         eval_path=DATASET_DIR / "eval.jsonl",
+        test_path=DATASET_DIR / "test.jsonl",
         report_path=REPORT_PATH,
     )
     return 0

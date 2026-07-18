@@ -1,12 +1,17 @@
 import unittest
 
+from dataset_compiler.contract import CONTRACT
 from environment import QuipEnvironment, load_environment
 
 
 class EnvironmentTests(unittest.TestCase):
     def test_loads_train_and_eval_splits(self):
-        self.assertEqual(len(load_environment(split="train").dataset), 25)
-        self.assertEqual(len(load_environment(split="eval").dataset), 16)
+        self.assertEqual(
+            len(load_environment(split="train").dataset), CONTRACT.train_size
+        )
+        self.assertEqual(
+            len(load_environment(split="eval").dataset), CONTRACT.eval_size
+        )
 
     def test_prompt_contains_policy_and_input(self):
         environment = QuipEnvironment(split="train")
