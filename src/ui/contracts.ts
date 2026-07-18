@@ -38,7 +38,7 @@ export type PredictionResult =
       request_id: string;
       model_variant: ModelVariant;
       backend: Backend;
-      /** Zero to five ranked, deduplicated full-input replacements. Empty means skip. */
+      /** Zero through five unique full-input replacements, best first. */
       candidates: string[];
       latency_ms: number;
     }

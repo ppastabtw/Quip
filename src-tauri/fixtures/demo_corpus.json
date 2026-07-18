@@ -122,7 +122,7 @@
       "has_context": false,
       "candidates": [
         "I'm hungry, let's get lunch.",
-        "I'm hungry — let's get lunch!"
+        "I'm hungry, let's get lunch!"
       ],
       "latency_ms": 515
     }

@@ -31,4 +31,5 @@ artifacts/models/*
 artifacts/adapters/
 artifacts/logs/
 artifacts/eval/
+tmp/eval-*.jsonl
 *.log

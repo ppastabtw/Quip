@@ -68,9 +68,9 @@ pub struct PredictionRequest {
     pub personal_patterns: Vec<PersonalPattern>,
 }
 
-/// Result of one prediction. A successful result carries zero to five ranked,
-/// deduplicated full-input replacements. Zero candidates means skip; the
-/// exact draft is never repeated because it already remains in the destination.
+/// Result of one prediction. A successful result carries zero through five
+/// unique full-input replacements ordered best first. Zero candidates means
+/// the five raw generations all resolved to unchanged input after filtering.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PredictionResult {
@@ -93,12 +93,20 @@ pub enum PredictionResult {
 impl PredictionResult {
     /// Checks the candidate-count invariants from `docs/phase-0-contracts.md`.
     pub fn validate(&self) -> Result<(), String> {
-        match self {
-            PredictionResult::Ok { candidates, .. } if candidates.len() > 5 => {
-                Err(format!("result has {} candidates", candidates.len()))
-            }
-            _ => Ok(()),
+        let PredictionResult::Ok { candidates, .. } = self else {
+            return Ok(());
+        };
+        if candidates.len() > 5 {
+            return Err(format!("result has {} candidates", candidates.len()));
         }
+        if candidates.iter().any(String::is_empty) {
+            return Err("result has an empty candidate".to_string());
+        }
+        let unique = candidates.iter().collect::<std::collections::HashSet<_>>();
+        if unique.len() != candidates.len() {
+            return Err("result has duplicate candidates".to_string());
+        }
+        Ok(())
     }
 
     pub fn request_id(&self) -> &str {

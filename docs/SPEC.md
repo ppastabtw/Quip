@@ -51,13 +51,13 @@ A global shortcut can run a prediction over selected existing text. The same can
 
 ### Model contract
 
-The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. Each completion returns exactly one full-input suggestion:
+The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. Inference runs exactly five completions, and each returns one full-input suggestion:
 
 ```json
 { "suggestion": "best full text" }
 ```
 
-The inference layer compares each completion with the input, drops exact matches, deduplicates and ranks changed suggestions, and may expose up to five candidates. The typed text is never repeated as a candidate because doing nothing already preserves it. The shared inference wire format carries candidates or no candidates without exposing a model action.
+The inference layer compares the five completions with the input, drops exact matches, deduplicates changed suggestions, and ranks them by vote count with earliest completion as the tie breaker. It exposes zero through five candidates. The typed text is never repeated as a candidate because doing nothing already preserves it. The shared wire invariants live in `docs/phase-0-contracts.md`.
 
 Protected tokens include names, paths, filenames, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`. Preservation remains orthogonal evaluation coverage, not a model action or a fixed training quota.
 
@@ -84,7 +84,7 @@ If the runtime cannot stack adapters, Quip merges the global adapter into the ba
 
 ### Global Freesolo adapter
 
-The initial training corpus has 800 rows: 720 correction targets (90 percent) and 80 identity targets (10 percent). The proposed breakdown is 520 mechanical typing corruptions, 160 shorthand and phonetic transformations, 40 mixed errors, and 80 identity targets. Identity targets are hard negatives for slang, names, abbreviations, filenames, commands, URLs, versions, and ambiguous fragments. They use the same suggestion contract and are not a separate action.
+The initial corpus is correction-heavy and includes identity targets for slang, names, abbreviations, filenames, commands, URLs, versions, and ambiguous fragments. Identity targets use the same suggestion contract and are not a separate action. Executable row quotas live in `training/flash/dataset_compiler/contract.py`; the checked-in JSONL files are smoke fixtures, not the completed corpus.
 
 Most correction rows are generated deterministically from correct US QWERTY text. Operators include adjacent substitution, deletion, nearest-key insertion, adjacent transposition, repeat, and spacing changes. Each generated row records its seed and operator provenance. A small optional LLM or teacher lane covers semantic shorthand and phonetic forms that mechanical augmentation cannot produce. Clean phrase and pair sources remain under research; every source must be pinned, licensed, attributed, filtered, and split by source family before use.
 
@@ -92,7 +92,7 @@ Baseline Qwen3.5, run SFT, and use development results to choose steps, checkpoi
 
 ### Evaluation
 
-For now, use a 200-row development split for iteration and a 300-row locked test split for final comparison; these counts can change as coverage improves. Evaluation is more identity-heavy than training so unnecessary edits are visible, but Quip does not claim to know the exact natural identity prior. Report correction accuracy separately from false-correction rate, plus category results, schema validity, protected-token preservation, and latency. Deduplicate normalized patterns, separate source families across splits, and exclude evaluation prompts and close variants from training. Any later optimized reward remains distinct from this evaluation.
+Keep iterative development evaluation separate from the locked final comparison. Evaluation is more identity-heavy than training so unnecessary edits are visible, but Quip does not claim to know the exact natural identity prior. Report correction accuracy separately from false-correction rate, plus category results, schema validity, protected-token preservation, and latency. Deduplicate normalized patterns, separate source families across splits, and exclude evaluation prompts and close variants from training. Any later optimized reward remains distinct from this evaluation.
 
 ### Artifacts
 

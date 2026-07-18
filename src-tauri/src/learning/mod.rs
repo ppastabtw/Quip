@@ -31,10 +31,10 @@ pub struct LabeledExample {
     pub burst_id: String,
     pub profile_id: String,
     pub draft: String,
-    /// Internal learning outcome (`keep` or `replace`), separate from inference results.
+    /// Internal learning label such as `keep` or `replace`.
     pub label: String,
     pub committed: String,
-    /// `confirmed_candidate`, `exact_draft`, or `dismissal`.
+    /// Interaction source such as `confirmed_candidate` or `dismissal`.
     pub source: String,
     pub model_variant: ModelVariant,
 }
@@ -52,10 +52,7 @@ impl LearningStore {
             root: data_dir.join("profiles"),
         };
         store.seed_if_missing("profile_default", &[]);
-        store.seed_if_missing(
-            "profile_a",
-            &[("tn", "tonight"), ("eod", "end of day")],
-        );
+        store.seed_if_missing("profile_a", &[("tn", "tonight"), ("eod", "end of day")]);
         store.seed_if_missing(
             "profile_b",
             &[("tn", "tomorrow night"), ("eod", "end of demo")],
@@ -190,10 +187,13 @@ impl LearningStore {
             }
         }
         match profile_id {
-            "profile_a" => self.seed_if_missing(profile_id, &[("tn", "tonight"), ("eod", "end of day")]),
-            "profile_b" => {
-                self.seed_if_missing(profile_id, &[("tn", "tomorrow night"), ("eod", "end of demo")])
+            "profile_a" => {
+                self.seed_if_missing(profile_id, &[("tn", "tonight"), ("eod", "end of day")])
             }
+            "profile_b" => self.seed_if_missing(
+                profile_id,
+                &[("tn", "tomorrow night"), ("eod", "end of demo")],
+            ),
             _ => self.seed_if_missing(profile_id, &[]),
         }
     }

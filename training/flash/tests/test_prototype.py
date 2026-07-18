@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from augmentation import DEFAULT_WEIGHTS as DEFAULT_AUGMENTATION_WEIGHTS
 from prototype.server import (
+    COMPLETION_COUNT,
     DEFAULT_MODEL,
     INDEX_PATH,
     MODEL_OPTIONS,
@@ -85,7 +86,8 @@ class PrototypeRequestTests(unittest.TestCase):
             html,
         )
         self.assertIn("activateTab(document.querySelector('#model-tab'))", html)
-        self.assertIn('<label for="suggestion-count">Completions</label>', html)
+        self.assertNotIn('id="suggestion-count"', html)
+        self.assertIn("Every run requests five managed completions", html)
         self.assertIn('id="empty-candidates" hidden', html)
         self.assertIn("item.vote_count", html)
         self.assertNotIn('id="augment-seed" type="number" min="0" max="2147483647" step="1" value="42"', html)
@@ -122,7 +124,6 @@ class PrototypeRequestTests(unittest.TestCase):
                 "draft": "cnt cm tmrw",
                 "temperature": 0.9,
                 "max_tokens": 96,
-                "suggestion_count": 4,
             }
         )
 
@@ -130,7 +131,7 @@ class PrototypeRequestTests(unittest.TestCase):
         self.assertEqual(model_input, {"text": "cnt cm tmrw"})
         self.assertEqual(settings["temperature"], 0.9)
         self.assertEqual(settings["max_tokens"], 96)
-        self.assertEqual(settings["suggestion_count"], 4)
+        self.assertEqual(COMPLETION_COUNT, 5)
 
         payload = request_payload(
             model,
@@ -158,13 +159,13 @@ class PrototypeRequestTests(unittest.TestCase):
             )
 
     def test_rejects_out_of_range_controls(self):
-        with self.assertRaisesRegex(PlaygroundError, "suggestion_count must be between"):
+        with self.assertRaisesRegex(PlaygroundError, "max_tokens must be between"):
             validate_request(
                 {
                     "model": "Qwen/Qwen3.5-2B",
                     "system_prompt": SYSTEM_PROMPT,
                     "draft": "hello",
-                    "suggestion_count": 6,
+                    "max_tokens": 513,
                 }
             )
 
@@ -204,12 +205,13 @@ class PrototypeRequestTests(unittest.TestCase):
 
     @patch("prototype.server._run_suggestion")
     @patch("prototype.server.load_credentials", return_value=("account", "key"))
-    def test_runs_and_ranks_each_unique_changed_completion(self, _credentials, run_one):
+    def test_always_runs_five_and_ranks_each_unique_changed_completion(
+        self, _credentials, run_one
+    ):
         run_one.side_effect = lambda model, model_input, settings, headers, index: {
             "index": index,
             "latency_ms": 10 + index,
             "suggestion": f"suggestion {index}",
-            "changed": True,
             "raw": json.dumps({"suggestion": f"suggestion {index}"}),
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
@@ -219,20 +221,20 @@ class PrototypeRequestTests(unittest.TestCase):
                 "model": "Qwen/Qwen3.5-2B",
                 "system_prompt": "Changed prompt for metadata.",
                 "draft": "hello",
-                "suggestion_count": 3,
+                "suggestion_count": 1,
             }
         )
 
-        self.assertEqual(run_one.call_count, 3)
-        self.assertEqual([item["index"] for item in result["suggestions"]], [1, 2, 3])
-        self.assertEqual([item["rank"] for item in result["suggestions"]], [1, 2, 3])
-        self.assertEqual([item["vote_count"] for item in result["suggestions"]], [1, 1, 1])
-        self.assertEqual(result["completion_count"], 3)
-        self.assertEqual(result["candidate_count"], 3)
+        self.assertEqual(run_one.call_count, 5)
+        self.assertEqual([item["index"] for item in result["suggestions"]], [1, 2, 3, 4, 5])
+        self.assertEqual([item["rank"] for item in result["suggestions"]], [1, 2, 3, 4, 5])
+        self.assertEqual([item["vote_count"] for item in result["suggestions"]], [1, 1, 1, 1, 1])
+        self.assertEqual(result["completion_count"], 5)
+        self.assertEqual(result["candidate_count"], 5)
         self.assertEqual(
             result["settings"]["system_prompt"], "Changed prompt for metadata."
         )
-        self.assertEqual(result["settings"]["suggestion_count"], 3)
+        self.assertNotIn("suggestion_count", result["settings"])
 
     @patch("prototype.server._run_suggestion")
     @patch("prototype.server.load_credentials", return_value=("account", "key"))
@@ -244,7 +246,6 @@ class PrototypeRequestTests(unittest.TestCase):
             "index": index,
             "latency_ms": 10 + index,
             "suggestion": outputs[index],
-            "changed": outputs[index] != model_input["text"],
             "raw": json.dumps({"suggestion": outputs[index]}),
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
@@ -254,7 +255,6 @@ class PrototypeRequestTests(unittest.TestCase):
                 "model": "Qwen/Qwen3.5-2B",
                 "system_prompt": SYSTEM_PROMPT,
                 "draft": "hello",
-                "suggestion_count": 5,
             }
         )
 
@@ -280,7 +280,6 @@ class PrototypeRequestTests(unittest.TestCase):
             "index": index,
             "latency_ms": 10 + index,
             "suggestion": model_input["text"],
-            "changed": False,
             "raw": json.dumps({"suggestion": model_input["text"]}),
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
@@ -290,11 +289,10 @@ class PrototypeRequestTests(unittest.TestCase):
                 "model": "Qwen/Qwen3.5-2B",
                 "system_prompt": SYSTEM_PROMPT,
                 "draft": "hello",
-                "suggestion_count": 3,
             }
         )
 
-        self.assertEqual(result["completion_count"], 3)
+        self.assertEqual(result["completion_count"], 5)
         self.assertEqual(result["candidate_count"], 0)
         self.assertEqual(result["suggestions"], [])
 

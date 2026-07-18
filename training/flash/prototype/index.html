@@ -31,7 +31,7 @@
     #draft { min-height: 110px; }
     #correct-text, #augmented-text { min-height: 92px; }
     .field + .field { margin-top: 18px; }
-    .controls { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); margin-top: 18px; }
+    .controls { display: grid; gap: 16px; grid-template-columns: repeat(2, 1fr); margin-top: 18px; }
     .control-head { align-items: baseline; display: flex; justify-content: space-between; }
     output { color: #39705b; font-size: 12px; font-weight: 800; }
     input[type="range"] { accent-color: #39705b; border: 0; box-shadow: none; padding: 7px 0 0; }
@@ -130,7 +130,7 @@
 
     <section class="panel" id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
       <h2>Model playground</h2>
-      <p class="lede">Probe a catalog base model or deployed Flash run alias through managed serving.</p>
+      <p class="lede">Every run requests five managed completions, then filters, deduplicates, and ranks the changed candidates.</p>
       <form id="form">
         <div class="field">
           <label for="model">Model</label>
@@ -156,10 +156,6 @@
           <div>
             <div class="control-head"><label for="max-tokens">Max tokens</label><output id="max-tokens-value">128</output></div>
             <input id="max-tokens" type="range" min="16" max="512" step="16" value="128">
-          </div>
-          <div>
-            <div class="control-head"><label for="suggestion-count">Completions</label><output id="suggestion-count-value">3</output></div>
-            <input id="suggestion-count" type="range" min="1" max="5" step="1" value="3">
           </div>
         </div>
 
@@ -187,7 +183,6 @@
     const draft = document.querySelector('#draft');
     const temperature = document.querySelector('#temperature');
     const maxTokens = document.querySelector('#max-tokens');
-    const suggestionCount = document.querySelector('#suggestion-count');
     const run = document.querySelector('#run');
     const status = document.querySelector('#status');
     const errorBox = document.querySelector('#error');
@@ -238,8 +233,7 @@
         system_prompt: systemPrompt.value,
         draft: draft.value,
         temperature: Number(temperature.value),
-        max_tokens: Number(maxTokens.value),
-        suggestion_count: Number(suggestionCount.value)
+        max_tokens: Number(maxTokens.value)
       };
     }
 
@@ -384,7 +378,7 @@
       if (event.ctrlKey && event.key === 'Enter') form.requestSubmit();
     });
 
-    [temperature, maxTokens, suggestionCount].forEach(control => {
+    [temperature, maxTokens].forEach(control => {
       const output = document.querySelector(`#${control.id}-value`);
       control.addEventListener('input', () => {
         output.textContent = control.value;

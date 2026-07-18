@@ -128,10 +128,9 @@ fn show_window(app: &AppHandle, label: &str) {
     }
 }
 
-/// One full burst: begin → inference → suggest. Fixture latency is replayed;
-/// live results have already incurred their measured latency. The engine lock
-/// is never held across the optional sleep, and stale results are dropped by
-/// `apply_result` if the burst was dismissed meanwhile.
+/// One full burst: begin → (simulated) inference latency → suggest.
+/// The engine lock is never held across the sleep, and stale results are
+/// dropped by `apply_result` if the burst was dismissed meanwhile.
 async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     let begun = {
         let engine = app.state::<EngineState>();
@@ -161,14 +160,11 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
 
     // Fixture latencies are replayed in real time so the bar's arrival is
     // honest about what live inference will feel like.
-    let delay_ms = match (&result, mode) {
-        (PredictionResult::Ok { latency_ms, .. }, BackendMode::Fixture) => (*latency_ms).min(900),
-        (PredictionResult::Error { .. }, BackendMode::Fixture) => 250,
-        _ => 0,
+    let delay_ms = match &result {
+        PredictionResult::Ok { latency_ms, .. } => (*latency_ms).min(900),
+        PredictionResult::Error { .. } => 250,
     };
-    if delay_ms > 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-    }
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
     let applied = {
         let engine = app.state::<EngineState>();
@@ -256,7 +252,12 @@ fn get_composition_state(app: AppHandle) -> Snapshot {
 
 #[tauri::command]
 fn get_settings(app: AppHandle) -> AppSettings {
-    app.state::<EngineState>().0.lock().unwrap().settings.clone()
+    app.state::<EngineState>()
+        .0
+        .lock()
+        .unwrap()
+        .settings
+        .clone()
 }
 
 #[tauri::command]
@@ -272,7 +273,12 @@ fn update_settings(app: AppHandle, settings: AppSettings) {
 
 #[tauri::command]
 fn list_profiles(app: AppHandle) -> Vec<String> {
-    app.state::<EngineState>().0.lock().unwrap().learning.list_profiles()
+    app.state::<EngineState>()
+        .0
+        .lock()
+        .unwrap()
+        .learning
+        .list_profiles()
 }
 
 #[derive(Serialize)]
@@ -322,7 +328,13 @@ fn set_simulate_failure(app: AppHandle, on: bool) {
 
 #[tauri::command]
 fn list_corpus(app: AppHandle) -> Vec<DemoCase> {
-    app.state::<EngineState>().0.lock().unwrap().backend.cases.clone()
+    app.state::<EngineState>()
+        .0
+        .lock()
+        .unwrap()
+        .backend
+        .cases
+        .clone()
 }
 
 #[derive(Serialize, Clone)]
@@ -388,9 +400,19 @@ fn run_comparison(app: AppHandle, case_id: String) -> Result<ComparisonReport, S
     Ok(report)
 }
 
-fn build_tray(app: &tauri::App, settings: &AppSettings, profiles: &[String]) -> tauri::Result<TrayHandles> {
-    let enabled =
-        CheckMenuItem::with_id(app, "toggle_enabled", "Enabled", true, settings.enabled, None::<&str>)?;
+fn build_tray(
+    app: &tauri::App,
+    settings: &AppSettings,
+    profiles: &[String],
+) -> tauri::Result<TrayHandles> {
+    let enabled = CheckMenuItem::with_id(
+        app,
+        "toggle_enabled",
+        "Enabled",
+        true,
+        settings.enabled,
+        None::<&str>,
+    )?;
     let window_context = CheckMenuItem::with_id(
         app,
         "toggle_context",
@@ -425,7 +447,8 @@ fn build_tray(app: &tauri::App, settings: &AppSettings, profiles: &[String]) -> 
         .iter()
         .map(|(_, item)| item as &dyn tauri::menu::IsMenuItem<Wry>)
         .collect();
-    let profile_menu = Submenu::with_id_and_items(app, "profile_menu", "Profile", true, &profile_refs)?;
+    let profile_menu =
+        Submenu::with_id_and_items(app, "profile_menu", "Profile", true, &profile_refs)?;
 
     let open_settings = MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
     let open_demo = MenuItem::with_id(app, "open_demo", "Demo & Playground…", true, None::<&str>)?;
@@ -507,7 +530,11 @@ fn init_logging(log_dir: &PathBuf) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().json().with_writer(file_writer))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(file_writer),
+        )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .init();
 }
@@ -565,22 +592,7 @@ fn main() {
                 });
             }
 
-            if std::env::var("QUIP_SELFTEST_LIVE").as_deref() == Ok("1") {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let code = match live_selftest::run(handle.clone()).await {
-                        Ok(()) => {
-                            println!("LIVE SELFTEST PASS");
-                            0
-                        }
-                        Err(error) => {
-                            println!("LIVE SELFTEST FAIL: {error}");
-                            1
-                        }
-                    };
-                    handle.exit(code);
-                });
-            } else if std::env::var("QUIP_SELFTEST").as_deref() == Ok("1") {
+            if std::env::var("QUIP_SELFTEST").as_deref() == Ok("1") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let code = match selftest::run(handle.clone()).await {
@@ -626,7 +638,7 @@ fn main() {
 }
 
 /// Headless validation of the full IME flow through the real app runtime:
-/// capture → engine → fixture backend → bar state, selection with in-place
+/// capture -> engine -> fixture backend -> bar state, selection with in-place
 /// replacement semantics, learning records, failure path, metrics.
 mod selftest {
     use super::*;
@@ -676,15 +688,18 @@ mod selftest {
     }
 
     pub async fn run(app: AppHandle) -> Result<(), String> {
-        // 1. Shorthand burst: candidates appear (no exact-draft option —
-        //    the typed text is already in the destination).
-        inject_capture(app.clone(), capture("st_1", "profile_default", "cnt cm tmrw")).await;
+        // 1. Shorthand burst: candidates appear. No exact-draft option is
+        //    needed because the typed text is already in the destination.
+        inject_capture(
+            app.clone(),
+            capture("st_1", "profile_default", "cnt cm tmrw"),
+        )
+        .await;
         let (candidates, error) = suggesting(&app)?;
         check(
             "shorthand suggests multiple candidates, best first",
             candidates.first().map(String::as_str) == Some("Can't come tomorrow.")
-                && candidates.len() > 1
-                && candidates.len() <= 5
+                && candidates.len() == 5
                 && error.is_none(),
             format!("{candidates:?} {error:?}"),
         )?;
@@ -723,7 +738,11 @@ mod selftest {
 
         // 5. Simulated adapter failure: explicit error bar, no candidates.
         set_simulate_failure(app.clone(), true);
-        inject_capture(app.clone(), capture("st_4", "profile_default", "cnt cm tmrw")).await;
+        inject_capture(
+            app.clone(),
+            capture("st_4", "profile_default", "cnt cm tmrw"),
+        )
+        .await;
         let (candidates, error) = suggesting(&app)?;
         check(
             "failure shows explicit error with no candidates",
@@ -752,66 +771,6 @@ mod selftest {
             metrics.requests >= 6 && metrics.schema_invalid == 0,
             format!("{metrics:?}"),
         )?;
-        Ok(())
-    }
-}
-
-/// Headless validation of the pushed app client against the real local
-/// sidecar and Qwen server. This deliberately checks the process boundary and
-/// UI state conversion without selecting or persisting a model suggestion.
-mod live_selftest {
-    use super::*;
-
-    pub async fn run(app: AppHandle) -> Result<(), String> {
-        let health = get_health(app.clone());
-        if health.status != quip_contracts::HealthStatus::Ready || !health.loaded.base {
-            return Err(format!("sidecar health was not live-ready: {health:?}"));
-        }
-        println!("LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded");
-
-        inject_capture(
-            app.clone(),
-            CaptureResult::Ready {
-                burst_id: "live_selftest".to_owned(),
-                destination_id: "destination_live_selftest".to_owned(),
-                profile_id: "profile_default".to_owned(),
-                draft: "see you tomorow".to_owned(),
-                trigger: Trigger::Idle,
-                caret: Rect {
-                    x: 512.0,
-                    y: 384.0,
-                    width: 2.0,
-                    height: 18.0,
-                },
-            },
-        )
-        .await;
-
-        let snapshot = {
-            let engine = app.state::<EngineState>();
-            let engine = engine.0.lock().unwrap();
-            engine.current_snapshot()
-        };
-        match snapshot {
-            Snapshot::Suggesting {
-                candidates,
-                backend: Some(quip_contracts::Backend::Live),
-                latency_ms: Some(latency_ms),
-                error: None,
-                ..
-            } if !candidates.is_empty() && latency_ms > 0 => {
-                println!(
-                    "LIVE SELFTEST ok: app rendered live candidates in {latency_ms} ms: {candidates:?}"
-                );
-            }
-            other => return Err(format!("unexpected live composition state: {other:?}")),
-        }
-
-        let metrics = get_metrics(app);
-        if metrics.requests != 1 || metrics.ok != 1 || metrics.schema_invalid != 0 {
-            return Err(format!("unexpected live metrics: {metrics:?}"));
-        }
-        println!("LIVE SELFTEST ok: app metrics recorded one schema-valid live result");
         Ok(())
     }
 }

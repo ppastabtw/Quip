@@ -20,9 +20,9 @@ Clauses
   Evidence: visible browser state.
 - BV-3: Given the Model playground tab and a blank draft, when the developer runs the model, then the page rejects the request without sending an inference call.
   Evidence: visible validation message.
-- BV-4: Given a valid draft and completion count N up to five, when managed inference succeeds, then the server runs N completions, drops exact-input outputs, groups identical changed strings, and ranks candidates by vote count descending with earliest completion index as the deterministic tie-breaker. The page shows ranks, vote counts, and latency. If every completion is unchanged, it shows a successful zero-candidate state.
+- BV-4: Given a valid draft, when managed inference succeeds, then the server runs exactly five completions, drops exact-input outputs, groups identical changed strings, and ranks candidates by vote count descending with earliest completion index as the deterministic tie breaker. The page shows ranks, vote counts, and latency. If every completion is unchanged, it shows a successful zero-candidate state.
   Evidence: visible result and the API response fields.
-- BV-5: Given a changed system prompt, temperature, max tokens, or completion count, when the developer runs again, then the submitted API request and result metadata reflect the changed controls and report completion and candidate counts.
+- BV-5: Given a changed system prompt, temperature, or max tokens, when the developer runs again, then the submitted API request and result metadata reflect the changed controls and report five completions plus the candidate count.
   Evidence: browser-visible controls and API response fields.
 - BV-6: Given a changed draft, when the developer runs the model again, then the displayed suggestions come from new managed completions rather than static fixture text.
   Evidence: two distinct requests and responses.
@@ -46,7 +46,7 @@ Clauses
 Anti-cheat probes
 
 - Submit an empty draft.
-- Request five completions and verify exact-input outputs are skipped, duplicate changes are grouped, and unique candidates are ranked by vote count then earliest completion index.
+- Run a prediction and verify exactly five completions occur, exact-input outputs are skipped, duplicate changes are grouped, and unique candidates are ranked by vote count then earliest completion index.
 - Change the system prompt and temperature between successful requests.
 - Submit a deliberately invalid model ID.
 - Submit a catalog model and a custom model ID through the same control.

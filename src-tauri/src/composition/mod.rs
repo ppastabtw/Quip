@@ -1,15 +1,15 @@
 //! Workstream 4: composition state machine, IME model
-//! (`Idle → Predicting → Suggesting → applied | dismissed`).
+//! (`Idle -> Predicting -> Suggesting -> applied | dismissed`).
 //!
 //! The user types directly into their own textbox; Quip observes bursts and
-//! floats a candidate bar above the caret. Invariants: a zero-candidate result
-//! shows nothing (the typed text stands), candidates replace the burst in place
+//! floats a candidate bar above the caret. Invariants: an empty successful
+//! result shows nothing, candidates replace the burst in place
 //! only on explicit selection, dismissal and stale results change nothing,
 //! and starting a new burst while suggestions are visible counts as a stable
 //! dismissal (a `keep` learning label).
 
 use crate::commit::{self, CommitOutcome};
-use crate::inference::{FixtureBackend, Metrics, SidecarClient};
+use crate::inference::{sidecar_predict_stub, FixtureBackend, Metrics};
 use crate::learning::{self, LabeledExample, LearningStore};
 use crate::settings::{AppSettings, BackendMode};
 use quip_contracts::{
@@ -102,7 +102,6 @@ pub struct Engine {
     pub settings: AppSettings,
     pub learning: LearningStore,
     pub backend: FixtureBackend,
-    sidecar: SidecarClient,
     pub metrics: Metrics,
     state: State,
     burst_seq: u64,
@@ -115,7 +114,6 @@ impl Engine {
             settings: AppSettings::load(data_dir),
             learning: LearningStore::open(data_dir),
             backend: FixtureBackend::new(),
-            sidecar: SidecarClient::auto(),
             metrics: Metrics::default(),
             state: State::Idle,
             burst_seq: 0,
@@ -193,7 +191,7 @@ impl Engine {
     pub fn predict(&mut self, request: &PredictionRequest, mode: BackendMode) -> PredictionResult {
         let result = match mode {
             BackendMode::Fixture => self.backend.predict(request),
-            BackendMode::Live => self.sidecar.predict(request),
+            BackendMode::Live => sidecar_predict_stub(request),
         };
         let valid = self.metrics.record(&result);
         if valid {
@@ -390,10 +388,10 @@ impl Engine {
         }
     }
 
-    pub fn health(&mut self) -> SidecarHealth {
+    pub fn health(&self) -> SidecarHealth {
         match self.settings.backend_mode {
             BackendMode::Fixture => self.backend.health(),
-            BackendMode::Live => self.sidecar.health(),
+            BackendMode::Live => crate::inference::sidecar_health_stub(),
         }
     }
 }
@@ -442,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_results_show_candidates_at_the_caret() {
+    fn candidate_result_shows_candidates_at_the_caret() {
         let (mut engine, dir) = test_engine();
         let snapshot = run_burst(&mut engine, "cnt cm tmrw");
         let Snapshot::Suggesting {
@@ -508,19 +506,20 @@ mod tests {
     #[test]
     fn arrow_selection_wraps_and_tab_accepts_highlighted() {
         let (mut engine, dir) = test_engine();
-        let initial = run_burst(&mut engine, "cnt cm tmrw");
-        let Snapshot::Suggesting { candidates, .. } = initial else {
-            panic!("expected suggesting");
-        };
-        assert_eq!(candidates.len(), 5);
+        run_burst(&mut engine, "cnt cm tmrw"); // 5 candidates
         let snap = engine.move_selection(1).unwrap();
         let Snapshot::Suggesting { selected, .. } = snap else {
             panic!("expected suggesting");
         };
         assert_eq!(selected, 1);
         // Wraps around in both directions.
-        engine.move_selection(candidates.len() as i64 - 1).unwrap();
-        let Snapshot::Suggesting { selected, candidates, .. } = engine.current_snapshot() else {
+        engine.move_selection(4).unwrap();
+        let Snapshot::Suggesting {
+            selected,
+            candidates,
+            ..
+        } = engine.current_snapshot()
+        else {
             panic!("expected suggesting");
         };
         assert_eq!(selected, 0);

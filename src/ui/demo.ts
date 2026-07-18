@@ -92,7 +92,7 @@ async function fireTrigger(trigger: Trigger) {
   });
 }
 
-/// Ends the composition session at the current caret: visible suggestions
+// Ends the composition session at the current caret: visible suggestions
 /// become a stable dismissal (a keep label), and the next keystroke starts a
 /// fresh burst.
 function endSession() {
@@ -169,14 +169,14 @@ function renderHealth(health: SidecarHealth) {
     "pill " +
     (health.status === "ready" ? "ok" : health.status === "degraded" ? "warn" : "bad");
   const loaded = Object.entries(health.loaded)
-    .map(([name, on]) => `${name}: ${on ? "✓" : "–"}`)
+    .map(([name, on]) => `${name}: ${on ? "✓" : "no"}`)
     .join("  ");
   const err = health.error ? `  ·  ${health.error.code}` : "";
-  healthLoadedEl.textContent = `fixture: ${health.fixture_available ? "✓" : "–"}  ${loaded}${err}`;
+  healthLoadedEl.textContent = `fixture: ${health.fixture_available ? "✓" : "no"}  ${loaded}${err}`;
 }
 
 function renderMetrics(metrics: Metrics) {
-  const avg = metrics.avg_latency_ms === null ? "–" : `${Math.round(metrics.avg_latency_ms)} ms`;
+  const avg = metrics.avg_latency_ms === null ? "none" : `${Math.round(metrics.avg_latency_ms)} ms`;
   metricsEl.textContent =
     `requests ${metrics.requests} · ok ${metrics.ok} · errors ${metrics.errors}` +
     ` · schema-invalid ${metrics.schema_invalid} · avg latency ${avg}`;
@@ -201,10 +201,9 @@ function renderResult(side: ComparisonSide): HTMLElement {
   const result: PredictionResult = side.result;
   if (result.status === "ok") {
     const latency = ` · ${result.latency_ms} ms`;
-    const summary = result.candidates.length === 0 ? "skip" : `${result.candidates.length} candidates`;
-    box.append(el("div", "summary", `${summary}${latency}`));
+    box.append(el("div", "result-meta", `${result.candidates.length} candidates${latency}`));
     if (result.candidates.length === 0) {
-      box.append(el("div", "mono", "(no changed suggestion — no bar is shown)"));
+      box.append(el("div", "mono", "(keeps the typed text; no bar is shown)"));
     } else {
       const list = el("ul");
       for (const candidate of result.candidates) {
@@ -213,7 +212,7 @@ function renderResult(side: ComparisonSide): HTMLElement {
       box.append(list);
     }
   } else {
-    const err = el("div", "summary", `error: ${result.error.code} — ${result.error.message}`);
+    const err = el("div", "result-meta", `error: ${result.error.code}: ${result.error.message}`);
     err.style.color = "var(--bad)";
     box.append(err);
   }

@@ -22,7 +22,7 @@ export type Snapshot =
       phase: "suggesting";
       burst_id: string;
       draft: string;
-      /** One to three model replacements; empty only in the error state. */
+      /** Zero through five unique model replacements, best first. */
       candidates: string[];
       recommended: number;
       /** Highlighted candidate; arrows move it, Tab accepts it. */

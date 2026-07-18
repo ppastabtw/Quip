@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use crate::InferenceBackend;
 
 const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:1234";
-const COMPLETION_COUNT: usize = 3;
+const COMPLETION_COUNT: usize = 5;
 const SYSTEM_PROMPT: &str = r#"You are an English text corrector.
 
 Given a JSON object containing text, predict one full-text suggestion.
@@ -282,6 +282,15 @@ fn normalize_model_outputs(
     outputs: Vec<ModelOutput>,
     latency_ms: u64,
 ) -> PredictionResult {
+    if outputs.len() != COMPLETION_COUNT {
+        return prediction_error(
+            request,
+            "incomplete_generation_batch",
+            "live inference requires exactly five completed generations",
+            true,
+        );
+    }
+
     let suggestions = outputs
         .into_iter()
         .map(|output| output.suggestion.trim().to_owned())
@@ -448,18 +457,6 @@ mod tests {
                 ModelOutput {
                     suggestion: "candidate a".to_owned(),
                 },
-                ModelOutput {
-                    suggestion: "candidate d".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate e".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate f".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "cnt cm tmr".to_owned(),
-                },
             ],
             12,
         );
@@ -473,8 +470,6 @@ mod tests {
                 "candidate b",
                 "candidate a",
                 "candidate c",
-                "candidate d",
-                "candidate e",
             ]
         ));
     }
@@ -483,9 +478,11 @@ mod tests {
     fn exact_draft_suggestion_becomes_zero_candidates() {
         let result = normalize_model_outputs(
             &request(),
-            vec![ModelOutput {
-                suggestion: "cnt cm tmr".to_owned(),
-            }],
+            (0..5)
+                .map(|_| ModelOutput {
+                    suggestion: "cnt cm tmr".to_owned(),
+                })
+                .collect(),
             12,
         );
 
@@ -495,6 +492,27 @@ mod tests {
                 candidates,
                 ..
             } if candidates.is_empty()
+        ));
+    }
+
+    #[test]
+    fn incomplete_generation_batch_is_an_explicit_error() {
+        let result = normalize_model_outputs(
+            &request(),
+            (0..4)
+                .map(|index| ModelOutput {
+                    suggestion: format!("candidate {index}"),
+                })
+                .collect(),
+            12,
+        );
+
+        assert!(matches!(
+            result,
+            quip_contracts::PredictionResult::Error {
+                error,
+                ..
+            } if error.code == "incomplete_generation_batch" && error.retryable
         ));
     }
 }

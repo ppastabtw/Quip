@@ -73,7 +73,7 @@ used by Freesolo training:
 {"suggestion":"best full text"}
 ```
 
-The Rust inference layer requests three completions concurrently, removes
+The Rust inference layer requests exactly five completions concurrently, removes
 exact-draft suggestions, deduplicates changed text, ranks duplicate votes with
 earliest-completion tie-breaking, and returns zero to five candidates. Zero
 candidates means skip and no suggestion bar.

@@ -26,7 +26,7 @@ Source: `docs/SPEC.md`
 
 **continuous prediction with bounded churn**: Prediction runs as the burst grows, with a short debounce and immediate refresh at punctuation, Return, or the draft-window cap. Stale results are dropped while the current bar remains visible.
 
-**guided JSON model contract**: Each model completion emits exactly `{ "suggestion": "..." }` with one full-input suggestion. The inference layer drops exact-input suggestions, deduplicates and ranks changed suggestions, and exposes up to five candidates. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
+**guided JSON model contract**: Each model completion emits exactly `{ "suggestion": "..." }`. Workstream 2 implements the aggregation rules in `docs/phase-0-contracts.md`. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
 
 **literal input remains the default**: The application does not add the unchanged draft as a candidate because it is already present in the destination. Only an explicit candidate selection changes it.
 
@@ -36,7 +36,7 @@ Source: `docs/SPEC.md`
 
 **narrow judged app scope**: The demo targets TextEdit, Notes, and one standard browser input. Rich editors, terminals, PDFs, secure fields, canvas editors, unusual Electron controls, and universal macOS support are explicitly out of scope.
 
-**parallel workstreams with narrow contracts**: The four builders should work in parallel around the inference, capture, and health boundaries. Accessibility restoration, UI state, storage, tuning, and other internal details stay with their workstream until integration proves they must be shared.
+**parallel workstreams with narrow contracts**: The four builders should work in parallel around the inference, capture, and health boundaries. Accessibility markers, UI state, storage, tuning, and other internal details stay with their workstream until integration proves they must be shared.
 
 ## Architecture overview
 
@@ -112,7 +112,7 @@ docs/
 
 ### Workstream 1: Flash training and evaluation
 
-1. Build the corpus and splits defined in `docs/SPEC.md` from pinned, licensed, attributed, and filtered sources, recording augmentation provenance.
+1. Build the executable quotas in `training/flash/dataset_compiler/contract.py` from sources that meet `docs/SPEC.md`, recording augmentation provenance.
 2. Package the single-turn Flash environment and baseline Qwen3.5.
 3. Run SFT and choose steps, checkpoints, and any OPD or GRPO follow-up from development results.
 4. Report correction accuracy separately from false-correction rate, plus category, protected-token, schema, and latency results. Use the locked test split only for selected comparisons.
@@ -121,7 +121,7 @@ docs/
 ### Workstream 2: local inference, adapters, and packaging
 
 1. Build the local inference sidecar around `mistral.rs` with the shared request/response contract and deterministic fixture mode.
-2. Prove base Qwen loading, 4-bit Metal inference, guided JSON decoding, schema validation, and latency reporting before consuming app events.
+2. Prove base Qwen loading, 4-bit Metal inference, guided JSON decoding, five-completion aggregation, schema validation, and latency reporting before consuming app events.
 3. Load the global Freesolo adapter exported by the training workstream; if it fails, swap in a replaceable local runtime behind the same sidecar contract.
 4. Test global plus per-user adapter composition with two intentionally different user profiles; if stacking fails, merge the global adapter into the base and load one user adapter.
 5. Benchmark Qwen3.5-2B on the M3 Pro and M4 Air; test Qwen3.5-4B only if quality requires it and latency remains interactive.
@@ -131,10 +131,10 @@ docs/
 ### Workstream 3: Accessibility capture, commit, and context
 
 1. Implement Accessibility permission detection, focused editable element recognition, secure-field exclusion, and supported-app gating.
-2. Capture destination application, element, selection, insertion point, and text-marker state before redirecting input.
-3. Prototype writing-burst interception in TextEdit and one browser input while leaving the destination unchanged.
-4. Implement idle, punctuation, and Return triggers with initial 700 to 900 ms idle timing and an 80-character draft window.
-5. Restore the destination and commit confirmed text through Accessibility insertion or selection replacement.
+2. Passively observe destination application, element, selection, insertion point, burst markers, and caret geometry without redirecting input.
+3. Emit bounded writing-burst updates from TextEdit and one browser input while leaving focus and text in the destination.
+4. Implement the initial 150 ms debounce, with immediate punctuation, Return, and 80-character window triggers.
+5. Replace only the tracked burst range after an explicit candidate selection.
 6. Add simulated paste fallback that preserves and restores the previous clipboard.
 7. Collect bounded accessible window text from supported apps, rank snippets locally, and expose only bounded context records to the orchestration layer.
 8. Validate cancellation, unchanged-input behavior, candidate commit, wrong-field prevention, secure-field avoidance, and context toggle behavior across TextEdit, Notes, and the chosen browser.
@@ -142,7 +142,7 @@ docs/
 ### Workstream 4: Tauri composition UI, learning, and demo harness
 
 1. Build the Tauri menu-bar shell with enabled state, context toggle, learning pause/reset, profile selection, settings access, and existing-text shortcut.
-2. Implement the candidate bar with up to five ranked, numbered changed suggestions, no candidate when all suggestions equal the input, loading state, unavailable state, and cancel behavior.
+2. Render the shared candidate-only result in a numbered bar with loading, unavailable, and cancel states.
 3. Wire fixture-backed candidate rendering before the live inference sidecar is ready.
 4. Store compact local labeled examples from confirmed candidates, stable dismissed suggestions, post-commit corrections, and repeated personal patterns, then package only selected examples for Freesolo profile training.
 5. Build the local pattern dictionary for immediate personalization before adapter training has enough examples.

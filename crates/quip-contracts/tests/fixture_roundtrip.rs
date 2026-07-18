@@ -7,8 +7,7 @@ use quip_contracts::{FixtureFile, PredictionResult};
 fn load_raw() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/fixtures/phase-0-examples.json");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 /// serde_json::Value treats 512 and 512.0 as unequal; the wire format does
@@ -65,4 +64,21 @@ fn fixture_results_satisfy_invariants() {
             exchange.case_id
         );
     }
+
+    let candidate_counts: Vec<usize> = typed
+        .prediction_exchanges
+        .iter()
+        .filter_map(|exchange| match &exchange.result {
+            PredictionResult::Ok { candidates, .. } => Some(candidates.len()),
+            PredictionResult::Error { .. } => None,
+        })
+        .collect();
+    assert!(
+        candidate_counts.contains(&0),
+        "fixtures must prove zero candidates"
+    );
+    assert!(
+        candidate_counts.contains(&5),
+        "fixtures must prove five candidates"
+    );
 }

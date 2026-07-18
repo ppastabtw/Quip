@@ -40,7 +40,7 @@ MODEL_OPTIONS = [
 MAX_REQUEST_BYTES = 32_768
 MAX_DRAFT_CHARS = 4_000
 MAX_SYSTEM_PROMPT_CHARS = 8_000
-MAX_SUGGESTIONS = 5
+COMPLETION_COUNT = 5
 MAX_SEED = 2_147_483_647
 
 
@@ -95,9 +95,6 @@ def validate_request(payload: Any) -> tuple[str, dict[str, Any], dict[str, Any]]
         "system_prompt": system_prompt,
         "temperature": float(_number(payload, "temperature", 0.7, 0.0, 2.0)),
         "max_tokens": int(_number(payload, "max_tokens", 128, 16, 512, integer=True)),
-        "suggestion_count": int(
-            _number(payload, "suggestion_count", 3, 1, MAX_SUGGESTIONS, integer=True)
-        ),
     }
     return model, model_input, settings
 
@@ -203,7 +200,6 @@ def _run_suggestion(
         "index": index,
         "latency_ms": latency_ms,
         "suggestion": prediction.suggestion,
-        "changed": prediction.suggestion != model_input["text"],
         "raw": raw,
         "usage": {
             "prompt_tokens": usage.get("prompt_tokens"),
@@ -251,10 +247,10 @@ def run_prediction(payload: Any) -> dict[str, Any]:
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     started = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=settings["suggestion_count"]) as pool:
+    with ThreadPoolExecutor(max_workers=COMPLETION_COUNT) as pool:
         futures = [
             pool.submit(_run_suggestion, model, model_input, settings, headers, index)
-            for index in range(1, settings["suggestion_count"] + 1)
+            for index in range(1, COMPLETION_COUNT + 1)
         ]
         completions = [future.result() for future in futures]
 
@@ -269,7 +265,6 @@ def run_prediction(payload: Any) -> dict[str, Any]:
             "system_prompt": settings["system_prompt"],
             "temperature": settings["temperature"],
             "max_tokens": settings["max_tokens"],
-            "suggestion_count": settings["suggestion_count"],
         },
         "suggestions": suggestions,
     }

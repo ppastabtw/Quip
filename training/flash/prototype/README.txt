@@ -2,7 +2,7 @@ Quip model playground
 
 This is a local-only browser surface for probing a catalog base model or
 deployed Flash run alias through managed serving. It exposes the system prompt,
-temperature, max tokens, and completion count. A run requests up to five
+temperature and max tokens. A run requests exactly five
 separate completions using the single-suggestion JSON contract. Exact draft
 outputs are skipped. Identical changed strings are grouped, then unique
 candidates are ranked by vote count and earliest completion index. The page

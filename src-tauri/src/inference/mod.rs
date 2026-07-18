@@ -3,13 +3,9 @@
 //! The deterministic [`FixtureBackend`] answers from the shared Phase 0
 //! fixtures plus the demo corpus, and applies personal-pattern substitution
 //! for `global_plus_personal` so two profiles diverge before any model
-//! exists. Live mode keeps one Workstream 2 sidecar child alive and exchanges
-//! newline-delimited JSON commands over stdin/stdout. Every result is
-//! schema-validated and counted.
-
-mod sidecar_client;
-
-pub use sidecar_client::SidecarClient;
+//! exists. The live sidecar client is a stub that reports an explicit error
+//! until Workstream 2's sidecar lands (transport to be confirmed; the
+//! `predict` seam isolates it). Every result is schema-validated and counted.
 
 use quip_contracts::{
     Backend, ContextSnippet, ErrorInfo, FixtureFile, HealthStatus, LoadedArtifacts, ModelVariant,
@@ -69,16 +65,15 @@ impl FixtureBackend {
     pub fn new() -> Self {
         let fixtures: FixtureFile =
             serde_json::from_str(PHASE0_FIXTURES).expect("phase 0 fixtures must parse");
-        let corpus: CorpusFile =
-            serde_json::from_str(DEMO_CORPUS).expect("demo corpus must parse");
+        let corpus: CorpusFile = serde_json::from_str(DEMO_CORPUS).expect("demo corpus must parse");
 
         // Successful fixture exchanges become lookup entries; the error
         // fixture is reachable through `simulate_failure` instead. Corpus
         // entries come first so they can override a fixture draft with a
         // richer candidate list (lookup takes the first match).
         let mut entries = corpus.entries;
-        entries.extend(fixtures.prediction_exchanges.iter().filter_map(
-            |exchange| match &exchange.result {
+        entries.extend(fixtures.prediction_exchanges.iter().filter_map(|exchange| {
+            match &exchange.result {
                 PredictionResult::Ok {
                     candidates,
                     latency_ms,
@@ -92,8 +87,8 @@ impl FixtureBackend {
                     latency_ms: *latency_ms,
                 }),
                 PredictionResult::Error { .. } => None,
-            },
-        ));
+            }
+        }));
 
         Self {
             entries,
@@ -226,7 +221,11 @@ fn personal_substitute(request: &PredictionRequest) -> Option<Vec<String>> {
             let key = token
                 .trim_matches(|c: char| c.is_ascii_punctuation())
                 .to_lowercase();
-            match request.personal_patterns.iter().find(|p| p.shorthand == key) {
+            match request
+                .personal_patterns
+                .iter()
+                .find(|p| p.shorthand == key)
+            {
                 Some(pattern) => {
                     replaced = true;
                     token.to_lowercase().replace(&key, &pattern.expansion)
@@ -259,7 +258,7 @@ fn normalize_draft(draft: &str) -> String {
         .to_lowercase()
 }
 
-/// Capitalizes the first letter and appends a period — the deterministic
+/// Capitalizes the first letter and appends a period. This is the deterministic
 /// stand-in for a base model that edits when it should keep.
 fn base_overedit(draft: &str) -> String {
     let mut text = draft.trim().to_string();
@@ -271,6 +270,36 @@ fn base_overedit(draft: &str) -> String {
         text.push('.');
     }
     text
+}
+
+/// The live-mode stand-in until Workstream 2's sidecar exists.
+pub fn sidecar_predict_stub(request: &PredictionRequest) -> PredictionResult {
+    PredictionResult::Error {
+        request_id: request.request_id.clone(),
+        model_variant: request.model_variant,
+        error: ErrorInfo {
+            code: "sidecar_unavailable".to_string(),
+            message: "The local inference sidecar is not running.".to_string(),
+            retryable: true,
+        },
+    }
+}
+
+pub fn sidecar_health_stub() -> SidecarHealth {
+    SidecarHealth {
+        status: HealthStatus::Unavailable,
+        fixture_available: false,
+        loaded: LoadedArtifacts {
+            base: false,
+            global_adapter: false,
+            user_adapter: false,
+        },
+        error: Some(ErrorInfo {
+            code: "sidecar_unavailable".to_string(),
+            message: "The local inference sidecar is not running.".to_string(),
+            retryable: true,
+        }),
+    }
 }
 
 /// Demo-visible counters over every prediction the app has run.
@@ -332,10 +361,18 @@ mod tests {
     #[test]
     fn fixture_lookup_distinguishes_variants() {
         let backend = FixtureBackend::new();
-        let base = backend.predict(&request("open usr/bin and q3_finl_v2.pdf", ModelVariant::Base));
-        let global =
-            backend.predict(&request("open usr/bin and q3_finl_v2.pdf", ModelVariant::Global));
-        assert_eq!(candidates(&base), vec!["Open /usr/bin and q3_final_v2.pdf."]);
+        let base = backend.predict(&request(
+            "open usr/bin and q3_finl_v2.pdf",
+            ModelVariant::Base,
+        ));
+        let global = backend.predict(&request(
+            "open usr/bin and q3_finl_v2.pdf",
+            ModelVariant::Global,
+        ));
+        assert_eq!(
+            candidates(&base),
+            vec!["Open /usr/bin and q3_final_v2.pdf."]
+        );
         assert!(candidates(&global).is_empty());
     }
 
@@ -430,7 +467,7 @@ mod tests {
             request_id: "req_bad".into(),
             model_variant: ModelVariant::Global,
             backend: Backend::Fixture,
-            candidates: (0..6).map(|index| format!("candidate {index}")).collect(),
+            candidates: vec!["duplicate".into(), "duplicate".into()],
             latency_ms: 1,
         };
         assert!(!metrics.record(&invalid));

@@ -136,7 +136,8 @@
             "candidates": {
               "type": "array",
               "maxItems": 5,
-              "items": { "type": "string" }
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
             },
             "latency_ms": { "type": "number", "minimum": 0 }
           }
