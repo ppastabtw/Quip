@@ -7,4 +7,5 @@
 .workspace/**/*
 .claude/
 .codex/
+agent-hooks/
 .env
