@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Freesolo Flash in WSL"
+  short_description: "Operate this project Freesolo lane from Windows"
+  default_prompt: "Use $run-freesolo-flash-wsl to validate and run the project Freesolo training workflow from Windows."
