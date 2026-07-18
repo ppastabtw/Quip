@@ -16,6 +16,7 @@ import {
 import type { PredictionResult, Rect, SidecarHealth, Trigger } from "./contracts";
 
 const healthStatusEl = byId<HTMLSpanElement>("health_status");
+const backendModeEl = byId<HTMLSpanElement>("backend_mode");
 const healthLoadedEl = byId<HTMLSpanElement>("health_loaded");
 const metricsEl = byId<HTMLSpanElement>("metrics");
 const failureEl = byId<HTMLInputElement>("simulate_failure");
@@ -163,6 +164,15 @@ function applyReplacement(text: string) {
 
 // ---- health, metrics, corpus comparison ----
 
+// Read-only confirmation of which backend is actually answering — the
+// live/base combination is normally forced by run-live-app.sh's env vars
+// rather than picked here, so this just proves the demo is really hitting
+// Qwen instead of quietly falling back to fixture data.
+function renderBackendMode(next: AppSettings) {
+  backendModeEl.textContent = `${next.backend_mode} · ${next.model_variant}`;
+  backendModeEl.className = "pill " + (next.backend_mode === "live" ? "ok" : "muted");
+}
+
 function renderHealth(health: SidecarHealth) {
   healthStatusEl.textContent = health.status;
   healthStatusEl.className =
@@ -257,6 +267,7 @@ byId<HTMLButtonElement>("fire_secure").addEventListener("click", () => {
 void events.onMetrics(renderMetrics);
 void events.onSettings((next) => {
   settings = next;
+  renderBackendMode(next);
 });
 void events.onSnapshot((snapshot) => {
   lastStateEl.textContent = `composition: ${snapshot.phase}`;
@@ -264,6 +275,9 @@ void events.onSnapshot((snapshot) => {
   suggesting =
     snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
   selectedIndex = snapshot.phase === "suggesting" ? snapshot.selected : 0;
+  if (snapshot.phase === "suggesting" && snapshot.backend) {
+    lastStateEl.textContent += ` (${snapshot.backend} · ${snapshot.latency_ms} ms)`;
+  }
 });
 void events.onCommitted((outcome) => {
   lastCommitEl.textContent = `last commit → ${outcome.destination_id}: "${outcome.text}"`;
@@ -274,6 +288,7 @@ void events.onCommitted((outcome) => {
 
 void (async () => {
   settings = await api.getSettings();
+  renderBackendMode(settings);
   const cases = await api.listCorpus();
   for (const demoCase of cases) {
     const button = el("button", undefined, demoCase.title);
