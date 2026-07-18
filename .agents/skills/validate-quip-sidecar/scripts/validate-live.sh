@@ -9,6 +9,8 @@ cd "$repo_root"
 mistralrs_bin=${MISTRALRS_BIN:-"$HOME/.mistralrs/mistralrs"}
 server_log=$(mktemp "${TMPDIR:-/tmp}/quip-live-model.XXXXXX")
 responses=$(mktemp "${TMPDIR:-/tmp}/quip-live-responses.XXXXXX")
+benchmark_json=$(mktemp "${TMPDIR:-/tmp}/quip-live-benchmark.XXXXXX")
+benchmark_html=$(mktemp "${TMPDIR:-/tmp}/quip-live-profile.XXXXXX")
 server_pid=
 app_data=
 
@@ -17,7 +19,7 @@ cleanup() {
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
-  rm -f "$server_log" "$responses"
+  rm -f "$server_log" "$responses" "$benchmark_json" "$benchmark_html"
   if [ -n "$app_data" ]; then
     rm -rf -- "$app_data"
   fi
@@ -55,6 +57,7 @@ fi
 cargo build -p quip-inference-sidecar
 sidecar=target/debug/quip-inference-sidecar
 phrase_tester=target/debug/quip-phrase-tester
+latency_tester=target/debug/quip-latency-tester
 
 {
   printf '%s\n' '{"operation":"health"}'
@@ -112,6 +115,53 @@ case "$phrase_output" in
     ;;
 esac
 printf '%s\n' "$phrase_output"
+
+"$latency_tester" --label "validation-qwen" --warmup 1 --runs 2 \
+  --phrase "cnt cm tmr" --html "$benchmark_html" --json >"$benchmark_json"
+python3 - "$benchmark_json" "$benchmark_html" <<'PY'
+import json
+import pathlib
+import sys
+
+report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+profile_html = pathlib.Path(sys.argv[2]).read_text()
+assert report["model_label"] == "validation-qwen", report
+assert report["warmup_runs"] == 1, report
+assert report["measured_runs"] == 2, report
+assert len(report["samples"]) == 2, report
+assert all("phrase" not in sample and "candidates" not in sample for sample in report["samples"]), report
+assert all(sample["timing"]["backend_total_us"] > 0 for sample in report["samples"]), report
+assert all(
+    completion["tokens"]["completion_tokens"] > 0
+    for sample in report["samples"]
+    for completion in sample["timing"]["completions"]
+), report
+assert report["token_summary"]["mean_completion_tokens"] > 0, report
+assert report["token_summary"]["mean_server_ms_per_output_token"] > 0, report
+assert report["token_summary"]["mean_completion_ms_per_token"] > 0, report
+assert report["token_summary"]["mean_prompt_prefill_ms"] > 0, report
+assert report["token_summary"]["mean_completion_decode_ms"] > 0, report
+assert "validation-qwen" in profile_html, profile_html[:500]
+assert "Latency decomposition" in profile_html, profile_html[:500]
+stages = {(item["scope"], item["stage"]): item for item in report["summary"]}
+for key in [
+    ("inference", "sidecar_round_trip"),
+    ("inference", "backend_total"),
+    ("inference", "completion_batch"),
+    ("inference", "normalization_ranking"),
+    ("inference", "sidecar_protocol_process"),
+    ("completion", "server_wait_ttfb"),
+    ("completion", "response_decode"),
+]:
+    assert key in stages, (key, stages)
+assert stages[("inference", "backend_total")]["median_ms"] > 0, stages
+assert stages[("completion", "server_wait_ttfb")]["median_ms"] > 0, stages
+print(
+    "Live latency benchmark: "
+    f"backend median {stages[('inference', 'backend_total')]['median_ms']:.3f} ms; "
+    f"TTFB median {stages[('completion', 'server_wait_ttfb')]['median_ms']:.3f} ms"
+)
+PY
 
 cargo build -p quip
 app_data=$(mktemp -d "${TMPDIR:-/tmp}/quip-live-app.XXXXXX")

@@ -10,6 +10,7 @@ cargo build -p quip-inference-sidecar
 
 sidecar="target/debug/quip-inference-sidecar"
 phrase_tester="target/debug/quip-phrase-tester"
+latency_tester="target/debug/quip-latency-tester"
 responses=$(mktemp "${TMPDIR:-/tmp}/quip-sidecar-responses.XXXXXX")
 trap 'rm -f "$responses"' EXIT HUP INT TERM
 
@@ -67,5 +68,15 @@ case "$phrase_output" in
     ;;
 esac
 printf '%s\n' "$phrase_output"
+
+latency_help=$("$latency_tester" --help)
+case "$latency_help" in
+  *"Quip latency tester"*"--model-id ID"*"--runs N"*"--json"*"--html PATH"*) ;;
+  *)
+    printf '%s\n' "$latency_help" >&2
+    printf '%s\n' 'Latency tester controls failed' >&2
+    exit 1
+    ;;
+esac
 
 printf '%s\n' 'Quip sidecar integration passed'
