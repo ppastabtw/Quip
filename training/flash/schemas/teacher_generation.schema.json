@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["drafts"],
+  "additionalProperties": false,
+  "properties": {
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target_id", "draft"],
+        "additionalProperties": false,
+        "properties": {
+          "target_id": {"type": "string", "minLength": 1},
+          "draft": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

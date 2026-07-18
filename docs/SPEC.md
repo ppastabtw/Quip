@@ -6,14 +6,15 @@ Quip is a fast, local macOS composition layer for compressed, misspelled, or pho
 
 The Freesolo-trained model should beat base Qwen by decoding noisy text while making fewer unnecessary edits. The live comparison reports unnecessary edit rate, protected-token preservation, shorthand and phonetic decoding, and latency.
 
-### Locality contract
+### Prototype data posture
 
-- All inference runs on the Mac and remains available offline after model installation.
-- The Qwen base, global Freesolo adapter, per-user adapters, and personal training records stay local.
-- Temporary drafts, selections, prompts, context, and outputs never go to a remote inference service.
-- Freesolo uses a prepared project dataset to train and export the global adapter. Managed endpoints are limited to training inspection and debugging.
-- Per-user training runs locally from confirmed usage patterns.
-- Open-window context is processed in memory and is not uploaded or retained by default.
+- The hackathon validates behavior and technical feasibility; it does not claim a production-grade privacy architecture.
+- Inference targets the Mac and remains available offline after model installation.
+- The Windows model playground uses Freesolo managed serving only for training iteration and checkpoint inspection. This remote prototype path does not change the actual Quip product, which runs inference locally on the Mac.
+- Freesolo trains both the global adapter and separate per-user adapters. User-confirmed interactions may become a substantial source of training data.
+- Quip turns confirmed interactions into a deduplicated profile dataset, submits a profile run, then downloads the adapter for local inference.
+- Prefer excluding ambient open-window context from profile training unless a confirmed labeled example needs it. This is a prototype default, not a blocking requirement.
+- Never use credentials or obviously sensitive personal data in the hackathon datasets or demo.
 
 ## Experience
 
@@ -50,19 +51,15 @@ A global shortcut can run a prediction over selected existing text. The same can
 
 ### Model contract
 
-The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. SFT learns the JSON contract from gold outputs because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`, and the local runtime enforces the same schema at inference.
-
-Valid outputs are:
+The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. Each completion returns exactly one full-input suggestion:
 
 ```json
-{ "action": "keep", "candidates": [] }
+{ "suggestion": "best full text" }
 ```
 
-```json
-{ "action": "replace", "candidates": ["best candidate"] }
-```
+SFT learns this JSON contract from gold outputs because Flash rejects `structured_outputs` for SFT. GRPO constrains sampled rollouts with `train.structured_outputs`, and the local runtime enforces the same schema at inference.
 
-`action` is exactly `keep` or `replace`. `keep` has no candidates; `replace` has one to three, ordered best first. Each candidate replaces the full bounded input. The model never returns the typed draft as a candidate; keeping the typed text is the do-nothing default in the UI.
+The inference layer removes exact-draft suggestions. If no changed suggestion remains, it returns `keep` with no candidates. Otherwise it returns `replace` with one to three deduplicated full-input replacements, ordered best first. The model never returns the typed draft as a candidate; keeping the typed text is the do-nothing default in the UI. The shared `prediction_result` wire format remains defined by `docs/phase-0.schema.json`.
 
 Protected content includes paths, filenames, names, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`.
 
@@ -74,14 +71,14 @@ The hackathon build uses Accessibility text, not screenshots or OCR. It never re
 
 ### Per-user learning
 
-Every user starts with the frozen global Freesolo adapter and receives a separate local LoRA adapter. The personal dataset records only useful labels from:
+Every user starts with the frozen global Freesolo adapter and receives a separate LoRA adapter trained through Freesolo and exported back to the Mac. The personal dataset records only useful labels from:
 
 - confirmed candidates
 - dismissed suggestions when the surrounding text remains unchanged, which become `keep` examples
 - corrections made immediately after a Quip commit
 - repeated personal abbreviations, names, vocabulary, and expansions
 
-Quip does not store every keystroke. It appends compact labeled interactions, deduplicates repeated patterns, and periodically refreshes the user adapter while idle. Before enough examples exist for training, a compact local pattern dictionary provides immediate personalization.
+Quip does not treat every keystroke as a training label. It collects useful confirmed interactions, deduplicates repeated patterns, and can build a substantial per-user dataset for Freesolo. Prefer excluding ambient window text unless it is needed for a confirmed labeled example. Before enough examples exist for training, a compact local pattern dictionary provides immediate personalization.
 
 If the runtime cannot stack adapters, Quip merges the global adapter into the base once and loads one user adapter over it. Users can pause learning, inspect stored patterns, or reset their local adapter and records.
 
@@ -114,7 +111,7 @@ The held-out evaluation remains distinct from the optimized reward and reports c
 
 Export the chosen global adapter or checkpoint immediately to a team-owned Hugging Face repository with `flash export --adapter-id <run-id> --repository <owner>/<repo>`. Undeployed, inactive run artifacts may be garbage-collected after about seven days. Managed deployment is optional for inspection and is not part of Quip's local product path.
 
-Each user's separate adapter is trained locally, and both adapters are applied by the local runtime. The Flash catalog includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters.
+Each user's separate adapter is trained through a private Freesolo run, exported to the Mac, and applied by the local runtime alongside the global adapter. The Flash catalog includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters.
 
 ## Application
 
@@ -130,7 +127,7 @@ The judged build targets TextEdit, Notes, and standard Chrome or Safari inputs. 
 - Use Accessibility to recognize editable destinations, capture and restore destination state, read selections and bounded window text, observe changes, place the box, and commit confirmed text.
 - Use `mistral.rs` with Metal as the leading local inference runtime because it supports Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and a Rust SDK. Start with a bundled loopback sidecar to isolate model lifecycle failures; direct SDK integration is a later optimization.
 - If `mistral.rs` cannot load the exported adapter, use another replaceable local sidecar rather than remote inference.
-- A separate bundled local training sidecar may produce per-user LoRA adapters if the Rust inference runtime cannot train them. It receives only the local labeled dataset and writes only the user adapter.
+- A profile-training client packages compact confirmed examples, submits a private Freesolo run, and downloads the exported per-user adapter. It never provides remote inference.
 
 Prove global adapter loading and per-user adapter composition before coupling inference into the Tauri application.
 
@@ -150,8 +147,8 @@ Prefer the M3 Pro for its additional memory and sustained performance. Use the f
 
 The trained model and its evaluation remain the central technical contribution. Four builders split into:
 
-1. Flash environment, dataset, training, and checkpoint comparison.
-2. Local inference, per-user training, adapter composition, and packaging.
+1. Flash environment, global and per-user training, evaluation, and checkpoint comparison.
+2. Local inference, adapter composition, and packaging.
 3. Keyboard capture, Accessibility, destination commits, and window context.
 4. Tauri box, personal pattern storage, demo harness, and integration.
 
@@ -171,4 +168,4 @@ The build is complete when it can:
 
 The comparison runs live from a deterministic corpus rather than a recording. The presentation also shows the Flash environment, training configuration, checkpoint evaluation, and exported adapter.
 
-Automatic per-user retraining, selection-based replacement, broader application compatibility, and packaging polish are stretch goals. The judged build may use a pre-trained local user adapter produced from a recorded local interaction dataset.
+Automatic per-user retraining, selection-based replacement, broader application compatibility, and packaging polish are stretch goals. The judged build may use two profile adapters trained through Freesolo from prepared compact interaction datasets.

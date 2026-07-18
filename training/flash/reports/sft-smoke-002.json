@@ -1,0 +1,59 @@
+{
+  "base_model": "Qwen/Qwen3.5-2B",
+  "environment": "ariobarin/quip",
+  "run_id": "flash-1784391624-c26c060c",
+  "algorithm": "sft",
+  "steps": 10,
+  "cost_usd": 0.008385702424242423,
+  "decision": "recommend_step_10_for_handoff",
+  "final_checkpoint_selected": false,
+  "reason": "Step 10 beats the current base and step 5 while preserving schema validity, protected tokens, and edit restraint.",
+  "deployments_remaining": 0,
+  "evaluations": [
+    {
+      "model": "base",
+      "overall_success": 0.6875,
+      "schema_validity": 1.0,
+      "change_accuracy": 1.0,
+      "decode_success": 0.6875,
+      "protected_token_preservation": 1.0,
+      "unnecessary_edit_rate": 0.0,
+      "mean_latency_ms": 643.81
+    },
+    {
+      "checkpoint": 5,
+      "overall_success": 0.625,
+      "schema_validity": 1.0,
+      "change_accuracy": 0.75,
+      "decode_success": 0.625,
+      "protected_token_preservation": 1.0,
+      "unnecessary_edit_rate": 0.0,
+      "mean_latency_ms": 835.56
+    },
+    {
+      "checkpoint": 10,
+      "overall_success": 0.875,
+      "schema_validity": 1.0,
+      "change_accuracy": 1.0,
+      "decode_success": 0.875,
+      "protected_token_preservation": 1.0,
+      "unnecessary_edit_rate": 0.0,
+      "mean_latency_ms": 913.0
+    }
+  ],
+  "remaining_step_10_failures": [
+    {
+      "example_id": "eval_001",
+      "category": "shorthand",
+      "expected": "Won't be able to join.",
+      "predicted": "want to be able to join"
+    },
+    {
+      "example_id": "eval_008",
+      "category": "phonetic",
+      "expected": "I should have known.",
+      "predicted": "I should know."
+    }
+  ],
+  "next_action": "On a new branch, evaluate GLM-5.2 before comparing warm-start OPD with off-policy GLM distillation."
+}

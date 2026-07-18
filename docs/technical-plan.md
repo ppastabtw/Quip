@@ -11,21 +11,23 @@ Source: `docs/SPEC.md`
 - **local inference**: `mistral.rs` with Metal as the leading runtime for Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and Rust-facing integration.
 - **model family**: start with Qwen3.5-2B at 4-bit; benchmark Qwen3.5-4B only after 2B establishes a working latency and quality baseline.
 - **global training**: Flash `EnvironmentSingleTurn` for dataset construction, SFT, optional GRPO, checkpoint evaluation, inspected rollouts, and global LoRA export.
-- **personalization**: local per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
-- **storage**: local files or an embedded local store for settings, personal examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database in the judged build.
-- **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; avoid uploading prompts, window context, drafts, or personal records.
+- **personalization**: Freesolo-trained per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
+- **storage**: local files or an embedded local store for settings, confirmed examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database is required for the judged build.
+- **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; Freesolo profile runs may use a substantial deduplicated set of confirmed interactions.
 
 ## Key decisions and rejected alternatives
 
 **compose before commit**: Quip captures the writing burst in its own temporary box and commits only after explicit confirmation. Direct edits to destination fields were rejected because they make cancellation, protected-token preservation, and trust harder to demonstrate.
 
-**local-first inference and learning**: The base model, global adapter, user adapter, prompts, drafts, context, and personal records stay on the Mac. Remote inference was rejected because it violates the product's privacy claim and weakens the sponsor-relevant training story.
+**local inference with Freesolo training**: The base model and exported adapters run on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or deduplicated confirmed profile examples. This is a hackathon validation target, not a production privacy guarantee.
+
+**managed Windows playground, local Quip inference**: The disposable Windows model playground calls Freesolo managed serving so the training owner can probe base models and deployed checkpoints without building a second local runtime. It is an evaluation tool only. The actual Quip application does not use this remote inference path; it loads the exported model and adapters locally on macOS.
 
 **Accessibility text over screenshots or OCR**: Window context comes from bounded accessible text snippets ranked locally by focus, recency, and relevance. Screenshots and OCR were rejected for the hackathon build because they increase privacy risk, implementation complexity, and demo fragility.
 
 **one prediction per burst**: Prediction runs after punctuation, Return, or a short idle pause instead of on every character. Per-keystroke inference was rejected because it increases latency pressure and makes local model comparison noisier.
 
-**guided JSON output contract**: The model emits either `keep` with no candidates or `replace` with one to three full-input candidates. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
+**guided JSON model contract**: Each model completion emits exactly one full-input `suggestion`. The inference layer removes exact-draft completions. It returns `keep` when none remain, or deduplicates and orders at most three changed suggestions for `replace`. This converts the model output to the shared `action` and `candidates` wire format. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
 
 **exact draft is always a commit option**: The application adds the unchanged draft as the first option even when the model recommends `keep`. Auto-committing `keep` was rejected because it bypasses the confirmation contract.
 
@@ -33,7 +35,7 @@ Source: `docs/SPEC.md`
 
 **adapter composition with merge fallback**: The preferred runtime loads the Qwen base, frozen global Freesolo adapter, and separate user adapter together. If stacking fails, merge the global adapter into the base once and load a single user adapter over it.
 
-**local training sidecar if needed**: Per-user LoRA training can run in a separate bundled local sidecar if the Rust inference runtime cannot train adapters. Managed training endpoints are limited to global adapter inspection/debugging and are rejected for personal data.
+**Freesolo profile runs**: Per-user LoRA training uses Freesolo so the sponsor technology is part of both global improvement and personalization. Confirmed interactions can provide much of the profile training data, and the exported adapter returns to local inference.
 
 **narrow judged app scope**: The demo targets TextEdit, Notes, and one standard browser input. Rich editors, terminals, PDFs, secure fields, canvas editors, unusual Electron controls, and universal macOS support are explicitly out of scope.
 
@@ -45,7 +47,7 @@ Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibil
 
 The UI always presents the exact draft plus any schema-valid candidates. On confirmation, the commit layer restores the original destination and inserts or replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
 
-The training path is separate from the app path. Flash owns the global dataset, SFT, optional GRPO, held-out evaluation, checkpoint inspection, and global adapter export. SFT learns the JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces the same schema. Local inference and personalization consume those artifacts without sending drafts, window context, or personal records to a remote inference service.
+The training path is separate from the inference path. Flash owns global and per-user adapter training, checkpoint inspection, evaluation, and export. SFT learns the single-suggestion JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces that model schema. The inference adapter converts model suggestions to the separate shared `prediction_result` schema. Profile runs use deduplicated confirmed interactions; excluding ambient context is preferred but not a blocking hackathon requirement.
 
 ## Module and folder structure
 
@@ -62,11 +64,10 @@ src-tauri/
     settings/           # context toggle, learning pause/reset, profile selection, demo controls
   sidecars/
     inference/          # local model runtime wrapper around mistral.rs or fallback runtime
-    training/           # optional local per-user adapter trainer
 src/
   ui/                   # Tauri webview composition box, settings, demo harness
 training/
-  flash/                # global dataset, reward/eval scripts, checkpoint comparison, adapter export notes
+  flash/                # global and profile datasets, reward/eval scripts, checkpoint comparison, adapter export notes
 artifacts/
   models/               # ignored local model/adapter paths and metadata, not committed binaries
 docs/
@@ -80,7 +81,7 @@ docs/
 
 **global plus user adapter composition**: Failure looks like personalization cannot run alongside the global Freesolo behavior, or user adapters overwrite the trained restraint. Roll back to a base model with the global adapter merged once and one user adapter loaded over it. De-risk with a small adapter-composition test harness using two intentionally different user profiles.
 
-**local per-user training**: Failure looks like adapter refresh is too slow, unstable, or unavailable on the target Macs. Roll back to the compact pattern dictionary plus a pre-trained local user adapter for the judged build. De-risk by benchmarking the local trainer separately on the M3 Pro and M4 Air before committing to automatic refresh.
+**managed per-user training**: Failure looks like a small profile dataset overfits, weakens restraint, or produces an adapter that cannot compose with the global adapter. Roll back to the compact pattern dictionary plus two prepared Freesolo-trained profile adapters for the judged build. De-risk with held-out profile examples and explicit global-plus-user composition tests.
 
 **accessibility destination preservation**: Failure looks like Quip loses the insertion point, commits into the wrong field, modifies text on cancel, or fails across TextEdit and browser inputs. Roll back to the narrowest known-good app/input pair and simulated paste fallback with clipboard restore. De-risk by building the destination capture/restore spike before the full Tauri UI.
 
@@ -98,7 +99,7 @@ docs/
 
 - `docs/SPEC.md` is the design source of truth in place of `plans/design.md`.
 - The technical plan artifact should live at `docs/technical-plan.md`, not `plans/technical-plan.md`.
-- The judged build optimizes for a live Hack the 6ix demo over general-purpose macOS compatibility.
+- The judged build optimizes for a live Quip demo over general-purpose macOS compatibility.
 - The team has four builders available and should work in parallel across model training, local inference, Accessibility, and Tauri/demo integration.
 - The primary demo machine is an M3 Pro with 18 GB unified memory, with an M4 MacBook Air with 16 GB as the compatibility target.
 - The app can require Accessibility permissions for the judged build.
@@ -123,6 +124,7 @@ docs/
 5. Warm-start GRPO with `init_from_adapter` only if SFT improves the task; omit LoRA rank and alpha, constrain rollouts with the Quip JSON schema, and use explicit `max_steps` and `save_at_steps`.
 6. Run Flash dry-run and cost-estimation checks before training submission.
 7. Export the chosen adapter immediately to a team-owned Hugging Face repository and document checkpoint, rank, quantization target, held-out metrics, and inspected failure cases.
+8. Add a private per-user Freesolo run path from compact confirmed examples, then export and evaluate two distinct profile adapters.
 
 ### Workstream 2: local inference, adapters, and packaging
 
@@ -131,7 +133,7 @@ docs/
 3. Load the global Freesolo adapter exported by the training workstream; if it fails, swap in a replaceable local runtime behind the same sidecar contract.
 4. Test global plus per-user adapter composition with two intentionally different user profiles; if stacking fails, merge the global adapter into the base and load one user adapter.
 5. Benchmark Qwen3.5-2B on the M3 Pro and M4 Air; test Qwen3.5-4B only if quality requires it and latency remains interactive.
-6. Prototype local per-user training or prepare pre-trained local user adapters from recorded local examples if idle-time refresh is not viable.
+6. Load Freesolo-trained per-user adapters from two prepared profiles and verify that each changes only its intended patterns.
 7. Package model and adapter paths as local artifacts with health checks, missing-artifact errors, and no committed model binaries.
 
 ### Workstream 3: Accessibility capture, commit, and context
@@ -150,7 +152,7 @@ docs/
 1. Build the Tauri menu-bar shell with enabled state, context toggle, learning pause/reset, profile selection, settings access, and existing-text shortcut.
 2. Implement the composition box with stable candidate layout, exact draft first, up to three model candidates, loading state, unavailable state, and cancel behavior.
 3. Wire fixture-backed candidate rendering before the live inference sidecar is ready.
-4. Store compact local labeled examples from confirmed candidates, stable dismissed suggestions, post-commit corrections, and repeated personal patterns.
+4. Store compact local labeled examples from confirmed candidates, stable dismissed suggestions, post-commit corrections, and repeated personal patterns, then package only selected examples for Freesolo profile training.
 5. Build the local pattern dictionary for immediate personalization before adapter training has enough examples.
 6. Add demo comparison screens for base Qwen versus trained-model output, protected-token preservation, shorthand decoding, context resolution, personalization, and latency.
 7. Add local structured logs, sidecar health display, schema-validity counters, model/adapter presence checks, and a deterministic corpus fallback mode.
@@ -160,7 +162,7 @@ docs/
 1. Connect Workstream 3 destination snapshots and burst events to Workstream 4 composition state using the shared fixtures from Phase 0.
 2. Connect Workstream 4 prompt construction to Workstream 2 fixture mode, then to live sidecar inference once the adapter-loading proof passes.
 3. Connect Workstream 1 exported adapter artifacts to Workstream 2 packaging and verify the demo corpus uses real model outputs, not hand-written candidates.
-4. Connect Workstream 4 local examples and profile state to Workstream 2 personalization tests, then verify two local user profiles produce different candidates.
+4. Connect Workstream 4 selected profile examples to Workstream 1 Freesolo profile training, then connect the exported adapters to Workstream 2 and verify two local profiles produce different candidates.
 5. Run an end-to-end TextEdit flow: capture, predict, exact-draft option, candidate option, cancel, restore, commit, comparison, and local example capture.
 6. Run an end-to-end browser flow with bounded window context and protected-token examples.
 
