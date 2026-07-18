@@ -182,7 +182,18 @@ fn bound_context_snippets(
     snippets: Vec<ContextSnippet>,
     limit: ContextSnippetLimit,
 ) -> Vec<ContextSnippet> {
-    snippets.into_iter().take(limit.max_snippets).collect()
+    snippets
+        .into_iter()
+        .take(limit.max_snippets)
+        .map(|mut snippet| {
+            snippet.visible_text = snippet
+                .visible_text
+                .chars()
+                .take(limit.max_chars_per_snippet)
+                .collect();
+            snippet
+        })
+        .collect()
 }
 
 #[allow(dead_code)]
@@ -406,6 +417,27 @@ mod tests {
             )
             .len(),
             1
+        );
+    }
+
+    #[test]
+    fn context_snippet_limit_bounds_visible_text_chars() {
+        let snippets = vec![ContextSnippet {
+            app_name: "TextEdit".to_string(),
+            window_title: "Long".to_string(),
+            visible_text: "abcdef".to_string(),
+        }];
+
+        assert_eq!(
+            bound_context_snippets(
+                snippets,
+                ContextSnippetLimit {
+                    max_snippets: 1,
+                    max_chars_per_snippet: 3,
+                },
+            )[0]
+            .visible_text,
+            "abc"
         );
     }
 
