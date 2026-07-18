@@ -121,6 +121,13 @@ impl DestinationRegistry {
         self.snapshots.insert(destination_id.clone(), snapshot);
         destination_id
     }
+
+    fn release(&mut self, destination_id: &str) -> Result<(), AccessibilityError> {
+        self.snapshots
+            .remove(destination_id)
+            .map(|_| ())
+            .ok_or(AccessibilityError::DestinationNotFound)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +252,28 @@ mod tests {
         ));
 
         assert!(destination_id.starts_with("destination_"));
+    }
+
+    #[test]
+    fn destination_registry_release_removes_snapshot() {
+        let mut registry = DestinationRegistry::default();
+        let destination_id = registry.register(DestinationSnapshot::new_for_test(
+            "com.apple.TextEdit",
+            "TextEdit",
+            "AXTextArea",
+        ));
+
+        assert_eq!(registry.release(&destination_id), Ok(()));
+    }
+
+    #[test]
+    fn destination_registry_release_rejects_unknown_destination_id() {
+        let mut registry = DestinationRegistry::default();
+
+        assert_eq!(
+            registry.release("destination_missing"),
+            Err(AccessibilityError::DestinationNotFound)
+        );
     }
 
     #[test]
