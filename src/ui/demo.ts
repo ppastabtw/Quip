@@ -27,7 +27,9 @@ const playgroundEl = byId<HTMLTextAreaElement>("playground");
 
 // ---- playground: burst tracking, triggers, caret geometry ----
 
-const IDLE_TRIGGER_MS = 800;
+// Kept short because model inference latency (~400–700 ms) stacks on top of
+// the pause before the bar can appear.
+const IDLE_TRIGGER_MS = 400;
 const DRAFT_WINDOW_CHARS = 80;
 
 let settings: AppSettings | undefined;

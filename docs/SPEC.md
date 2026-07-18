@@ -31,7 +31,7 @@ Quip runs as a menu-bar app and, when enabled, augments typing in place the way 
 
 Keeping the typed text is always available by doing nothing; there is no separate exact-draft option because the draft is already committed keystroke-by-keystroke by the user themselves.
 
-Initial values are a 700 to 900 ms idle trigger and an 80-character draft window. Both require testing.
+Initial values are a 400 ms idle trigger and an 80-character draft window. The pause is kept short because model inference latency stacks on top of it before the bar can appear; both values require testing against real inference times.
 
 Quip covers both ordinary mistakes such as `instaed` and compressed phrases such as `cnt cm tmrw`, with a stricter confidence threshold for single-word corrections.
 

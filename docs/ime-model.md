@@ -10,8 +10,9 @@ already implemented, and what Workstream 3 must do differently.
 1. The user types in their own textbox (TextEdit, Notes, a browser input).
    Keystrokes pass through untouched — the destination always receives the
    text as typed.
-2. On a trigger (punctuation, Return, ~800 ms idle, 80-char window), Quip runs
-   one prediction on the burst.
+2. On a trigger (punctuation, Return, ~400 ms idle, 80-char window), Quip runs
+   one prediction on the burst. The idle pause is deliberately short because
+   inference latency stacks on top of it.
 3. `replace` result → a small non-focusable bar floats directly above the
    caret with up to three numbered candidates. `keep` result → **nothing
    appears**; the user is never interrupted.
