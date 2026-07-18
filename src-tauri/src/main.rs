@@ -13,17 +13,20 @@
 mod accessibility;
 mod commit;
 mod composition;
+mod debug_events;
 mod inference;
 mod learning;
 mod settings;
 
 use commit::CommitOutcome;
 use composition::{BurstInput, Engine, Snapshot};
+use debug_events::{DebugEventView, DebugSink};
 use inference::{DemoCase, Metrics, SideSpec};
 use quip_contracts::{
     CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
 use settings::{AppSettings, BackendMode};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -37,6 +40,8 @@ const BAR_HEIGHT: f64 = 44.0;
 const BAR_GAP: f64 = 10.0;
 
 struct EngineState(Mutex<Engine>);
+
+struct DebugState(Mutex<DebugSink>);
 
 struct TrayHandles {
     enabled: CheckMenuItem<Wry>,
@@ -75,6 +80,12 @@ fn bar_width(candidates: &[String], has_error: bool) -> f64 {
 /// focus from the textbox the user is typing in.
 fn sync_bar(app: &AppHandle, snapshot: &Snapshot) {
     let Some(bar) = app.get_webview_window("suggestions") else {
+        record_debug(
+            app,
+            "bar_hidden",
+            "suggestion window unavailable",
+            json!({ "phase": "missing_window" }),
+        );
         return;
     };
     match snapshot {
@@ -91,10 +102,29 @@ fn sync_bar(app: &AppHandle, snapshot: &Snapshot) {
                 (caret.y - BAR_HEIGHT - BAR_GAP).max(0.0),
             ));
             let _ = bar.show();
+            record_debug(
+                app,
+                "bar_shown",
+                format!("shown with {} candidates", candidates.len()),
+                json!({
+                    "phase": "suggesting",
+                    "candidate_count": candidates.len(),
+                    "x": (caret.x - 8.0).max(0.0),
+                    "y": (caret.y - BAR_HEIGHT - BAR_GAP).max(0.0),
+                    "width": width,
+                    "height": BAR_HEIGHT,
+                }),
+            );
         }
         Snapshot::Predicting { .. } => {} // nothing shown until there is something to say
         _ => {
             let _ = bar.hide();
+            record_debug(
+                app,
+                "bar_hidden",
+                "bar hidden",
+                json!({ "phase": snapshot_phase(snapshot) }),
+            );
         }
     }
 }
@@ -128,6 +158,68 @@ fn show_window(app: &AppHandle, label: &str) {
     }
 }
 
+fn record_debug(app: &AppHandle, event: &str, summary: impl Into<String>, payload: Value) {
+    let debug = app.state::<DebugState>();
+    if let Ok(mut sink) = debug.0.lock() {
+        sink.record(event, summary, payload);
+    };
+}
+
+fn snapshot_phase(snapshot: &Snapshot) -> &'static str {
+    match snapshot {
+        Snapshot::Idle => "idle",
+        Snapshot::Predicting { .. } => "predicting",
+        Snapshot::Suggesting { .. } => "suggesting",
+        Snapshot::Applied { .. } => "applied",
+        Snapshot::Unavailable { .. } => "unavailable",
+    }
+}
+
+fn record_prediction_result(app: &AppHandle, burst_id: &str, result: &PredictionResult) {
+    match result {
+        PredictionResult::Ok {
+            request_id,
+            model_variant,
+            backend,
+            candidates,
+            latency_ms,
+        } => record_debug(
+            app,
+            "prediction_result",
+            format!("prediction returned {} candidates", candidates.len()),
+            json!({
+                "status": "ok",
+                "request_id": request_id,
+                "burst_id": burst_id,
+                "model_variant": model_variant,
+                "backend": backend,
+                "candidate_count": candidates.len(),
+                "candidates": candidates,
+                "latency_ms": latency_ms,
+            }),
+        ),
+        PredictionResult::Error {
+            request_id,
+            model_variant,
+            error,
+        } => record_debug(
+            app,
+            "prediction_result",
+            format!("prediction error: {}", error.code),
+            json!({
+                "status": "error",
+                "request_id": request_id,
+                "burst_id": burst_id,
+                "model_variant": model_variant,
+                "candidate_count": 0,
+                "error_code": error.code,
+                "error_message": error.message,
+                "retryable": error.retryable,
+            }),
+        ),
+    }
+}
+
 #[tauri::command]
 fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
     accessibility::capture_focused_destination(&profile_id, trigger)
@@ -156,8 +248,19 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             engine.settings.window_context,
         )
     };
+    record_debug(
+        &app,
+        "capture_requested",
+        "manual focused capture requested",
+        json!({
+            "source": "manual_focused_capture",
+            "trigger": trigger,
+            "profile_id": profile_id,
+            "include_context": include_context,
+        }),
+    );
     let result = accessibility::capture_focused_destination(&profile_id, trigger);
-    run_capture_result(app, result, include_context).await;
+    run_capture_result(app, result, include_context, "manual_focused_capture").await;
 }
 
 /// One full burst: begin → inference → suggest. Fixture latency is replayed;
@@ -177,6 +280,21 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
             return;
         }
     };
+    record_debug(
+        &app,
+        "prediction_started",
+        format!("prediction started for {}", request.request_id),
+        json!({
+            "request_id": request.request_id,
+            "burst_id": request.request_id.strip_prefix("req_").unwrap_or(&request.request_id),
+            "mode": mode,
+            "model_variant": request.model_variant,
+            "context_count": request.context_snippets.len(),
+            "personal_pattern_count": request.personal_patterns.len(),
+            "draft_chars": request.draft.chars().count(),
+            "draft_text": request.draft,
+        }),
+    );
     emit_snapshot(&app, &snapshot);
     let burst_id = request
         .request_id
@@ -189,6 +307,7 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         let mut engine = engine.0.lock().unwrap();
         engine.predict(&request, mode)
     };
+    record_prediction_result(&app, &burst_id, &result);
     emit_metrics(&app);
 
     // Fixture latencies are replayed in real time so the bar's arrival is
@@ -212,7 +331,12 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     }
 }
 
-async fn run_capture_result(app: AppHandle, result: CaptureResult, include_context: bool) {
+async fn run_capture_result(
+    app: AppHandle,
+    result: CaptureResult,
+    include_context: bool,
+    source: &'static str,
+) {
     match result {
         CaptureResult::Ready {
             burst_id,
@@ -227,6 +351,22 @@ async fn run_capture_result(app: AppHandle, result: CaptureResult, include_conte
             } else {
                 Vec::new()
             };
+            record_debug(
+                &app,
+                "capture_ready",
+                format!("capture ready with {} chars", draft.chars().count()),
+                json!({
+                    "source": source,
+                    "trigger": trigger,
+                    "burst_id": burst_id,
+                    "destination_id": destination_id,
+                    "profile_id": profile_id,
+                    "draft_chars": draft.chars().count(),
+                    "draft_text": draft,
+                    "context_count": context_snippets.len(),
+                    "caret": caret,
+                }),
+            );
             run_burst_flow(
                 app,
                 BurstInput {
@@ -242,6 +382,15 @@ async fn run_capture_result(app: AppHandle, result: CaptureResult, include_conte
             .await;
         }
         CaptureResult::Unavailable { reason } => {
+            record_debug(
+                &app,
+                "capture_unavailable",
+                format!("capture unavailable: {reason}"),
+                json!({
+                    "source": source,
+                    "reason": reason,
+                }),
+            );
             emit_snapshot(&app, &Snapshot::Unavailable { reason });
         }
     }
@@ -251,11 +400,17 @@ async fn run_capture_result(app: AppHandle, result: CaptureResult, include_conte
 /// feeds it through the same burst flow as real Accessibility capture.
 #[tauri::command]
 async fn inject_capture(app: AppHandle, result: CaptureResult) {
-    run_capture_result(app, result, false).await;
+    run_capture_result(app, result, false, "capture_fixture").await;
 }
 
 #[tauri::command]
 fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, String> {
+    record_debug(
+        &app,
+        "candidate_selected",
+        format!("candidate {index} selected"),
+        json!({ "selected_index": index }),
+    );
     let selected = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
@@ -264,6 +419,16 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
     let (snapshot, outcome) = match selected {
         Ok(selected) => selected,
         Err(error) => {
+            record_debug(
+                &app,
+                "commit_failed",
+                format!("commit failed: {error}"),
+                json!({
+                    "selected_index": index,
+                    "success": false,
+                    "error": error,
+                }),
+            );
             emit_snapshot(
                 &app,
                 &Snapshot::Unavailable {
@@ -275,6 +440,18 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
     };
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
+    record_debug(
+        &app,
+        "commit_succeeded",
+        format!("committed to {}", outcome.destination_id),
+        json!({
+            "destination_id": outcome.destination_id,
+            "selected_index": index,
+            "success": true,
+            "committed_chars": outcome.text.chars().count(),
+            "committed_text": outcome.text,
+        }),
+    );
     emit_snapshot(&app, &Snapshot::Idle);
     Ok(outcome)
 }
@@ -376,6 +553,15 @@ fn get_health(app: AppHandle) -> SidecarHealth {
 #[tauri::command]
 fn get_metrics(app: AppHandle) -> Metrics {
     app.state::<EngineState>().0.lock().unwrap().metrics.clone()
+}
+
+#[tauri::command]
+fn get_debug_events(app: AppHandle, limit: usize) -> Vec<DebugEventView> {
+    app.state::<DebugState>()
+        .0
+        .lock()
+        .map(|sink| sink.recent(limit))
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -612,6 +798,23 @@ fn init_logging(log_dir: &PathBuf) {
         .init();
 }
 
+fn resolve_debug_dir(data_dir: &std::path::Path) -> PathBuf {
+    if let Ok(dir) = std::env::var("QUIP_DEBUG_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    if cfg!(debug_assertions) {
+        if let Ok(current_dir) = std::env::current_dir() {
+            let workspace = current_dir.join(".workspace");
+            if workspace.exists() {
+                return workspace.join("quip-debug");
+            }
+        }
+    }
+
+    data_dir.join("debug")
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -624,6 +827,18 @@ fn main() {
             };
             init_logging(&data_dir.join("logs"));
             tracing::info!(data_dir = %data_dir.display(), "quip starting");
+
+            let debug_dir = resolve_debug_dir(&data_dir);
+            let include_debug_text = std::env::var("QUIP_DEBUG_TEXT").as_deref() == Ok("1");
+            app.manage(DebugState(Mutex::new(DebugSink::new(
+                debug_dir.clone(),
+                include_debug_text,
+            ))));
+            tracing::info!(
+                debug_dir = %debug_dir.display(),
+                include_debug_text,
+                "debug sink initialized"
+            );
 
             let engine = Engine::new(&data_dir);
             let settings = engine.settings.clone();
@@ -721,6 +936,7 @@ fn main() {
             reset_profile,
             get_health,
             get_metrics,
+            get_debug_events,
             set_simulate_failure,
             list_corpus,
             run_comparison

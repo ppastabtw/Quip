@@ -97,6 +97,13 @@ export interface CommitOutcome {
   text: string;
 }
 
+export interface DebugEventView {
+  ts_ms: number;
+  event: string;
+  summary: string;
+  payload: Record<string, unknown>;
+}
+
 export const api = {
   captureActiveDestination: (trigger: "idle" | "punctuation" | "return" | "shortcut") =>
     invoke<void>("capture_active_destination", { trigger }),
@@ -113,6 +120,7 @@ export const api = {
   resetProfile: (profileId: string) => invoke<void>("reset_profile", { profileId }),
   getHealth: () => invoke<SidecarHealth>("get_health"),
   getMetrics: () => invoke<Metrics>("get_metrics"),
+  getDebugEvents: (limit: number) => invoke<DebugEventView[]>("get_debug_events", { limit }),
   setSimulateFailure: (on: boolean) => invoke<void>("set_simulate_failure", { on }),
   listCorpus: () => invoke<DemoCase[]>("list_corpus"),
   runComparison: (caseId: string) =>
