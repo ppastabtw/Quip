@@ -24,7 +24,7 @@ function render(snapshot: Snapshot) {
 
   snapshot.candidates.forEach((candidate, index) => {
     const chip = el("span", "chip");
-    if (index === snapshot.recommended) chip.classList.add("recommended");
+    if (index === snapshot.selected) chip.classList.add("recommended");
     chip.append(el("b", undefined, String(index + 1)), el("span", undefined, candidate));
     chip.addEventListener("click", () => void api.selectCandidate(index));
     barEl.append(chip);

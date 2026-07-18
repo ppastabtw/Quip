@@ -222,6 +222,18 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
 }
 
 #[tauri::command]
+fn move_selection(app: AppHandle, delta: i64) {
+    let snapshot = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.move_selection(delta)
+    };
+    if let Some(snapshot) = snapshot {
+        emit_snapshot(&app, &snapshot);
+    }
+}
+
+#[tauri::command]
 fn dismiss_suggestions(app: AppHandle) {
     let snapshot = {
         let engine = app.state::<EngineState>();
@@ -576,6 +588,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             inject_capture,
             select_candidate,
+            move_selection,
             dismiss_suggestions,
             get_composition_state,
             get_settings,

@@ -25,6 +25,8 @@ export type Snapshot =
       /** One to three model replacements; empty only in the error state. */
       candidates: string[];
       recommended: number;
+      /** Highlighted candidate; arrows move it, Tab accepts it. */
+      selected: number;
       caret: Rect;
       model_variant: ModelVariant;
       backend: Backend | null;
@@ -98,6 +100,7 @@ export interface CommitOutcome {
 export const api = {
   injectCapture: (result: CaptureResult) => invoke<void>("inject_capture", { result }),
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
+  moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),
   dismissSuggestions: () => invoke<void>("dismiss_suggestions"),
   getCompositionState: () => invoke<Snapshot>("get_composition_state"),
   getSettings: () => invoke<AppSettings>("get_settings"),

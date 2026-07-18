@@ -40,6 +40,9 @@ pub enum Snapshot {
         candidates: Vec<String>,
         /// Index into `candidates` of the model's best option.
         recommended: usize,
+        /// Index of the highlighted candidate (arrow keys move it; Tab
+        /// accepts it). Starts at `recommended`.
+        selected: usize,
         caret: Rect,
         model_variant: ModelVariant,
         backend: Option<Backend>,
@@ -88,6 +91,7 @@ enum State {
         burst: Burst,
         candidates: Vec<String>,
         recommended: usize,
+        selected: usize,
         backend: Option<Backend>,
         latency_ms: Option<u64>,
         error: Option<ErrorInfo>,
@@ -243,6 +247,7 @@ impl Engine {
             draft: burst.draft.clone(),
             candidates: candidates.clone(),
             recommended: 0,
+            selected: 0,
             caret: burst.caret,
             model_variant: burst.model_variant,
             backend,
@@ -253,11 +258,32 @@ impl Engine {
             burst,
             candidates,
             recommended: 0,
+            selected: 0,
             backend,
             latency_ms,
             error,
         };
         Some(snapshot)
+    }
+
+    /// Moves the highlight left/right through the candidates with
+    /// wrap-around (arrow keys). Returns None when no candidates are
+    /// visible.
+    pub fn move_selection(&mut self, delta: i64) -> Option<Snapshot> {
+        let State::Suggesting {
+            candidates,
+            selected,
+            ..
+        } = &mut self.state
+        else {
+            return None;
+        };
+        if candidates.is_empty() {
+            return None;
+        }
+        let len = candidates.len() as i64;
+        *selected = (*selected as i64 + delta).rem_euclid(len) as usize;
+        Some(self.current_snapshot())
     }
 
     /// Replaces the burst with the selected candidate. Only ever called with
@@ -346,6 +372,7 @@ impl Engine {
                 burst,
                 candidates,
                 recommended,
+                selected,
                 backend,
                 latency_ms,
                 error,
@@ -354,6 +381,7 @@ impl Engine {
                 draft: burst.draft.clone(),
                 candidates: candidates.clone(),
                 recommended: *recommended,
+                selected: *selected,
                 caret: burst.caret,
                 model_variant: burst.model_variant,
                 backend: *backend,
@@ -475,6 +503,30 @@ mod tests {
         assert!(raw.contains("\"confirmed_candidate\""));
         // Selecting twice is impossible: state returned to idle.
         assert!(engine.select(0).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn arrow_selection_wraps_and_tab_accepts_highlighted() {
+        let (mut engine, dir) = test_engine();
+        run_burst(&mut engine, "cnt cm tmrw"); // 3 candidates
+        let snap = engine.move_selection(1).unwrap();
+        let Snapshot::Suggesting { selected, .. } = snap else {
+            panic!("expected suggesting");
+        };
+        assert_eq!(selected, 1);
+        // Wraps around in both directions.
+        engine.move_selection(2).unwrap();
+        let Snapshot::Suggesting { selected, candidates, .. } = engine.current_snapshot() else {
+            panic!("expected suggesting");
+        };
+        assert_eq!(selected, 0);
+        // Accepting the highlighted candidate commits that exact text.
+        engine.move_selection(-1).unwrap();
+        let (_, outcome) = engine.select(candidates.len() - 1).unwrap();
+        assert_eq!(outcome.text, candidates[candidates.len() - 1]);
+        // No selection to move once idle.
+        assert!(engine.move_selection(1).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 

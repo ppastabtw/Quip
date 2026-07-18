@@ -38,7 +38,7 @@ let burstEnd = 0;
 let burstSeq = 0;
 let activeBurstId: string | undefined;
 let suggesting = false;
-let recommendedIndex = 0;
+let selectedIndex = 0;
 let idleTimer: number | undefined;
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
@@ -128,16 +128,23 @@ playgroundEl.addEventListener("input", () => {
 
 playgroundEl.addEventListener("keydown", (e) => {
   if (!suggesting) return;
-  // Pinyin-style keys while candidates are visible: digits pick, Tab accepts
-  // the highlighted candidate (Space stays a real character in English, so
-  // Tab plays Space's role), Escape keeps the literal text. Any other key
-  // types through and the bar simply refreshes with the growing burst.
+  // Pinyin-style keys while candidates are visible: digits pick, arrow keys
+  // move the highlight, Tab accepts the highlighted candidate (Space stays a
+  // real character in English, so Tab plays Space's role), Escape keeps the
+  // literal text. Any other key types through and the bar simply refreshes
+  // with the growing burst.
   if (e.key >= "1" && e.key <= "3") {
     e.preventDefault();
     void api.selectCandidate(Number(e.key) - 1);
+  } else if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    void api.moveSelection(-1);
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    void api.moveSelection(1);
   } else if (e.key === "Tab") {
     e.preventDefault();
-    void api.selectCandidate(recommendedIndex);
+    void api.selectCandidate(selectedIndex);
   } else if (e.key === "Escape") {
     e.preventDefault();
     endSession();
@@ -256,7 +263,7 @@ void events.onSnapshot((snapshot) => {
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
   suggesting =
     snapshot.phase === "suggesting" && snapshot.burst_id === activeBurstId;
-  recommendedIndex = snapshot.phase === "suggesting" ? snapshot.recommended : 0;
+  selectedIndex = snapshot.phase === "suggesting" ? snapshot.selected : 0;
 });
 void events.onCommitted((outcome) => {
   lastCommitEl.textContent = `last commit → ${outcome.destination_id}: "${outcome.text}"`;
