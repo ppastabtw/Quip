@@ -15,7 +15,7 @@ use axuielement::ax_attribute::attributes::{
 };
 use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
 use axuielement::AXUIElement;
-use quip_contracts::{CaptureResult, Trigger};
+use quip_contracts::{CaptureResult, ContextSnippet, Trigger};
 
 #[allow(dead_code)]
 const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
@@ -178,6 +178,14 @@ pub struct ContextSnippetLimit {
 }
 
 #[allow(dead_code)]
+fn bound_context_snippets(
+    snippets: Vec<ContextSnippet>,
+    limit: ContextSnippetLimit,
+) -> Vec<ContextSnippet> {
+    snippets.into_iter().take(limit.max_snippets).collect()
+}
+
+#[allow(dead_code)]
 pub fn accessibility_permission_status() -> AccessibilityPermissionStatus {
     if axuielement::is_process_trusted() {
         AccessibilityPermissionStatus::Trusted
@@ -300,10 +308,10 @@ pub fn capture_focused_destination(profile_id: &str, trigger: Trigger) -> Captur
 #[cfg(test)]
 mod tests {
     use super::{
-        build_ready_capture_result, capture_preflight, is_supported_app,
+        bound_context_snippets, build_ready_capture_result, capture_preflight, is_supported_app,
         validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
-        CaptureResult, ContextSnippetLimit, DestinationRegistry, DestinationSnapshot,
-        FocusedElementSnapshot,
+        CaptureResult, ContextSnippet, ContextSnippetLimit, DestinationRegistry,
+        DestinationSnapshot, FocusedElementSnapshot,
     };
     use quip_contracts::Trigger;
 
@@ -371,6 +379,34 @@ mod tests {
             panic!("expected ready capture result");
         };
         assert_eq!(registry.release(&destination_id), Ok(()));
+    }
+
+    #[test]
+    fn context_snippet_limit_bounds_snippet_count() {
+        let snippets = vec![
+            ContextSnippet {
+                app_name: "TextEdit".to_string(),
+                window_title: "First".to_string(),
+                visible_text: "one".to_string(),
+            },
+            ContextSnippet {
+                app_name: "Notes".to_string(),
+                window_title: "Second".to_string(),
+                visible_text: "two".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            bound_context_snippets(
+                snippets,
+                ContextSnippetLimit {
+                    max_snippets: 1,
+                    max_chars_per_snippet: 20,
+                },
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
