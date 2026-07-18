@@ -11,19 +11,22 @@ None.
 1. Verify that `mistral.rs` loads the exact Freesolo adapter on Metal. Use a different local sidecar if it fails.
 2. Verify that the runtime can compose the global adapter with a separate per-user adapter. Fall back to a merged global model plus one user adapter if necessary.
 3. Choose and benchmark a local LoRA training path for per-user adapters on both target Macs.
-4. Verify that Accessibility exposes enough bounded visible text from the required demo applications to make window context useful.
-5. Benchmark Qwen3.5-2B first. Try 4B only if the quality gap matters and latency remains interactive.
-6. Grow the initial training set only until the held-out comparison shows a clear improvement.
-7. Confirm the official demo duration. Assume a three-minute pitch until then.
-8. Select the final base, context, and personalized examples after seeing real model outputs.
+4. Verify that Quip can preserve a destination insertion point while its temporary composition box receives keyboard input, then restore and commit reliably.
+5. Verify that Accessibility exposes enough bounded visible text from the required demo applications to make window context useful.
+6. Benchmark Qwen3.5-2B first. Try 4B only if the quality gap matters and latency remains interactive.
+7. Grow the initial training set only until the held-out comparison shows a clear improvement.
+8. Confirm the official demo duration. Assume a three-minute pitch until then.
+9. Select the final base, context, and personalized examples after seeing real model outputs.
 
 ## Decision log
 
 - Quip will be tightly scoped for a hackathon demo.
-- The first integration milestone is manual selection plus a global shortcut.
+- The primary interaction is a temporary composition box that receives text before the destination application does.
+- The exact typed draft and any model candidates require explicit confirmation before insertion.
+- Selection-based replacement is a secondary interaction for existing text.
 - The intended experience is an always-running local app with burst-based intelligent triggering.
 - Inference will not run for every character.
-- All replacements require explicit confirmation.
+- All insertion and replacement actions require explicit confirmation.
 - Accessibility is the primary replacement path, with clipboard-based copy and paste as a fallback.
 - The clipboard fallback is acceptable if previous clipboard contents are restored.
 - Both single-word mistakes and multiword shorthand are in scope.
@@ -44,9 +47,9 @@ None.
 - The application uses a Rust-first architecture.
 - A minimal HTML and CSS Tauri overlay is acceptable. System integration, state, and inference orchestration remain in Rust.
 - The initial inference integration may use a bundled local `mistral.rs` sidecar to isolate model lifecycle concerns.
-- Four people will build Quip over 30 hackathon hours.
-- Manual selection, local inference, confirmation, and replacement are required before intelligent background triggering begins.
-- The final six hours are reserved for integration, compatibility testing, and demo rehearsal.
+- Four people will build Quip.
+- Automatic temporary composition, local inference, confirmation, and destination insertion are required before selection-based replacement begins.
+- A final phase is reserved for integration, compatibility testing, and demo rehearsal.
 - Each macOS user receives a separate locally trained adapter based on labeled Quip interactions.
 - Per-user training data and adapter weights remain on the Mac.
 - Quip may use bounded accessible text from relevant open windows as temporary local context.

@@ -2,13 +2,13 @@
 
 ## Product statement
 
-Quip is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is speed. It improves for each user by learning their confirmed language patterns and by using relevant text from their open windows as temporary context.
+Quip is a local macOS composition layer and text decoder for compressed, misspelled, or phonetic English. Its defining behavior is speed. It improves for each user by learning their confirmed language patterns and by using relevant text from their open windows as temporary context.
 
 ## Locality contract
 
 - All user-text inference runs on the user's Mac.
 - The Qwen base model and Freesolo-trained adapter are stored and executed locally.
-- Selected text, recent text, prompts, and model outputs do not leave the Mac during product use.
+- Temporary drafts, selected text, prompts, and model outputs do not leave the Mac during product use.
 - The application must remain functional without an internet connection after model installation.
 - Freesolo is used for post-training and adapter export, not as the product's inference endpoint.
 - Managed endpoints may be used only for training-time inspection or debugging and are not part of the judged product path.
@@ -31,17 +31,19 @@ Quip runs as a macOS menu-bar application.
 
 ### Intelligent mode
 
-1. Observe typing locally.
-2. Wait for a completed writing burst rather than running inference per character.
-3. Trigger at a text boundary such as a space, punctuation, Return, or an idle pause.
-4. Read only a capped recent-text window.
-5. Gather bounded, relevant context from accessible open windows.
-6. Add the user's learned language patterns.
-7. Ask the local model for `keep` or up to three minimal replacement candidates.
-8. Remain silent for `keep`.
-9. Require explicit confirmation before replacing text.
+1. When Quip is enabled and a supported editable field has focus, intercept the first printable keystroke.
+2. Preserve the destination application, editable element, and insertion point.
+3. Route the user's writing burst into Quip's temporary composition box instead of inserting it into the destination.
+4. Wait for a completed writing burst rather than running inference per character.
+5. Trigger prediction at a text boundary such as punctuation, Return, or an idle pause.
+6. Gather bounded, relevant context from accessible open windows.
+7. Add the user's learned language patterns.
+8. Ask the local model for `keep` or up to three minimal replacement candidates.
+9. Show the exact draft as the first commit option alongside any candidates.
+10. Commit nothing until the user confirms the exact draft or accepts a candidate.
+11. Restore the destination and insert only the confirmed text.
 
-Initial timing proposal: trigger after roughly 700 to 900 ms of inactivity. Initial context proposal: at most 80 recent characters. Both values require testing.
+Initial timing proposal: trigger after roughly 700 to 900 ms of inactivity. Initial draft-window proposal: at most 80 characters. Both values require testing.
 
 Intelligent mode covers both:
 
@@ -49,6 +51,22 @@ Intelligent mode covers both:
 - compressed or phonetic phrases such as `cnt cm tmrw`
 
 Single-word corrections should use a stricter confidence threshold. Shorthand decoding and protected-text restraint remain the primary product story.
+
+### Temporary composition box
+
+The temporary composition box is the primary Quip interaction, not an incidental overlay.
+
+- While Quip is capturing a writing burst, the destination application remains unchanged.
+- When Quip is enabled, the temporary box opens automatically when typing begins in a supported editable field.
+- The box shows the exact text typed by the user.
+- The exact draft is always available as a first-class confirmation choice.
+- Model candidates appear beside or below the exact draft as they become available.
+- Confirming the exact draft inserts it unchanged.
+- Accepting a candidate inserts that candidate instead.
+- Cancelling discards the temporary draft and inserts nothing.
+- Quip must preserve enough destination state to return focus and commit at the original insertion point.
+
+A `keep` model response does not silently write into the destination. It means the exact draft is the recommended option and still requires user confirmation.
 
 ## Per-user learning
 
@@ -60,7 +78,7 @@ The personal training set is built from deliberate product interactions:
 
 - confirmed replacement candidates
 - dismissed suggestions, which become `keep` examples when the surrounding text remains unchanged
-- user corrections made immediately after a Quip replacement
+- user corrections made immediately after a Quip commit
 - repeated personal abbreviations, names, vocabulary, and expansions
 
 Quip must not treat every keystroke as training data. It stores compact input and outcome records only when an interaction supplies a useful label.
@@ -93,14 +111,15 @@ Secure text fields and excluded applications are never read. Window context is n
 
 ### Manual mode
 
-The user can select text in any supported application and invoke Quip with a global keyboard shortcut. This is the reliable fallback and the first implementation milestone.
+The user can select existing text in a supported application and invoke Quip with a global keyboard shortcut. Quip then loads that selection into the same temporary composition box. Confirming a choice replaces the original selection. This is a secondary path for text that has already been inserted.
 
-## Replacement behavior
+## Commit behavior
 
-- Use macOS Accessibility APIs to read and replace selected or recent text when supported.
-- Use simulated copy and paste as a compatibility fallback.
+- Preserve the original destination element and insertion point before the composition box receives input.
+- Use macOS Accessibility APIs to insert the confirmed draft or candidate when supported.
+- Use simulated paste as a compatibility fallback.
 - Preserve and restore the user's previous clipboard contents when using that fallback.
-- Never replace text without explicit user confirmation.
+- Never insert or replace destination text without explicit user confirmation.
 
 ## Application scope
 
@@ -116,7 +135,7 @@ Rich browser editors, Google Docs, terminals, PDFs, password fields, canvas edit
 
 ## Model behavior
 
-Input consists of a bounded recent-text span or explicit selection, relevant open-window context, and a compact representation of learned user patterns.
+Input consists of the bounded temporary draft or explicit selection, relevant open-window context, and a compact representation of learned user patterns.
 
 The model runs in non-thinking mode for minimum latency and compatibility with guided decoding. Flash should constrain every response to a JSON schema from the first generated token.
 
@@ -145,6 +164,8 @@ Contract rules:
 - `replace` requires one to three candidates.
 - Candidates are ordered best first and generated directly by the model.
 - Candidates replace the full bounded input span.
+
+The application always renders the user's exact draft as a commit option, even though the model output contains candidates only when `action` is `replace`.
 
 Protected content includes paths, filenames, names, commands, URLs, identifiers, version strings, and intentional slang. Examples include `usr/bin`, `q3_finl_v2.pdf`, and other text whose unusual form is meaningful.
 
@@ -213,7 +234,8 @@ The live demo should show:
 4. The trained model proposing a minimal useful correction.
 5. Relevant text from another open window resolving an otherwise ambiguous correction.
 6. Two local user profiles producing different candidates from their learned usage patterns.
-7. The user confirming the candidate and Quip replacing it in another application.
+7. The destination application remaining unchanged while the user types into Quip's temporary box.
+8. The user committing either the exact draft or a candidate at the preserved insertion point.
 
 The evaluation comparison should run live from a deterministic corpus rather than being prerecorded.
 
@@ -223,29 +245,29 @@ The presentation should also show the Flash environment, training configuration,
 
 The trained model and its evaluation are the central technical contribution. The macOS application needs a polished, credible cross-application demonstration, but broad editor compatibility is a stretch goal.
 
-With four builders and 30 hours, work should split into four tracks:
+Work should split across four builders and four tracks:
 
 1. Flash environment, dataset, training, and checkpoint comparison.
 2. Local inference, per-user training, adapter composition, and model packaging.
-3. macOS Accessibility, global shortcut, replacement behavior, and open-window context.
+3. macOS keyboard capture, Accessibility, destination insertion, and open-window context.
 4. Tauri overlay, personal pattern storage, demo harness, and integration support.
 
-Manual selection and confirmation are required for the judged build. Intelligent background triggering begins only after the manual path and local trained-model inference work end to end. Reserve the final six hours for integration, compatibility testing, demo rehearsal, and fallback recording.
+Automatic routing into temporary composition, exact-draft confirmation, and candidate confirmation are required for the judged build. Selection-based replacement begins only after the primary composition path and local trained-model inference work end to end. Reserve a final phase for integration, compatibility testing, demo rehearsal, and fallback recording.
 
 ## Hackathon completion criteria
 
 The judged build is complete when:
 
-1. A global shortcut captures selected text in at least TextEdit and one browser.
+1. Quip captures a new writing burst into its temporary composition box in at least TextEdit and one browser without changing the destination.
 2. Base Qwen and the Freesolo-trained adapter can both process the same local input.
 3. The trained model returns schema-valid `keep` or replacement candidates.
-4. Quip remains silent for `keep` and shows a confirmation overlay for replacements.
-5. Confirming a candidate replaces the original text in place.
+4. The exact draft is always available for confirmation, including when the model returns `keep`.
+5. Confirming the exact draft or a candidate inserts only that choice at the preserved destination.
 6. A live comparison demonstrates shorthand decoding and protected-text restraint.
 7. Accessible text from an open window changes an ambiguous prediction in a useful way.
 8. A local user profile demonstrates a learned personal expansion without remote inference.
 
-Automatic per-user retraining, intelligent background triggering, additional application compatibility, and packaging polish are stretch goals. The judged build may use a pre-trained local user adapter produced from a recorded local interaction dataset.
+Automatic per-user retraining, selection-based replacement, additional application compatibility, and packaging polish are stretch goals. The judged build may use a pre-trained local user adapter produced from a recorded local interaction dataset.
 
 ## Target hardware
 
@@ -271,11 +293,13 @@ The overlay may use HTML and CSS. This is an accepted implementation choice and 
 Use Rust bindings over macOS Accessibility APIs to:
 
 - request and verify Accessibility permission
+- identify supported editable destinations before intercepting printable keyboard events
 - inspect the focused application and editable element
 - read selected or recent text
 - enumerate accessible open windows and read bounded visible text
+- preserve and restore the destination element and insertion point
 - observe relevant text changes where supported
-- replace text through Accessibility
+- insert confirmed text through Accessibility
 - locate the selection or caret for overlay placement
 
 The current leading crate is `axuielement`, which exposes `AXUIElement`, process trust, text markers, and `AXObserver` notifications. Drop to `objc2` ApplicationServices bindings only for missing API coverage.
