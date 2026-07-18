@@ -26,9 +26,9 @@ Quip runs as a menu-bar app and, when enabled, augments typing in place the way 
 2. Observe the writing burst and the caret position passively through Accessibility.
 3. Predict continuously while the burst grows, debounced just enough to avoid churn; punctuation and the draft-window cap fire immediately. Stale results are dropped, and the bar refreshes in place rather than flickering.
 4. Add relevant open-window context and learned user patterns.
-5. On a `replace` result, show up to three numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus, and it keeps its current candidates visible while the next prediction computes.
-6. On a `keep` result, show nothing. The typed text stands and the user is not interrupted.
-7. While candidates are visible: `1`–`3` (or a click) picks one, Tab accepts the highlighted candidate, Escape keeps the literal text. Any other key types through and the bar refreshes with the growing burst. Space stays an ordinary character — English needs it — so Tab plays the role Space has in the Pinyin IME.
+5. Show up to five deduplicated and ranked changed suggestions as numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus, and it keeps its current candidates visible while the next predictions compute.
+6. If every suggestion equals the input, the inference layer skips them and shows no candidate. The typed text stands and the user is not interrupted.
+7. While candidates are visible, keys 1 through 5 or a click select one, Tab accepts the highlighted candidate, and Escape dismisses the bar. Any other key types through and the bar refreshes with the growing burst. Space stays an ordinary character because English needs it, so Tab plays the role Space has in the Pinyin IME.
 8. A sentence boundary (whitespace after a terminator, or a newline) closes the composition session: visible candidates count as a stable dismissal and the next keystroke starts a fresh burst.
 
 Keeping the typed text is always available by doing nothing; there is no separate exact-draft option because the draft is already committed keystroke-by-keystroke by the user themselves.
@@ -45,7 +45,7 @@ A global shortcut can run a prediction over selected existing text. The same can
 
 - Replace the burst range in place: prefer macOS Accessibility selection replacement over the tracked burst range.
 - Fall back to simulated select-and-paste when required, preserving and restoring the previous clipboard.
-- Never replace destination text without an explicit candidate selection. Dismissal and `keep` change nothing.
+- Never replace destination text without an explicit candidate selection. Dismissal or an unchanged suggestion changes nothing.
 
 ## Intelligence
 
@@ -57,11 +57,9 @@ The input contains the bounded draft or selection, relevant window snippets, and
 { "suggestion": "best full text" }
 ```
 
-SFT learns this JSON contract from gold outputs because Flash rejects `structured_outputs` for SFT. GRPO constrains sampled rollouts with `train.structured_outputs`, and the local runtime enforces the same schema at inference.
+The inference layer compares each completion with the input, drops exact matches, deduplicates and ranks changed suggestions, and may expose up to five candidates. The typed text is never repeated as a candidate because doing nothing already preserves it. The shared inference wire format carries candidates or no candidates without exposing a model action.
 
-The inference layer removes exact-draft suggestions. If no changed suggestion remains, it returns `keep` with no candidates. Otherwise it returns `replace` with one to three deduplicated full-input replacements, ordered best first. The model never returns the typed draft as a candidate; keeping the typed text is the do-nothing default in the UI. The shared `prediction_result` wire format remains defined by `docs/phase-0.schema.json`.
-
-Protected content includes paths, filenames, names, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`.
+Protected tokens include names, paths, filenames, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`. Preservation remains orthogonal evaluation coverage, not a model action or a fixed training quota.
 
 ### Window context
 
@@ -74,7 +72,7 @@ The hackathon build uses Accessibility text, not screenshots or OCR. It never re
 Every user starts with the frozen global Freesolo adapter and receives a separate LoRA adapter trained through Freesolo and exported back to the Mac. The personal dataset records only useful labels from:
 
 - confirmed candidates
-- dismissed suggestions when the surrounding text remains unchanged, which become `keep` examples
+- dismissed suggestions when the surrounding text remains unchanged, which may become identity-target examples
 - corrections made immediately after a Quip commit
 - repeated personal abbreviations, names, vocabulary, and expansions
 
@@ -86,26 +84,15 @@ If the runtime cannot stack adapters, Quip merges the global adapter into the ba
 
 ### Global Freesolo adapter
 
-Scaffold one single-turn, non-reasoning Flash environment. Its `EnvironmentSingleTurn` builds prompt messages and returns a `RewardResult` from `score_response`. Package separate `dataset/train.jsonl` and `dataset/eval.jsonl` files and select them through `environment.params.split`.
+The initial training corpus has 800 rows: 720 correction targets (90 percent) and 80 identity targets (10 percent). The proposed breakdown is 520 mechanical typing corruptions, 160 shorthand and phonetic transformations, 40 mixed errors, and 80 identity targets. Identity targets are hard negatives for slang, names, abbreviations, filenames, commands, URLs, versions, and ambiguous fragments. They use the same suggestion contract and are not a separate action.
 
-Every dataset row uses the exact keys `input`, optional `output`, and optional `metadata`; Flash drops other top-level keys. SFT learns from JSON gold values in `output`. GRPO samples from `input`, while gold references and scorer-only fields belong in `output` or `metadata`.
+Most correction rows are generated deterministically from correct US QWERTY text. Operators include adjacent substitution, deletion, nearest-key insertion, adjacent transposition, repeat, and spacing changes. Each generated row records its seed and operator provenance. A small optional LLM or teacher lane covers semantic shorthand and phonetic forms that mechanical augmentation cannot produce. Clean phrase and pair sources remain under research; every source must be pinned, licensed, attributed, filtered, and split by source family before use.
 
-Training proceeds as follows:
+Baseline Qwen3.5, run SFT, and use development results to choose steps, checkpoint cadence, and whether OPD or warm-started GRPO is worth trying. Evaluate the selected checkpoint once on the locked test split, inspect failures, and export the strongest credible checkpoint rather than automatically choosing the last one.
 
-1. Baseline the selected Qwen3.5 checkpoint on the held-out split.
-2. Run SFT with a positive `train.max_examples` on hundreds of clean JSON-output examples to teach judgment and the output contract.
-3. Evaluate the SFT adapter on the untouched split.
-4. If useful, warm-start GRPO with `init_from_adapter`, omit LoRA rank and alpha, and constrain rollouts with the Quip JSON schema.
-5. Use `max_steps` and `save_at_steps` for required checkpoint boundaries. Run `flash train config.toml --dry-run` and `--cost` before submission.
-6. Inspect high-reward traces, evaluate useful checkpoints, and ship the best held-out checkpoint rather than automatically choosing the last one.
+### Evaluation
 
-OPD is a fallback only if a stronger teacher first beats the student on the held-out task.
-
-### Reward and evaluation
-
-The GRPO reward combines schema validity, contract consistency, correct `keep` decisions, protected-token preservation, acceptable gold decodings, minimal edits, and penalties for commentary, invention, or excessive rewriting.
-
-The held-out evaluation remains distinct from the optimized reward and reports category-level errors. Start with several hundred checked examples, expand toward a few thousand only for real coverage gaps, deduplicate by normalized pattern, exclude evaluation prompts and close variants from training, and rerun important evaluations to establish the noise floor.
+For now, use a 200-row development split for iteration and a 300-row locked test split for final comparison; these counts can change as coverage improves. Evaluation is more identity-heavy than training so unnecessary edits are visible, but Quip does not claim to know the exact natural identity prior. Report correction accuracy separately from false-correction rate, plus category results, schema validity, protected-token preservation, and latency. Deduplicate normalized patterns, separate source families across splits, and exclude evaluation prompts and close variants from training. Any later optimized reward remains distinct from this evaluation.
 
 ### Artifacts
 
@@ -160,8 +147,8 @@ The build is complete when it can:
 
 1. Observe a writing burst typed directly into TextEdit and one browser input, and place the candidate bar at the caret without stealing focus or altering the typed text.
 2. Run base Qwen and the global Freesolo adapter locally on the same input with schema-valid output.
-3. Show nothing for `keep`, and replace the burst in place only on an explicit candidate selection; dismissal changes nothing.
-4. Show base Qwen over-editing protected text while the trained model keeps it.
+3. Show nothing when the suggestion equals the input, and replace the burst in place only on an explicit candidate selection; dismissal changes nothing.
+4. Show base Qwen over-editing protected text while the trained model preserves it.
 5. Compare base and trained outputs on noisy shorthand or a typo, with the trained model producing the minimal useful correction.
 6. Use accessible text from an open window to resolve an ambiguous prediction.
 7. Show two local user profiles producing different candidates from learned patterns.
