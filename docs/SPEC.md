@@ -9,10 +9,10 @@ The Freesolo-trained model should beat base Qwen by decoding noisy text while ma
 ### Locality contract
 
 - All inference runs on the Mac and remains available offline after model installation.
-- The Qwen base, global Freesolo adapter, per-user adapters, and personal training records stay local.
+- The Qwen base, exported global adapter, exported per-user adapters, and primary personal record store stay local for inference.
 - Temporary drafts, selections, prompts, context, and outputs never go to a remote inference service.
 - Freesolo uses a prepared project dataset to train and export the global adapter. Managed endpoints are limited to training inspection and debugging.
-- Per-user training runs locally from confirmed usage patterns.
+- Per-user adapter training also runs through Freesolo. Quip uploads only a compact, deduplicated set of confirmed labeled examples for a private profile run, then downloads the resulting adapter for local inference.
 - Open-window context is processed in memory and is not uploaded or retained by default.
 
 ## Experience
@@ -72,14 +72,14 @@ The hackathon build uses Accessibility text, not screenshots or OCR. It never re
 
 ### Per-user learning
 
-Every user starts with the frozen global Freesolo adapter and receives a separate local LoRA adapter. The personal dataset records only useful labels from:
+Every user starts with the frozen global Freesolo adapter and receives a separate LoRA adapter trained through Freesolo and exported back to the Mac. The personal dataset records only useful labels from:
 
 - confirmed candidates
 - dismissed suggestions when the surrounding text remains unchanged, which become `keep` examples
 - corrections made immediately after a Quip commit
 - repeated personal abbreviations, names, vocabulary, and expansions
 
-Quip does not store every keystroke. It appends compact labeled interactions, deduplicates repeated patterns, and periodically refreshes the user adapter while idle. Before enough examples exist for training, a compact local pattern dictionary provides immediate personalization.
+Quip does not store every keystroke. It appends compact labeled interactions locally, deduplicates repeated patterns, and submits only the resulting minimal profile dataset when refreshing the user adapter through Freesolo. Ambient window text is excluded unless it was deliberately retained in a confirmed labeled example. Before enough examples exist for training, a compact local pattern dictionary provides immediate personalization.
 
 If the runtime cannot stack adapters, Quip merges the global adapter into the base once and loads one user adapter over it. Users can pause learning, inspect stored patterns, or reset their local adapter and records.
 
@@ -112,7 +112,7 @@ The held-out evaluation remains distinct from the optimized reward and reports c
 
 Export the chosen global adapter or checkpoint immediately to a team-owned Hugging Face repository with `flash export --adapter-id <run-id> --repository <owner>/<repo>`. Undeployed, inactive run artifacts may be garbage-collected after about seven days. Managed deployment is optional for inspection and is not part of Quip's local product path.
 
-Each user's separate adapter is trained locally, and both adapters are applied by the local runtime. The Flash catalog includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters.
+Each user's separate adapter is trained through a private Freesolo run, exported to the Mac, and applied by the local runtime alongside the global adapter. The Flash catalog includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters.
 
 ## Application
 
@@ -128,7 +128,7 @@ The judged build targets TextEdit, Notes, and standard Chrome or Safari inputs. 
 - Use Accessibility to recognize editable destinations, capture and restore destination state, read selections and bounded window text, observe changes, place the box, and commit confirmed text.
 - Use `mistral.rs` with Metal as the leading local inference runtime because it supports Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and a Rust SDK. Start with a bundled loopback sidecar to isolate model lifecycle failures; direct SDK integration is a later optimization.
 - If `mistral.rs` cannot load the exported adapter, use another replaceable local sidecar rather than remote inference.
-- A separate bundled local training sidecar may produce per-user LoRA adapters if the Rust inference runtime cannot train them. It receives only the local labeled dataset and writes only the user adapter.
+- A profile-training client packages compact confirmed examples, submits a private Freesolo run, and downloads the exported per-user adapter. It never provides remote inference.
 
 Prove global adapter loading and per-user adapter composition before coupling inference into the Tauri application.
 
@@ -148,8 +148,8 @@ Prefer the M3 Pro for its additional memory and sustained performance. Use the f
 
 The trained model and its evaluation remain the central technical contribution. Four builders split into:
 
-1. Flash environment, dataset, training, and checkpoint comparison.
-2. Local inference, per-user training, adapter composition, and packaging.
+1. Flash environment, global and per-user training, evaluation, and checkpoint comparison.
+2. Local inference, adapter composition, and packaging.
 3. Keyboard capture, Accessibility, destination commits, and window context.
 4. Tauri box, personal pattern storage, demo harness, and integration.
 
@@ -169,4 +169,4 @@ The build is complete when it can:
 
 The comparison runs live from a deterministic corpus rather than a recording. The presentation also shows the Flash environment, training configuration, checkpoint evaluation, and exported adapter.
 
-Automatic per-user retraining, selection-based replacement, broader application compatibility, and packaging polish are stretch goals. The judged build may use a pre-trained local user adapter produced from a recorded local interaction dataset.
+Automatic per-user retraining, selection-based replacement, broader application compatibility, and packaging polish are stretch goals. The judged build may use two profile adapters trained through Freesolo from prepared compact interaction datasets.
