@@ -170,10 +170,28 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         .unwrap_or(&request.request_id)
         .to_string();
 
-    let result = {
-        let engine = app.state::<EngineState>();
-        let mut engine = engine.0.lock().unwrap();
-        engine.predict(&request, mode)
+    let result = match mode {
+        BackendMode::Fixture => {
+            let engine = app.state::<EngineState>();
+            let mut engine = engine.0.lock().unwrap();
+            engine.predict(&request, mode)
+        }
+        BackendMode::Live => {
+            let sidecar = {
+                let engine = app.state::<EngineState>();
+                let sidecar = engine.0.lock().unwrap().live_sidecar();
+                sidecar
+            };
+            let worker_request = request.clone();
+            let raw_result = tauri::async_runtime::spawn_blocking(move || {
+                sidecar.lock().unwrap().predict(&worker_request)
+            })
+            .await
+            .expect("live inference worker panicked");
+            let engine = app.state::<EngineState>();
+            let result = engine.0.lock().unwrap().record_prediction(raw_result);
+            result
+        }
     };
     emit_metrics(&app);
 
@@ -828,6 +846,61 @@ mod live_selftest {
         }
         println!("LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded");
 
+        // A slow local model must not hold the composition mutex. Prove that
+        // the app can dismiss a predicting burst promptly, then verify the
+        // eventual stale model result stays dismissed.
+        let inflight_app = app.clone();
+        let inflight = tauri::async_runtime::spawn(async move {
+            inject_capture(
+                inflight_app,
+                CaptureResult::Ready {
+                    burst_id: "live_selftest_dismiss".to_owned(),
+                    destination_id: "destination_live_selftest".to_owned(),
+                    profile_id: "profile_default".to_owned(),
+                    draft: "this sa sntece".to_owned(),
+                    trigger: Trigger::Idle,
+                    caret: Rect {
+                        x: 512.0,
+                        y: 384.0,
+                        width: 2.0,
+                        height: 18.0,
+                    },
+                },
+            )
+            .await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    get_composition_state(app.clone()),
+                    Snapshot::Predicting { .. }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| "live prediction did not enter predicting state".to_owned())?;
+        let dismiss_started = std::time::Instant::now();
+        dismiss_suggestions(app.clone());
+        let dismiss_ms = dismiss_started.elapsed().as_millis();
+        if dismiss_ms > 250 || get_composition_state(app.clone()) != Snapshot::Idle {
+            return Err(format!(
+                "live dismissal blocked behind inference: {dismiss_ms} ms, state {:?}",
+                get_composition_state(app.clone())
+            ));
+        }
+        inflight
+            .await
+            .map_err(|error| format!("live dismissal worker failed: {error}"))?;
+        if get_composition_state(app.clone()) != Snapshot::Idle {
+            return Err("dismissed live result was not dropped as stale".to_owned());
+        }
+        println!(
+            "LIVE SELFTEST ok: composition stayed responsive during inference ({dismiss_ms} ms dismissal)"
+        );
+
         inject_capture(
             app.clone(),
             CaptureResult::Ready {
@@ -867,7 +940,7 @@ mod live_selftest {
         }
 
         let metrics = get_metrics(app);
-        if metrics.requests != 1 || metrics.ok != 1 || metrics.schema_invalid != 0 {
+        if metrics.requests != 2 || metrics.ok != 2 || metrics.schema_invalid != 0 {
             return Err(format!("unexpected live metrics: {metrics:?}"));
         }
         println!("LIVE SELFTEST ok: app metrics recorded one schema-valid live result");

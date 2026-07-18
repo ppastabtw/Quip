@@ -17,7 +17,10 @@ use quip_contracts::{
     Trigger,
 };
 use serde::Serialize;
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 /// What the UI renders. Every mutation of the engine returns one of these and
 /// the command layer broadcasts it; the webview holds no authoritative state.
@@ -102,7 +105,7 @@ pub struct Engine {
     pub settings: AppSettings,
     pub learning: LearningStore,
     pub backend: FixtureBackend,
-    sidecar: SidecarClient,
+    sidecar: Arc<Mutex<SidecarClient>>,
     pub metrics: Metrics,
     state: State,
     burst_seq: u64,
@@ -115,7 +118,7 @@ impl Engine {
             settings: AppSettings::load(data_dir),
             learning: LearningStore::open(data_dir),
             backend: FixtureBackend::new(),
-            sidecar: SidecarClient::auto(),
+            sidecar: Arc::new(Mutex::new(SidecarClient::auto())),
             metrics: Metrics::default(),
             state: State::Idle,
             burst_seq: 0,
@@ -193,16 +196,40 @@ impl Engine {
     pub fn predict(&mut self, request: &PredictionRequest, mode: BackendMode) -> PredictionResult {
         let result = match mode {
             BackendMode::Fixture => self.backend.predict(request),
-            BackendMode::Live => self.sidecar.predict(request),
+            BackendMode::Live => self.sidecar.lock().unwrap().predict(request),
+        };
+        self.record_prediction(result)
+    }
+
+    /// Returns the independently locked live client so command orchestration
+    /// can wait on model I/O without holding the composition-state lock.
+    pub fn live_sidecar(&self) -> Arc<Mutex<SidecarClient>> {
+        Arc::clone(&self.sidecar)
+    }
+
+    /// Records and contract-validates a result produced outside the engine
+    /// lock by the live inference worker.
+    pub fn record_prediction(&mut self, result: PredictionResult) -> PredictionResult {
+        let (request_id, model_variant) = match &result {
+            PredictionResult::Ok {
+                request_id,
+                model_variant,
+                ..
+            }
+            | PredictionResult::Error {
+                request_id,
+                model_variant,
+                ..
+            } => (request_id.clone(), *model_variant),
         };
         let valid = self.metrics.record(&result);
         if valid {
             result
         } else {
-            tracing::warn!(request_id = %request.request_id, "schema-invalid prediction result");
+            tracing::warn!(request_id = %request_id, "schema-invalid prediction result");
             PredictionResult::Error {
-                request_id: request.request_id.clone(),
-                model_variant: request.model_variant,
+                request_id,
+                model_variant,
                 error: ErrorInfo {
                     code: "schema_invalid".to_string(),
                     message: "The model returned a schema-invalid result.".to_string(),
@@ -393,7 +420,7 @@ impl Engine {
     pub fn health(&mut self) -> SidecarHealth {
         match self.settings.backend_mode {
             BackendMode::Fixture => self.backend.health(),
-            BackendMode::Live => self.sidecar.health(),
+            BackendMode::Live => self.sidecar.lock().unwrap().health(),
         }
     }
 }
