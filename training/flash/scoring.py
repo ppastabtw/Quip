@@ -11,12 +11,6 @@ from typing import Any, Mapping
 
 
 OUTPUT_KEYS = {"suggestion"}
-OUTPUT_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {"suggestion": {"type": "string", "minLength": 1}},
-    "required": ["suggestion"],
-    "additionalProperties": False,
-}
 
 
 @dataclass(frozen=True)
@@ -59,12 +53,28 @@ def _input_payload(input_text: str) -> dict[str, Any]:
 
 
 def parse_prediction(response_text: str) -> Prediction:
-    payload = json.loads(response_text.strip())
+    """Parse a model reply: the reply is the suggestion text itself."""
+    suggestion = response_text.strip()
+    if not suggestion:
+        raise ValueError("suggestion must be a non-empty string")
+    lowered = suggestion.casefold()
+    if (
+        suggestion[0] in "{}[]"
+        or lowered == "suggestion"
+        or lowered.startswith("suggestion:")
+    ):
+        raise ValueError("reply must be plain corrected text")
+    return Prediction(suggestion=suggestion)
+
+
+def parse_gold_output(output_text: str) -> Prediction:
+    """Parse a dataset gold output, which stays JSON-encoded on disk."""
+    payload = json.loads(output_text.strip())
     if not isinstance(payload, dict) or set(payload) != OUTPUT_KEYS:
-        raise ValueError("output must contain exactly suggestion")
+        raise ValueError("gold output must contain exactly suggestion")
     suggestion = payload["suggestion"]
     if not isinstance(suggestion, str) or not suggestion.strip():
-        raise ValueError("suggestion must be a non-empty string")
+        raise ValueError("gold suggestion must be a non-empty string")
     return Prediction(suggestion=suggestion)
 
 
@@ -79,7 +89,7 @@ def _accepted_suggestions(
     ):
         return tuple(declared)
     if isinstance(expected_output, str):
-        return (parse_prediction(expected_output).suggestion,)
+        return (parse_gold_output(expected_output).suggestion,)
     raise ValueError("accepted suggestions are missing")
 
 

@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import httpx
 
 from environment import SYSTEM_PROMPT
-from scoring import OUTPUT_JSON_SCHEMA, score_completion
+from scoring import score_completion
 
 
 FLASH_ROOT = Path(__file__).resolve().parent
@@ -203,10 +203,6 @@ def freesolo_request_payload(
         ],
         "temperature": 0.0,
         "max_tokens": max_tokens,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"schema": OUTPUT_JSON_SCHEMA},
-        },
         "chat_template_kwargs": {"enable_thinking": False},
     }
 

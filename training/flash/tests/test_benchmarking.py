@@ -31,14 +31,14 @@ def test_committed_matrix_covers_qwen_sizes():
     } <= models
 
 
-def test_payload_uses_prompt_json_schema_and_non_thinking_mode():
+def test_payload_uses_prompt_plain_text_and_non_thinking_mode():
     row = {"input": '{"text":"cnt cm tmrw"}'}
     freesolo = freesolo_request_payload(row, "Qwen/Qwen3.5-2B", 128)
     assert freesolo["messages"][0]["role"] == "system"
     assert freesolo["messages"][1] == {"role": "user", "content": row["input"]}
     assert freesolo["temperature"] == 0.0
     assert freesolo["chat_template_kwargs"] == {"enable_thinking": False}
-    assert freesolo["response_format"]["type"] == "json_schema"
+    assert "response_format" not in freesolo
 
 
 def test_backboard_payload_is_stateless_json_and_non_thinking():

@@ -18,17 +18,9 @@ use crate::InferenceBackend;
 
 const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:1234";
 const COMPLETION_COUNT: usize = 5;
-const SYSTEM_PROMPT: &str = r#"You are an English text corrector.
-
-Given a JSON object containing text, predict one full-text suggestion.
-
-Return exactly one JSON object with no commentary:
-{"suggestion":"best full text"}
-
-Rules:
-- Return one conservative correction of a confident typo, phonetic spelling, or compressed phrase.
-- Make the smallest useful change. Do not add facts or change tone.
-"#;
+const COMPLETION_ATTEMPTS: usize = 3;
+const TEMPERATURE: f64 = 0.1;
+const SYSTEM_PROMPT: &str = include_str!("../../../../training/flash/system_prompt.txt");
 
 #[derive(Debug)]
 pub enum LiveBackendError {
@@ -138,15 +130,7 @@ impl LiveBackend {
         request: &PredictionRequest,
     ) -> Result<PredictionResult, LiveBackendError> {
         let started = Instant::now();
-        let model_outputs = std::thread::scope(|scope| {
-            let workers = (0..COMPLETION_COUNT)
-                .map(|_| scope.spawn(|| self.complete_base(request)))
-                .collect::<Vec<_>>();
-            workers
-                .into_iter()
-                .map(|worker| worker.join().expect("model completion worker panicked"))
-                .collect::<Result<Vec<_>, LiveBackendError>>()
-        })?;
+        let model_outputs = self.complete_base(request)?;
 
         Ok(normalize_model_outputs(
             request,
@@ -155,7 +139,32 @@ impl LiveBackend {
         ))
     }
 
-    fn complete_base(&self, request: &PredictionRequest) -> Result<ModelOutput, LiveBackendError> {
+    fn complete_base(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<Vec<String>, LiveBackendError> {
+        let mut outputs = Vec::with_capacity(COMPLETION_COUNT);
+        let mut last_error = None;
+        for _ in 0..COMPLETION_ATTEMPTS {
+            match self.complete_base_once(request, COMPLETION_COUNT - outputs.len()) {
+                Ok(mut batch) => {
+                    outputs.append(&mut batch);
+                    if outputs.len() >= COMPLETION_COUNT {
+                        outputs.truncate(COMPLETION_COUNT);
+                        return Ok(outputs);
+                    }
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or(LiveBackendError::MissingModelContent))
+    }
+
+    fn complete_base_once(
+        &self,
+        request: &PredictionRequest,
+        completion_count: usize,
+    ) -> Result<Vec<String>, LiveBackendError> {
         let user_content = model_input(request).to_string();
         let body = json!({
             "model": "default",
@@ -164,33 +173,26 @@ impl LiveBackend {
                 {"role": "user", "content": user_content}
             ],
             "enable_thinking": false,
-            "temperature": 0.1,
+            "temperature": TEMPERATURE,
+            "n": completion_count,
             "max_tokens": 64,
-            "stop": ["<|endoftext|>"],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "quip_prediction",
-                    "schema": prediction_schema()
-                }
-            }
+            "stop": ["<|endoftext|>"]
         });
         let body = serde_json::to_vec(&body)?;
         let response = self.request("POST", "/v1/chat/completions", Some(&body))?;
         let response: ChatCompletion = serde_json::from_slice(&response)?;
-        response
-            .choices
+        let mut choices = response.choices;
+        choices.sort_by_key(|choice| choice.index);
+        Ok(choices
             .into_iter()
-            .next()
-            .ok_or(LiveBackendError::MissingModelContent)
-            .and_then(|choice| {
-                let content = choice
+            .filter_map(|choice| {
+                choice
                     .message
                     .content
-                    .as_deref()
-                    .ok_or(LiveBackendError::MissingModelContent)?;
-                serde_json::from_str(content).map_err(LiveBackendError::from)
+                    .map(|content| content.trim().to_owned())
+                    .filter(|content| !content.is_empty())
             })
+            .collect())
     }
 }
 
@@ -230,20 +232,6 @@ impl InferenceBackend for LiveBackend {
     }
 }
 
-fn prediction_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "suggestion": {
-                "type": "string",
-                "minLength": 1
-            }
-        },
-        "required": ["suggestion"],
-        "additionalProperties": false
-    })
-}
-
 fn model_input(request: &PredictionRequest) -> Value {
     if request.context_snippets.is_empty() && request.personal_patterns.is_empty() {
         json!({"text": request.draft})
@@ -263,6 +251,7 @@ struct ChatCompletion {
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
+    index: usize,
     message: ChatMessage,
 }
 
@@ -271,15 +260,9 @@ struct ChatMessage {
     content: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelOutput {
-    suggestion: String,
-}
-
 fn normalize_model_outputs(
     request: &PredictionRequest,
-    outputs: Vec<ModelOutput>,
+    outputs: Vec<String>,
     latency_ms: u64,
 ) -> PredictionResult {
     if outputs.len() != COMPLETION_COUNT {
@@ -293,7 +276,7 @@ fn normalize_model_outputs(
 
     let suggestions = outputs
         .into_iter()
-        .map(|output| output.suggestion.trim().to_owned())
+        .map(|output| output.trim().to_owned())
         .collect::<Vec<_>>();
 
     if suggestions.iter().any(String::is_empty) {
@@ -307,7 +290,10 @@ fn normalize_model_outputs(
 
     let mut votes = HashMap::<String, (usize, usize)>::new();
     for (index, suggestion) in suggestions.into_iter().enumerate() {
-        if suggestion == request.draft {
+        if suggestion == request.draft
+            || is_model_scaffolding(&suggestion)
+            || is_implausibly_truncated(&request.draft, &suggestion)
+        {
             continue;
         }
         let (vote_count, _) = votes.entry(suggestion).or_insert((0, index));
@@ -339,6 +325,38 @@ fn normalize_model_outputs(
         Ok(()) => result,
         Err(reason) => prediction_error(request, "invalid_model_output", &reason, false),
     }
+}
+
+/// Suppress literal schema/example text if a small model echoes prompt
+/// scaffolding instead of producing a correction. Returning no candidate is
+/// safer than offering text that was never derived from the user's draft.
+fn is_model_scaffolding(suggestion: &str) -> bool {
+    let normalized = suggestion.trim().to_ascii_lowercase();
+    let repeats_prompt_policy = SYSTEM_PROMPT.lines().any(|line| {
+        let line = line.trim().strip_prefix("- ").unwrap_or(line.trim());
+        line.len() >= 12 && normalized.starts_with(&line.to_ascii_lowercase())
+    });
+    repeats_prompt_policy
+        || normalized.starts_with("best full text")
+        || normalized == "text"
+        || normalized == "suggestion"
+        || normalized.starts_with("suggestion:")
+        || normalized.starts_with("suggestion suggestion:")
+        || normalized.starts_with("uggestionuggestion:")
+        || normalized.starts_with("text_")
+        || normalized.starts_with("i'm quip")
+        || normalized.starts_with("i am quip")
+        || normalized.starts_with("you are quip")
+        || matches!(normalized.chars().next(), Some('{' | '}' | '[' | ']'))
+}
+
+/// A full-text correction may expand shorthand, but conservatively reject a
+/// candidate that drops one or more words from a multi-word draft. This catches
+/// generic fragments without blocking same-length corrections or expansions.
+fn is_implausibly_truncated(draft: &str, suggestion: &str) -> bool {
+    let draft_words = draft.split_whitespace().count();
+    let suggestion_words = suggestion.split_whitespace().count();
+    draft_words >= 3 && suggestion_words < draft_words
 }
 
 fn prediction_error(
@@ -403,9 +421,11 @@ fn parse_http_response(response: &[u8]) -> Result<Vec<u8>, LiveBackendError> {
 #[cfg(test)]
 mod tests {
     use quip_contracts::{ModelVariant, PredictionRequest};
-    use serde_json::json;
 
-    use super::{normalize_model_outputs, prediction_schema, LiveBackend, ModelOutput};
+    use super::{
+        is_implausibly_truncated, is_model_scaffolding, normalize_model_outputs, LiveBackend,
+        SYSTEM_PROMPT,
+    };
 
     fn request() -> PredictionRequest {
         PredictionRequest {
@@ -425,16 +445,48 @@ mod tests {
     }
 
     #[test]
-    fn model_schema_matches_the_freesolo_training_contract() {
-        assert_eq!(
-            prediction_schema(),
-            json!({
-                "type": "object",
-                "properties": {"suggestion": {"type": "string", "minLength": 1}},
-                "required": ["suggestion"],
-                "additionalProperties": false,
-            })
-        );
+    fn prompt_contains_policy_without_answer_shaped_text() {
+        assert!(SYSTEM_PROMPT.contains("actual complete text"));
+        assert!(SYSTEM_PROMPT.contains("If no confident correction is needed"));
+        assert!(!SYSTEM_PROMPT.contains("Suggestion text:"));
+        assert!(!SYSTEM_PROMPT
+            .to_ascii_lowercase()
+            .contains("best full text"));
+    }
+
+    #[test]
+    fn recognizes_model_scaffolding_without_rejecting_normal_text() {
+        for leaked in [
+            "best full text",
+            "best full text \"full text\"",
+            "text",
+            "text_1,",
+            "suggestion",
+            "} tomorrow",
+            "Correct confident keyboard typos, phonetic spellings, and common compressed phrases.",
+            "I'm Quip, a conservative English text corrector. I can help with that.",
+            "uggestionuggestion:see you tomorrow",
+        ] {
+            assert!(is_model_scaffolding(leaked), "{leaked}");
+        }
+        assert!(!is_model_scaffolding("this is a sentence"));
+    }
+
+    #[test]
+    fn rejects_truncated_fragments_but_keeps_corrections_and_expansions() {
+        assert!(is_implausibly_truncated(
+            "went to the store instaed",
+            "the text"
+        ));
+        assert!(!is_implausibly_truncated(
+            "went to the store instaed",
+            "went to the store instead"
+        ));
+        assert!(!is_implausibly_truncated(
+            "cnt cm tmrw",
+            "can't come tomorrow"
+        ));
+        assert!(is_implausibly_truncated("this sa sntece", "This sentence"));
     }
 
     #[test]
@@ -442,21 +494,11 @@ mod tests {
         let result = normalize_model_outputs(
             &request(),
             vec![
-                ModelOutput {
-                    suggestion: "candidate b".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate a".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate b".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate c".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate a".to_owned(),
-                },
+                "candidate b result".to_owned(),
+                "candidate a result".to_owned(),
+                "candidate b result".to_owned(),
+                "candidate c result".to_owned(),
+                "candidate a result".to_owned(),
             ],
             12,
         );
@@ -467,9 +509,9 @@ mod tests {
                 candidates,
                 ..
             } if candidates == vec![
-                "candidate b",
-                "candidate a",
-                "candidate c",
+                "candidate b result",
+                "candidate a result",
+                "candidate c result",
             ]
         ));
     }
@@ -478,11 +520,30 @@ mod tests {
     fn exact_draft_suggestion_becomes_zero_candidates() {
         let result = normalize_model_outputs(
             &request(),
-            (0..5)
-                .map(|_| ModelOutput {
-                    suggestion: "cnt cm tmr".to_owned(),
-                })
-                .collect(),
+            (0..5).map(|_| "cnt cm tmr".to_owned()).collect(),
+            12,
+        );
+
+        assert!(matches!(
+            result,
+            quip_contracts::PredictionResult::Ok {
+                candidates,
+                ..
+            } if candidates.is_empty()
+        ));
+    }
+
+    #[test]
+    fn prompt_placeholder_leakage_is_never_a_candidate() {
+        let result = normalize_model_outputs(
+            &request(),
+            vec![
+                "best full text".to_owned(),
+                "best full text \"full text\"".to_owned(),
+                "Best Full Text".to_owned(),
+                "text_1,".to_owned(),
+                "} tomorrow".to_owned(),
+            ],
             12,
         );
 
@@ -499,11 +560,7 @@ mod tests {
     fn incomplete_generation_batch_is_an_explicit_error() {
         let result = normalize_model_outputs(
             &request(),
-            (0..4)
-                .map(|index| ModelOutput {
-                    suggestion: format!("candidate {index}"),
-                })
-                .collect(),
+            (0..4).map(|index| format!("candidate {index}")).collect(),
             12,
         );
 
