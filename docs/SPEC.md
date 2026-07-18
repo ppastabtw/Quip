@@ -17,32 +17,34 @@ The Freesolo-trained model should beat base Qwen by decoding noisy text while ma
 
 ## Experience
 
-Quip runs as a menu-bar app and automatically becomes the composition surface when enabled.
+Quip runs as a menu-bar app and, when enabled, augments typing in place the way an input method does (the model is Sogou and the macOS Pinyin IME): the user types in their own textbox and a small candidate bar floats above the caret when Quip has a suggestion.
 
 ### Composition flow
 
-1. Detect a supported editable field and intercept the first printable keystroke.
-2. Preserve the destination application, element, selection, and insertion point.
-3. Route the writing burst into Quip's temporary box, leaving the destination unchanged.
-4. After punctuation, Return, or an idle pause, run one prediction for the burst rather than one per character.
-5. Add relevant open-window context and learned user patterns.
-6. Show the exact draft as the first option and up to three model candidates.
-7. Insert nothing until the user confirms the exact draft or accepts a candidate.
-8. Restore the destination and insert only the confirmed text. Cancelling inserts nothing.
+1. Detect a supported editable field. Keystrokes pass through untouched; the destination receives the text as typed.
+2. Observe the writing burst and the caret position passively through Accessibility.
+3. Predict continuously while the burst grows, debounced just enough to avoid churn; punctuation and the draft-window cap fire immediately. Stale results are dropped, and the bar refreshes in place rather than flickering.
+4. Add relevant open-window context and learned user patterns.
+5. On a `replace` result, show up to three numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus, and it keeps its current candidates visible while the next prediction computes.
+6. On a `keep` result, show nothing. The typed text stands and the user is not interrupted.
+7. While candidates are visible: `1`–`3` (or a click) picks one, Tab accepts the highlighted candidate, Escape keeps the literal text. Any other key types through and the bar refreshes with the growing burst. Space stays an ordinary character — English needs it — so Tab plays the role Space has in the Pinyin IME.
+8. A sentence boundary (whitespace after a terminator, or a newline) closes the composition session: visible candidates count as a stable dismissal and the next keystroke starts a fresh burst.
 
-Initial values are a 700 to 900 ms idle trigger and an 80-character draft window. Both require testing.
+Keeping the typed text is always available by doing nothing; there is no separate exact-draft option because the draft is already committed keystroke-by-keystroke by the user themselves.
 
-A `keep` response recommends the exact draft but does not bypass confirmation. Quip covers both ordinary mistakes such as `instaed` and compressed phrases such as `cnt cm tmrw`, with a stricter confidence threshold for single-word corrections.
+Initial values are a 150 ms live-prediction debounce and an 80-character draft window; both require testing against real inference times.
+
+Quip covers both ordinary mistakes such as `instaed` and compressed phrases such as `cnt cm tmrw`, with a stricter confidence threshold for single-word corrections.
 
 ### Existing-text mode
 
-A global shortcut can load selected existing text into the same temporary box. Confirming the exact draft keeps it unchanged; accepting a candidate replaces the selection. This is secondary to compose-before-commit.
+A global shortcut can run a prediction over selected existing text. The same candidate bar appears above the selection; accepting a candidate replaces the selection, dismissing changes nothing. This is secondary to the live typing flow.
 
 ### Commit path
 
-- Prefer macOS Accessibility APIs for insertion or selection replacement.
-- Fall back to simulated paste when required, preserving and restoring the previous clipboard.
-- Never insert or replace destination text without explicit confirmation.
+- Replace the burst range in place: prefer macOS Accessibility selection replacement over the tracked burst range.
+- Fall back to simulated select-and-paste when required, preserving and restoring the previous clipboard.
+- Never replace destination text without an explicit candidate selection. Dismissal and `keep` change nothing.
 
 ## Intelligence
 
@@ -60,7 +62,7 @@ Valid outputs are:
 { "action": "replace", "candidates": ["best candidate"] }
 ```
 
-`action` is exactly `keep` or `replace`. `keep` has no candidates; `replace` has one to three, ordered best first. Each candidate replaces the full bounded input. The application always adds the exact draft as a separate commit option.
+`action` is exactly `keep` or `replace`. `keep` has no candidates; `replace` has one to three, ordered best first. Each candidate replaces the full bounded input. The model never returns the typed draft as a candidate; keeping the typed text is the do-nothing default in the UI.
 
 Protected content includes paths, filenames, names, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`.
 
@@ -123,7 +125,7 @@ The judged build targets TextEdit, Notes, and standard Chrome or Safari inputs. 
 ### Architecture
 
 - Use Rust for system integration, state, and inference orchestration.
-- Use Tauri 2 for the menu bar, settings, HTML and CSS composition box, global shortcut, and clipboard integration.
+- Use Tauri 2 for the menu bar, settings, the HTML and CSS caret-anchored candidate bar, global shortcut, and clipboard integration.
 - Use `axuielement` for process trust, focused elements, text markers, and `AXObserver`; use `objc2` ApplicationServices bindings only for missing coverage.
 - Use Accessibility to recognize editable destinations, capture and restore destination state, read selections and bounded window text, observe changes, place the box, and commit confirmed text.
 - Use `mistral.rs` with Metal as the leading local inference runtime because it supports Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and a Rust SDK. Start with a bundled loopback sidecar to isolate model lifecycle failures; direct SDK integration is a later optimization.
@@ -159,9 +161,9 @@ Reserve a final phase for compatibility testing, rehearsal, and fallback recordi
 
 The build is complete when it can:
 
-1. Capture a writing burst into the temporary box in TextEdit and one browser without changing the destination.
+1. Observe a writing burst typed directly into TextEdit and one browser input, and place the candidate bar at the caret without stealing focus or altering the typed text.
 2. Run base Qwen and the global Freesolo adapter locally on the same input with schema-valid output.
-3. Always offer the exact draft, including for `keep`, and commit only the confirmed draft or candidate at the preserved destination.
+3. Show nothing for `keep`, and replace the burst in place only on an explicit candidate selection; dismissal changes nothing.
 4. Show base Qwen over-editing protected text while the trained model keeps it.
 5. Compare base and trained outputs on noisy shorthand or a typo, with the trained model producing the minimal useful correction.
 6. Use accessible text from an open window to resolve an ambiguous prediction.

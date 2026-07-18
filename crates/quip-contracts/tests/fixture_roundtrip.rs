@@ -11,6 +11,20 @@ fn load_raw() -> String {
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
+/// serde_json::Value treats 512 and 512.0 as unequal; the wire format does
+/// not. Normalize every number to f64 before comparing.
+fn normalize(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => serde_json::json!(n.as_f64().unwrap()),
+        Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
+        Value::Object(map) => {
+            Value::Object(map.into_iter().map(|(k, v)| (k, normalize(v))).collect())
+        }
+        other => other,
+    }
+}
+
 #[test]
 fn fixtures_round_trip_exactly() {
     let raw = load_raw();
@@ -18,7 +32,8 @@ fn fixtures_round_trip_exactly() {
     let original: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let reserialized = serde_json::to_value(&typed).unwrap();
     assert_eq!(
-        original, reserialized,
+        normalize(original),
+        normalize(reserialized),
         "typed contracts must not drop, rename, or invent fields"
     );
 }

@@ -54,15 +54,25 @@ export type PredictionResult =
 
 export type Trigger = "idle" | "punctuation" | "return" | "shortcut";
 
+/** Logical screen coordinates, origin top-left. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export type CaptureResult =
   | {
       status: "ready";
       burst_id: string;
-      /** Opaque: return it on commit/cancel without interpreting it. */
+      /** Opaque: return it on commit without interpreting it. */
       destination_id: string;
       profile_id: string;
       draft: string;
       trigger: Trigger;
+      /** Caret rectangle; the suggestion bar is anchored above it. */
+      caret: Rect;
     }
   | {
       status: "unavailable";
