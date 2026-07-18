@@ -16,6 +16,7 @@ use axuielement::ax_attribute::attributes::{
 use axuielement::ax_attribute::subroles::AX_SECURE_TEXT_FIELD_SUBROLE;
 use axuielement::ax_value::AXRange;
 use axuielement::AXUIElement;
+use objc2_app_kit::NSRunningApplication;
 use quip_contracts::{CaptureResult, ContextSnippet, Trigger};
 
 const DRAFT_MAX_CHARS: usize = 80;
@@ -446,6 +447,10 @@ pub(crate) fn cancel_destination(destination_id: &str) -> Result<(), Accessibili
 }
 
 fn focused_app_identity(app_element: &AXUIElement) -> Option<(String, String)> {
+    if let Some(identity) = app_identity_from_pid(app_element) {
+        return Some(identity);
+    }
+
     app_element
         .string_attribute(AX_TITLE_ATTRIBUTE)
         .ok()
@@ -458,6 +463,18 @@ fn focused_app_identity(app_element: &AXUIElement) -> Option<(String, String)> {
             "Safari" => Some(("com.apple.Safari".to_string(), title)),
             _ => None,
         })
+}
+
+fn app_identity_from_pid(app_element: &AXUIElement) -> Option<(String, String)> {
+    let pid = app_element.pid().ok()?;
+    let running_app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
+    let app_id = running_app.bundleIdentifier()?.to_string();
+    let app_name = running_app
+        .localizedName()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| app_id.clone());
+
+    Some((app_id, app_name))
 }
 
 fn ax_range_to_range(range: AXRange) -> Option<Range<usize>> {

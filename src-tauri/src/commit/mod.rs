@@ -63,6 +63,13 @@ trait CommitSession {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
+trait ClipboardProvider {
+    type Clipboard: ClipboardSession;
+
+    fn open(&mut self) -> Result<Self::Clipboard, CommitError>;
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn commit_confirmed_text_with_session(
     destination_id: &str,
     confirmed_text: &str,
@@ -99,6 +106,7 @@ fn cancel_destination_with_session(
         return Err(CommitError::UnknownDestination);
     }
 
+    session.restore_destination(destination_id)?;
     session.release_destination(destination_id);
 
     Ok(CommitReport {
@@ -135,12 +143,14 @@ pub fn commit_confirmed_text(
     confirmed_text: &str,
 ) -> Result<CommitReport, CommitError> {
     let mut session = LiveCommitSession;
-    if !session.has_destination(destination_id) {
-        return Err(CommitError::UnknownDestination);
-    }
+    let mut clipboard = LiveClipboardProvider;
 
-    let mut clipboard = ArboardClipboardSession::new()?;
-    commit_confirmed_text_with_session(destination_id, confirmed_text, &mut session, &mut clipboard)
+    commit_confirmed_text_with_clipboard_provider(
+        destination_id,
+        confirmed_text,
+        &mut session,
+        &mut clipboard,
+    )
 }
 
 #[allow(dead_code)]
@@ -223,6 +233,16 @@ impl ClipboardSession for ArboardClipboardSession {
     }
 }
 
+struct LiveClipboardProvider;
+
+impl ClipboardProvider for LiveClipboardProvider {
+    type Clipboard = ArboardClipboardSession;
+
+    fn open(&mut self) -> Result<Self::Clipboard, CommitError> {
+        ArboardClipboardSession::new()
+    }
+}
+
 impl From<accessibility::AccessibilityError> for CommitError {
     fn from(error: accessibility::AccessibilityError) -> Self {
         match error {
@@ -231,6 +251,34 @@ impl From<accessibility::AccessibilityError> for CommitError {
             _ => Self::AccessibilityWriteFailed,
         }
     }
+}
+
+fn commit_confirmed_text_with_clipboard_provider(
+    destination_id: &str,
+    confirmed_text: &str,
+    session: &mut impl CommitSession,
+    clipboard: &mut impl ClipboardProvider,
+) -> Result<CommitReport, CommitError> {
+    if !session.has_destination(destination_id) {
+        return Err(CommitError::UnknownDestination);
+    }
+
+    let method = match session.write_accessibility(destination_id, confirmed_text) {
+        Ok(()) => CommitMethod::Accessibility,
+        Err(CommitError::AccessibilityWriteFailed) => {
+            session.restore_destination(destination_id)?;
+            let mut clipboard = clipboard.open()?;
+            simulated_paste_fallback(destination_id, confirmed_text, &mut clipboard)?.method
+        }
+        Err(error) => return Err(error),
+    };
+    session.release_destination(destination_id);
+
+    Ok(CommitReport {
+        destination_id: destination_id.to_string(),
+        method,
+        inserted_text: true,
+    })
 }
 
 #[cfg(test)]
@@ -276,9 +324,29 @@ mod tests {
         assert_eq!(
             (
                 report.inserted_text,
+                session.restore_count,
                 session.has_destination("destination_textedit_0001")
             ),
-            (false, false)
+            (false, 1, false)
+        );
+    }
+
+    #[test]
+    fn commit_direct_accessibility_does_not_open_clipboard() {
+        let mut session = FakeCommitSession::with_destination("destination_textedit_0001");
+        let mut clipboard = FakeClipboardProvider::new(Err(CommitError::ClipboardUnavailable));
+
+        let report = commit_confirmed_text_with_clipboard_provider(
+            "destination_textedit_0001",
+            "confirmed text",
+            &mut session,
+            &mut clipboard,
+        )
+        .expect("direct accessibility commit should not need clipboard access");
+
+        assert_eq!(
+            (report.method, clipboard.open_count),
+            (CommitMethod::Accessibility, 0)
         );
     }
 
@@ -340,8 +408,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn paste_fallback_restores_plain_text_clipboard_after_success() {
+        let mut clipboard = FakeClipboardSession::new("previous clipboard");
+
+        let result = simulated_paste_fallback(
+            "destination_textedit_0001",
+            "confirmed text",
+            &mut clipboard,
+        );
+
+        assert_eq!(
+            (result.map(|report| report.method), clipboard.text),
+            (
+                Ok(CommitMethod::SimulatedPaste),
+                "previous clipboard".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn paste_fallback_refuses_unknown_clipboard_type() {
+        let mut clipboard = FakeClipboardSession::new("previous clipboard")
+            .with_snapshot_result(Err(CommitError::UnsupportedClipboardContent));
+
+        let result = simulated_paste_fallback(
+            "destination_textedit_0001",
+            "confirmed text",
+            &mut clipboard,
+        );
+
+        assert_eq!(
+            (result, clipboard.text),
+            (
+                Err(CommitError::UnsupportedClipboardContent),
+                "previous clipboard".to_string()
+            )
+        );
+    }
+
+    #[derive(Clone)]
     struct FakeClipboardSession {
         text: String,
+        snapshot_result: Result<ClipboardSnapshot, CommitError>,
         paste_result: Result<(), CommitError>,
     }
 
@@ -349,8 +458,14 @@ mod tests {
         fn new(text: &str) -> Self {
             Self {
                 text: text.to_string(),
+                snapshot_result: Ok(ClipboardSnapshot::PlainText(text.to_string())),
                 paste_result: Ok(()),
             }
+        }
+
+        fn with_snapshot_result(mut self, result: Result<ClipboardSnapshot, CommitError>) -> Self {
+            self.snapshot_result = result;
+            self
         }
 
         fn with_paste_result(mut self, result: Result<(), CommitError>) -> Self {
@@ -361,7 +476,7 @@ mod tests {
 
     impl ClipboardSession for FakeClipboardSession {
         fn snapshot(&mut self) -> Result<ClipboardSnapshot, CommitError> {
-            Ok(ClipboardSnapshot::PlainText(self.text.clone()))
+            self.snapshot_result.clone()
         }
 
         fn set_plain_text(&mut self, text: &str) -> Result<(), CommitError> {
@@ -386,6 +501,7 @@ mod tests {
     struct FakeCommitSession {
         destination_id: Option<String>,
         accessibility_write_result: Result<(), CommitError>,
+        restore_count: usize,
     }
 
     impl Default for FakeCommitSession {
@@ -393,6 +509,7 @@ mod tests {
             Self {
                 destination_id: None,
                 accessibility_write_result: Ok(()),
+                restore_count: 0,
             }
         }
     }
@@ -402,6 +519,7 @@ mod tests {
             Self {
                 destination_id: Some(destination_id.to_string()),
                 accessibility_write_result: Ok(()),
+                restore_count: 0,
             }
         }
 
@@ -426,6 +544,7 @@ mod tests {
 
         fn restore_destination(&mut self, destination_id: &str) -> Result<(), CommitError> {
             if self.has_destination(destination_id) {
+                self.restore_count += 1;
                 Ok(())
             } else {
                 Err(CommitError::UnknownDestination)
@@ -436,6 +555,29 @@ mod tests {
             if self.has_destination(destination_id) {
                 self.destination_id = None;
             }
+        }
+    }
+
+    struct FakeClipboardProvider {
+        open_result: Result<FakeClipboardSession, CommitError>,
+        open_count: usize,
+    }
+
+    impl FakeClipboardProvider {
+        fn new(open_result: Result<FakeClipboardSession, CommitError>) -> Self {
+            Self {
+                open_result,
+                open_count: 0,
+            }
+        }
+    }
+
+    impl ClipboardProvider for FakeClipboardProvider {
+        type Clipboard = FakeClipboardSession;
+
+        fn open(&mut self) -> Result<Self::Clipboard, CommitError> {
+            self.open_count += 1;
+            self.open_result.clone()
         }
     }
 }

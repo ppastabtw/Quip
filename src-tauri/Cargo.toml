@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 quip-contracts = { path = "../crates/quip-contracts" }
 axuielement = "0.9.1"
 arboard = "3.6.1"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSRunningApplication", "libc"] }
