@@ -56,7 +56,7 @@ async function selectCandidate(index: number) {
     const summary = `commit failed: ${String(error)}`;
     lastStateEl.textContent = summary;
     lastCommitEl.textContent = "";
-    appendTimelineEvent("commit_failed", summary, {
+    recordTimelineEvent("commit_failed", summary, {
       selected_index: index,
       success: false,
       error: String(error),
@@ -77,6 +77,15 @@ function appendTimelineEvent(
   });
   if (debugRows.length > 50) debugRows = debugRows.slice(-50);
   renderTimeline();
+}
+
+function recordTimelineEvent(
+  event: string,
+  summary: string,
+  payload: Record<string, unknown> = {},
+) {
+  appendTimelineEvent(event, summary, payload);
+  void api.recordDebugEvent(event, summary, payload).catch(() => {});
 }
 
 function mergeDebugEvents(eventsFromSink: DebugEventView[]) {
@@ -131,6 +140,13 @@ function snapshotSummary(snapshot: Snapshot): string {
 
 function renderInlineCandidates(snapshot: Snapshot) {
   inlineCandidatesEl.replaceChildren();
+  if (snapshot.phase === "unavailable") {
+    inlineCandidatesEl.classList.remove("placeholder");
+    inlineCandidatesEl.append(
+      el("div", "inline-candidate error-text", `unavailable: ${snapshot.reason}`),
+    );
+    return;
+  }
   if (snapshot.phase !== "suggesting") {
     inlineCandidatesEl.classList.add("placeholder");
     inlineCandidatesEl.textContent = "No candidates";
@@ -148,6 +164,20 @@ function renderInlineCandidates(snapshot: Snapshot) {
   }
   snapshot.candidates.forEach((candidate, index) => {
     inlineCandidatesEl.append(el("div", "inline-candidate", `${index + 1}. ${candidate}`));
+  });
+}
+
+function resetPlayground(reason: string, caret: number) {
+  window.clearTimeout(idleTimer);
+  burstStart = caret;
+  burstEnd = caret;
+  activeBurstId = undefined;
+  suggesting = false;
+  selectedIndex = 0;
+  recordTimelineEvent("playground_reset", reason, {
+    reason,
+    caret,
+    value_chars: playgroundEl.value.length,
   });
 }
 
@@ -186,9 +216,13 @@ async function caretScreenRect(): Promise<Rect> {
 async function fireTrigger(trigger: Trigger) {
   window.clearTimeout(idleTimer);
   burstEnd = playgroundEl.selectionStart;
+  if (playgroundEl.value.length === 0 || burstEnd < burstStart) {
+    resetPlayground("cleared_or_caret_before_burst", burstEnd);
+    return;
+  }
   const draft = playgroundEl.value.slice(burstStart, burstEnd).trim();
   if (draft.length === 0) return;
-  appendTimelineEvent("playground_input", `draft_chars=${draft.length}`, {
+  recordTimelineEvent("playground_input", `draft_chars=${draft.length}`, {
     source: "playground",
     trigger,
     draft_chars: draft.length,
@@ -217,6 +251,10 @@ function endSession() {
 
 playgroundEl.addEventListener("input", () => {
   const caret = playgroundEl.selectionStart;
+  if (playgroundEl.value.length === 0 || caret < burstStart) {
+    resetPlayground("cleared_or_caret_before_burst", caret);
+    return;
+  }
   const draft = playgroundEl.value.slice(burstStart, caret);
   const last = draft.at(-1) ?? "";
   // Sentence boundary ends the session: a newline, or whitespace after a
@@ -225,7 +263,10 @@ playgroundEl.addEventListener("input", () => {
     endSession();
     return;
   }
-  if (draft.trim().length === 0) return;
+  if (draft.trim().length === 0) {
+    resetPlayground("empty_draft", caret);
+    return;
+  }
   // Continuous prediction while the burst grows, like an IME: punctuation
   // and the draft window fire immediately, everything else on a short
   // debounce. Stale results are dropped engine-side.
@@ -387,7 +428,10 @@ void events.onSettings((next) => {
   renderBackendMode(next);
 });
 void events.onSnapshot((snapshot) => {
-  lastStateEl.textContent = `composition: ${snapshot.phase}`;
+  lastStateEl.textContent =
+    snapshot.phase === "unavailable"
+      ? `composition: unavailable (${snapshot.reason})`
+      : `composition: ${snapshot.phase}`;
   appendTimelineEvent("snapshot", snapshotSummary(snapshot), { phase: snapshot.phase });
   renderInlineCandidates(snapshot);
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
@@ -418,8 +462,24 @@ void (async () => {
     const button = el("button", undefined, demoCase.title);
     button.title = demoCase.description;
     button.addEventListener("click", async () => {
-      renderComparison(await api.runComparison(demoCase.case_id));
-      await refresh();
+      recordTimelineEvent("comparison_requested", demoCase.case_id, {
+        case_id: demoCase.case_id,
+      });
+      try {
+        const report = await api.runComparison(demoCase.case_id);
+        renderComparison(report);
+        recordTimelineEvent("comparison_result", `${report.case_id}: comparison rendered`, {
+          case_id: report.case_id,
+        });
+        await refresh();
+      } catch (error) {
+        const summary = `comparison failed: ${String(error)}`;
+        recordTimelineEvent("comparison_failed", summary, {
+          case_id: demoCase.case_id,
+          error: String(error),
+        });
+        lastStateEl.textContent = summary;
+      }
     });
     casesEl.append(button);
   }

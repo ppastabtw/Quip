@@ -178,6 +178,10 @@ th {
   cursor: default;
 }
 
+.error-text {
+  color: var(--bad);
+}
+
 /* ---- playground ---- */
 
 #playground {

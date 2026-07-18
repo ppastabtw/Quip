@@ -20,12 +20,24 @@ use axuielement::ax_value::{AXRange, AXRect, AXValue};
 use axuielement::AXUIElement;
 use objc2_app_kit::NSRunningApplication;
 use quip_contracts::{CaptureResult, ContextSnippet, Rect, Trigger};
+use serde::Serialize;
 
 const DRAFT_MAX_CHARS: usize = 80;
 pub(crate) const DEFAULT_CONTEXT_LIMIT: ContextSnippetLimit = ContextSnippetLimit {
     max_snippets: 1,
     max_chars_per_snippet: 240,
 };
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct FocusedElementDiagnostic {
+    pub permission: &'static str,
+    pub app_bundle_id: Option<String>,
+    pub app_name: Option<String>,
+    pub role: Option<String>,
+    pub subrole: Option<String>,
+    pub is_editable: Option<bool>,
+    pub selected_range_available: bool,
+}
 
 #[allow(dead_code)]
 const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
@@ -321,6 +333,40 @@ pub fn accessibility_permission_status() -> AccessibilityPermissionStatus {
     } else {
         AccessibilityPermissionStatus::NotTrusted
     }
+}
+
+pub fn focused_element_diagnostic() -> FocusedElementDiagnostic {
+    let permission_status = accessibility_permission_status();
+    let mut diagnostic = FocusedElementDiagnostic {
+        permission: match permission_status {
+            AccessibilityPermissionStatus::Trusted => "trusted",
+            AccessibilityPermissionStatus::NotTrusted => "not_trusted",
+        },
+        ..FocusedElementDiagnostic::default()
+    };
+
+    let Some(system) = axuielement::SystemWideElement::new() else {
+        return diagnostic;
+    };
+    if let Some(app_element) = system.focused_application().ok().flatten() {
+        if let Some((bundle_id, app_name)) = focused_app_identity(&app_element) {
+            diagnostic.app_bundle_id = Some(bundle_id);
+            diagnostic.app_name = Some(app_name);
+        }
+    }
+    if permission_status == AccessibilityPermissionStatus::NotTrusted {
+        return diagnostic;
+    }
+    if let Some(element) = system.focused_ui_element().ok().flatten() {
+        if let Ok(snapshot) = FocusedElementSnapshot::from_ax_element(&element) {
+            diagnostic.role = Some(snapshot.role);
+            diagnostic.subrole = snapshot.subrole;
+            diagnostic.is_editable = snapshot.is_editable;
+            diagnostic.selected_range_available = snapshot.has_selected_range;
+        }
+    }
+
+    diagnostic
 }
 
 #[allow(dead_code)]

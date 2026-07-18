@@ -121,6 +121,8 @@ export const api = {
   getHealth: () => invoke<SidecarHealth>("get_health"),
   getMetrics: () => invoke<Metrics>("get_metrics"),
   getDebugEvents: (limit: number) => invoke<DebugEventView[]>("get_debug_events", { limit }),
+  recordDebugEvent: (event: string, summary: string, payload: Record<string, unknown>) =>
+    invoke<void>("record_debug_event", { event, summary, payload }),
   setSimulateFailure: (on: boolean) => invoke<void>("set_simulate_failure", { on }),
   listCorpus: () => invoke<DemoCase[]>("list_corpus"),
   runComparison: (caseId: string) =>

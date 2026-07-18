@@ -220,6 +220,13 @@ fn record_prediction_result(app: &AppHandle, burst_id: &str, result: &Prediction
     }
 }
 
+fn prediction_status_and_count(result: &PredictionResult) -> (&'static str, usize, Option<String>) {
+    match result {
+        PredictionResult::Ok { candidates, .. } => ("ok", candidates.len(), None),
+        PredictionResult::Error { error, .. } => ("error", 0, Some(error.code.clone())),
+    }
+}
+
 #[tauri::command]
 fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
     accessibility::capture_focused_destination(&profile_id, trigger)
@@ -257,6 +264,7 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             "trigger": trigger,
             "profile_id": profile_id,
             "include_context": include_context,
+            "focused": accessibility::focused_element_diagnostic(),
         }),
     );
     let result = accessibility::capture_focused_destination(&profile_id, trigger);
@@ -389,6 +397,7 @@ async fn run_capture_result(
                 json!({
                     "source": source,
                     "reason": reason,
+                    "focused": accessibility::focused_element_diagnostic(),
                 }),
             );
             emit_snapshot(&app, &Snapshot::Unavailable { reason });
@@ -565,6 +574,11 @@ fn get_debug_events(app: AppHandle, limit: usize) -> Vec<DebugEventView> {
 }
 
 #[tauri::command]
+fn record_debug_event(app: AppHandle, event: String, summary: String, payload: Value) {
+    record_debug(&app, &event, summary, payload);
+}
+
+#[tauri::command]
 fn set_simulate_failure(app: AppHandle, on: bool) {
     let engine = app.state::<EngineState>();
     engine.0.lock().unwrap().backend.simulate_failure = on;
@@ -603,14 +617,29 @@ struct ComparisonReport {
 /// depend on the live sidecar.
 #[tauri::command]
 fn run_comparison(app: AppHandle, case_id: String) -> Result<ComparisonReport, String> {
+    record_debug(
+        &app,
+        "comparison_requested",
+        format!("comparison requested: {case_id}"),
+        json!({ "case_id": case_id.clone() }),
+    );
     let report = {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
-        let case = engine
-            .backend
-            .case(&case_id)
-            .cloned()
-            .ok_or_else(|| format!("unknown corpus case {case_id}"))?;
+        let Some(case) = engine.backend.case(&case_id).cloned() else {
+            let error = format!("unknown corpus case {case_id}");
+            drop(engine);
+            record_debug(
+                &app,
+                "comparison_failed",
+                format!("comparison failed: {error}"),
+                json!({
+                    "case_id": case_id,
+                    "error": error,
+                }),
+            );
+            return Err(error);
+        };
         let run_side = |engine: &mut Engine, side: &SideSpec, tag: &str| {
             let request = PredictionRequest {
                 request_id: format!("req_cmp_{}_{}", case.case_id, tag),
@@ -640,6 +669,29 @@ fn run_comparison(app: AppHandle, case_id: String) -> Result<ComparisonReport, S
             draft: case.draft,
         }
     };
+    let (left_status, left_candidate_count, left_error_code) =
+        prediction_status_and_count(&report.left.result);
+    let (right_status, right_candidate_count, right_error_code) =
+        prediction_status_and_count(&report.right.result);
+    record_debug(
+        &app,
+        "comparison_result",
+        format!(
+            "{}: left {left_candidate_count} candidates, right {right_candidate_count} candidates",
+            report.case_id
+        ),
+        json!({
+            "case_id": report.case_id.clone(),
+            "left_status": left_status,
+            "right_status": right_status,
+            "left_candidate_count": left_candidate_count,
+            "right_candidate_count": right_candidate_count,
+            "left_error_code": left_error_code,
+            "right_error_code": right_error_code,
+            "draft_chars": report.draft.chars().count(),
+            "draft_text": report.draft.clone(),
+        }),
+    );
     emit_metrics(&app);
     Ok(report)
 }
@@ -805,9 +857,11 @@ fn resolve_debug_dir(data_dir: &std::path::Path) -> PathBuf {
 
     if cfg!(debug_assertions) {
         if let Ok(current_dir) = std::env::current_dir() {
-            let workspace = current_dir.join(".workspace");
-            if workspace.exists() {
-                return workspace.join("quip-debug");
+            for dir in current_dir.ancestors() {
+                let workspace = dir.join(".workspace");
+                if workspace.exists() {
+                    return workspace.join("quip-debug");
+                }
             }
         }
     }
@@ -937,6 +991,7 @@ fn main() {
             get_health,
             get_metrics,
             get_debug_events,
+            record_debug_event,
             set_simulate_failure,
             list_corpus,
             run_comparison
