@@ -1,0 +1,9 @@
+[package]
+name = "quip-inference-sidecar"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quip-contracts = { path = "../../../crates/quip-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }

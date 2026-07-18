@@ -2,19 +2,19 @@
 //! (`Idle → Predicting → Suggesting → applied | dismissed`).
 //!
 //! The user types directly into their own textbox; Quip observes bursts and
-//! floats a candidate bar above the caret. Invariants: a `keep` result shows
-//! nothing (the typed text stands), candidates replace the burst in place
+//! floats a candidate bar above the caret. Invariants: a zero-candidate result
+//! shows nothing (the typed text stands), candidates replace the burst in place
 //! only on explicit selection, dismissal and stale results change nothing,
 //! and starting a new burst while suggestions are visible counts as a stable
 //! dismissal (a `keep` learning label).
 
 use crate::commit::{self, CommitOutcome};
-use crate::inference::{sidecar_predict_stub, FixtureBackend, Metrics};
+use crate::inference::{FixtureBackend, Metrics, SidecarClient};
 use crate::learning::{self, LabeledExample, LearningStore};
 use crate::settings::{AppSettings, BackendMode};
 use quip_contracts::{
-    Backend, ErrorInfo, ModelVariant, PredictionAction, PredictionRequest, PredictionResult, Rect,
-    SidecarHealth, Trigger,
+    Backend, ErrorInfo, ModelVariant, PredictionRequest, PredictionResult, Rect, SidecarHealth,
+    Trigger,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -24,7 +24,7 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum Snapshot {
-    /// No bar visible. Also the result of a `keep` prediction: the typed
+    /// No bar visible. Also the result of a zero-candidate prediction: the typed
     /// text stands and the user is never interrupted.
     Idle,
     Predicting {
@@ -33,7 +33,7 @@ pub enum Snapshot {
         model_variant: ModelVariant,
     },
     /// The candidate bar is visible above `caret`. `candidates` holds one to
-    /// three model replacements (empty only in the error state).
+    /// five model replacements (empty only in the error state).
     Suggesting {
         burst_id: String,
         draft: String,
@@ -102,6 +102,7 @@ pub struct Engine {
     pub settings: AppSettings,
     pub learning: LearningStore,
     pub backend: FixtureBackend,
+    sidecar: SidecarClient,
     pub metrics: Metrics,
     state: State,
     burst_seq: u64,
@@ -114,6 +115,7 @@ impl Engine {
             settings: AppSettings::load(data_dir),
             learning: LearningStore::open(data_dir),
             backend: FixtureBackend::new(),
+            sidecar: SidecarClient::auto(),
             metrics: Metrics::default(),
             state: State::Idle,
             burst_seq: 0,
@@ -191,7 +193,7 @@ impl Engine {
     pub fn predict(&mut self, request: &PredictionRequest, mode: BackendMode) -> PredictionResult {
         let result = match mode {
             BackendMode::Fixture => self.backend.predict(request),
-            BackendMode::Live => sidecar_predict_stub(request),
+            BackendMode::Live => self.sidecar.predict(request),
         };
         let valid = self.metrics.record(&result);
         if valid {
@@ -212,7 +214,7 @@ impl Engine {
 
     /// Applies a finished prediction. Returns None when the burst was
     /// dismissed or superseded while inference ran (stale results are
-    /// dropped, never shown). A `keep` result returns Idle: no bar.
+    /// dropped, never shown). A zero-candidate result returns Idle: no bar.
     pub fn apply_result(&mut self, burst_id: &str, result: PredictionResult) -> Option<Snapshot> {
         let State::Predicting(burst) = &self.state else {
             return None;
@@ -223,10 +225,7 @@ impl Engine {
         let burst = burst.clone();
 
         let (candidates, backend, latency_ms, error) = match result {
-            PredictionResult::Ok {
-                action: PredictionAction::Keep,
-                ..
-            } => {
+            PredictionResult::Ok { candidates, .. } if candidates.is_empty() => {
                 // The typed text stands; the user is never interrupted.
                 self.state = State::Idle;
                 return Some(Snapshot::Idle);
@@ -391,10 +390,10 @@ impl Engine {
         }
     }
 
-    pub fn health(&self) -> SidecarHealth {
+    pub fn health(&mut self) -> SidecarHealth {
         match self.settings.backend_mode {
             BackendMode::Fixture => self.backend.health(),
-            BackendMode::Live => crate::inference::sidecar_health_stub(),
+            BackendMode::Live => self.sidecar.health(),
         }
     }
 }
@@ -443,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_result_shows_candidates_at_the_caret() {
+    fn changed_results_show_candidates_at_the_caret() {
         let (mut engine, dir) = test_engine();
         let snapshot = run_burst(&mut engine, "cnt cm tmrw");
         let Snapshot::Suggesting {
@@ -457,7 +456,7 @@ mod tests {
             panic!("expected suggesting");
         };
         assert_eq!(candidates[0], "Can't come tomorrow.");
-        assert!(candidates.len() > 1 && candidates.len() <= 3);
+        assert_eq!(candidates.len(), 5);
         assert_eq!(recommended, 0);
         assert_eq!(at, caret());
         assert!(error.is_none());
@@ -465,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_result_shows_no_bar_at_all() {
+    fn zero_candidate_result_shows_no_bar_at_all() {
         let (mut engine, dir) = test_engine();
         engine.settings.model_variant = ModelVariant::Global;
         let snapshot = run_burst(&mut engine, "open usr/bin and q3_finl_v2.pdf");
@@ -509,14 +508,18 @@ mod tests {
     #[test]
     fn arrow_selection_wraps_and_tab_accepts_highlighted() {
         let (mut engine, dir) = test_engine();
-        run_burst(&mut engine, "cnt cm tmrw"); // 3 candidates
+        let initial = run_burst(&mut engine, "cnt cm tmrw");
+        let Snapshot::Suggesting { candidates, .. } = initial else {
+            panic!("expected suggesting");
+        };
+        assert_eq!(candidates.len(), 5);
         let snap = engine.move_selection(1).unwrap();
         let Snapshot::Suggesting { selected, .. } = snap else {
             panic!("expected suggesting");
         };
         assert_eq!(selected, 1);
         // Wraps around in both directions.
-        engine.move_selection(2).unwrap();
+        engine.move_selection(candidates.len() as i64 - 1).unwrap();
         let Snapshot::Suggesting { selected, candidates, .. } = engine.current_snapshot() else {
             panic!("expected suggesting");
         };

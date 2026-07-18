@@ -41,10 +41,12 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join("settings.json");
-        std::fs::read_to_string(&path)
+        let mut settings: Self = std::fs::read_to_string(&path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        settings.apply_environment_overrides();
+        settings
     }
 
     pub fn save(&self, data_dir: &Path) {
@@ -53,6 +55,20 @@ impl AppSettings {
             .and_then(|_| std::fs::write(&path, serde_json::to_string_pretty(self).unwrap()))
         {
             tracing::warn!(error = %e, path = %path.display(), "failed to persist settings");
+        }
+    }
+
+    fn apply_environment_overrides(&mut self) {
+        match std::env::var("QUIP_BACKEND_MODE").as_deref() {
+            Ok("fixture") => self.backend_mode = BackendMode::Fixture,
+            Ok("live") => self.backend_mode = BackendMode::Live,
+            _ => {}
+        }
+        match std::env::var("QUIP_MODEL_VARIANT").as_deref() {
+            Ok("base") => self.model_variant = ModelVariant::Base,
+            Ok("global") => self.model_variant = ModelVariant::Global,
+            Ok("global_plus_personal") => self.model_variant = ModelVariant::GlobalPlusPersonal,
+            _ => {}
         }
     }
 }

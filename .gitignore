@@ -4,7 +4,7 @@
 !docs/
 !docs/**/*
 !training/flash/dataset/ATTRIBUTION.md
-
+!.agents/skills/**/SKILL.md
 .workspace/
 .workspace/**/*
 .claude/

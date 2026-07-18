@@ -18,8 +18,8 @@ Decided 2026-07-18. `docs/SPEC.md` is authoritative. This note preserves only th
 - Workstream 4 owns the non-focusable candidate bar and its visual states.
 - Internal learning labels are separate from the inference result. Leaving text unchanged is not a model action.
 
-## Shared-contract migration
+## Shared contract
 
-The current Phase 0 schema, fixtures, Rust contract, TypeScript contract, inference adapter, and composition consumer still encode the earlier action field and smaller candidate cap. Their owners must migrate them as one integration change. Do not update only one producer or consumer.
+The Phase 0 schema, fixtures, Rust contract, TypeScript contract, inference adapter, and composition consumer use this candidate-based shape together. Successful results contain zero to five candidates and no model action.
 
-The migration is complete when one shared fixture proves zero candidates, ranked deduplication, five candidates, selection keys `1` through `5`, dismissal without replacement, and explicit failure behavior.
+The shared fixture proves zero- and five-candidate results. Sidecar tests prove vote ranking, deduplication, exact-input filtering, and the five-candidate cap; the app consumer implements keys `1` through `5`, dismissal without replacement, and explicit failure behavior.

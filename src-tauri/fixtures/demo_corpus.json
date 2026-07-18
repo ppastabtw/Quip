@@ -4,11 +4,12 @@
       "draft": "cnt cm tmrw",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Can't come tomorrow.",
         "I can't come tomorrow.",
-        "Cannot come tomorrow."
+        "Cannot come tomorrow.",
+        "Can't make it tomorrow.",
+        "I cannot come tomorrow."
       ],
       "latency_ms": 612
     },
@@ -16,7 +17,6 @@
       "draft": "i went to the store instaed",
       "model_variant": "base",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "I went to the store instead.",
         "I went to the store instead of that."
@@ -27,7 +27,6 @@
       "draft": "i went to the store instaed",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "i went to the store instead",
         "I went to the store instead."
@@ -38,7 +37,6 @@
       "draft": "meet there tmrw",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Meet there tomorrow.",
         "Meet you there tomorrow."
@@ -49,7 +47,6 @@
       "draft": "omw",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "On my way.",
         "I'm on my way.",
@@ -61,7 +58,6 @@
       "draft": "brb 5 min",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Be right back in 5 minutes.",
         "BRB in 5 minutes."
@@ -72,7 +68,6 @@
       "draft": "thx so much 4 the help",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Thanks so much for the help.",
         "Thank you so much for the help!"
@@ -83,7 +78,6 @@
       "draft": "pls rvw the doc b4 standup",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Please review the doc before standup.",
         "Please review the document before standup."
@@ -94,7 +88,6 @@
       "draft": "gonna b l8 sry",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Gonna be late, sorry.",
         "Going to be late, sorry.",
@@ -106,7 +99,6 @@
       "draft": "lmk wen ur free",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Let me know when you're free.",
         "Let me know when you are free.",
@@ -118,7 +110,6 @@
       "draft": "did u c the eml frm sarah",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "Did you see the email from Sarah?",
         "Have you seen the email from Sarah?"
@@ -129,7 +120,6 @@
       "draft": "im hngry lets get lnch",
       "model_variant": "global",
       "has_context": false,
-      "action": "replace",
       "candidates": [
         "I'm hungry, let's get lunch.",
         "I'm hungry — let's get lunch!"

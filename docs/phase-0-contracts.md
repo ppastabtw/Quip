@@ -1,6 +1,6 @@
 # Phase 0 boundaries
 
-`docs/SPEC.md` governs product behavior. This document records the target v0 boundary. The existing schema and app consumers still need a coordinated migration to this boundary.
+`docs/SPEC.md` governs product behavior. This document records the v0 boundary implemented by the shared schema and app consumers.
 
 The goal is to let workstreams integrate without deciding their internal designs early. A boundary is accepted only after one producer and one consumer validate the same fixture.
 
@@ -12,7 +12,7 @@ Only these values cross workstream boundaries:
 - `capture_result` between Accessibility and the composition UI
 - `sidecar_health` between inference and the health UI
 
-The current executable shapes live in `docs/phase-0.schema.json`. Examples live in `docs/fixtures/phase-0-examples.json`. Both still describe the earlier action-based result and are migration inputs, not the V0 Base target.
+The current executable shapes live in `docs/phase-0.schema.json`. Examples live in `docs/fixtures/phase-0-examples.json`. Both implement this candidate-based boundary.
 
 ## Kept internal for now
 
@@ -49,6 +49,7 @@ The fixtures cover:
 - base and global results for protected text
 - context-assisted replacement
 - personal-pattern replacement
+- zero-candidate skip and a five-candidate result
 - a missing-adapter error
 - ready and unavailable capture results
 - ready and degraded sidecar health
@@ -59,4 +60,4 @@ Fixtures demonstrate the protocol. They are not training data or proof of model 
 
 During v0, the affected producer and consumer may change a boundary when a fixture or integration test shows a mismatch. The integration owner resolves compatibility questions, while `docs/SPEC.md` remains authoritative for product behavior.
 
-The next shared-contract migration must update the schema, fixtures, Rust contract, TypeScript contract, inference adapter, and composition consumer together. Until then, the training prototype is the executable reference for ranked and deduplicated model completions.
+Boundary changes must update the schema, fixtures, Rust contract, TypeScript contract, inference adapter, and composition consumer together. The training prototype and Rust sidecar use the same vote-count ranking and earliest-completion tie breaker.

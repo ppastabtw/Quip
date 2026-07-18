@@ -128,9 +128,10 @@ fn show_window(app: &AppHandle, label: &str) {
     }
 }
 
-/// One full burst: begin → (simulated) inference latency → suggest.
-/// The engine lock is never held across the sleep, and stale results are
-/// dropped by `apply_result` if the burst was dismissed meanwhile.
+/// One full burst: begin → inference → suggest. Fixture latency is replayed;
+/// live results have already incurred their measured latency. The engine lock
+/// is never held across the optional sleep, and stale results are dropped by
+/// `apply_result` if the burst was dismissed meanwhile.
 async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     let begun = {
         let engine = app.state::<EngineState>();
@@ -160,11 +161,14 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
 
     // Fixture latencies are replayed in real time so the bar's arrival is
     // honest about what live inference will feel like.
-    let delay_ms = match &result {
-        PredictionResult::Ok { latency_ms, .. } => (*latency_ms).min(900),
-        PredictionResult::Error { .. } => 250,
+    let delay_ms = match (&result, mode) {
+        (PredictionResult::Ok { latency_ms, .. }, BackendMode::Fixture) => (*latency_ms).min(900),
+        (PredictionResult::Error { .. }, BackendMode::Fixture) => 250,
+        _ => 0,
     };
-    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
 
     let applied = {
         let engine = app.state::<EngineState>();
@@ -561,7 +565,22 @@ fn main() {
                 });
             }
 
-            if std::env::var("QUIP_SELFTEST").as_deref() == Ok("1") {
+            if std::env::var("QUIP_SELFTEST_LIVE").as_deref() == Ok("1") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let code = match live_selftest::run(handle.clone()).await {
+                        Ok(()) => {
+                            println!("LIVE SELFTEST PASS");
+                            0
+                        }
+                        Err(error) => {
+                            println!("LIVE SELFTEST FAIL: {error}");
+                            1
+                        }
+                    };
+                    handle.exit(code);
+                });
+            } else if std::env::var("QUIP_SELFTEST").as_deref() == Ok("1") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let code = match selftest::run(handle.clone()).await {
@@ -665,7 +684,7 @@ mod selftest {
             "shorthand suggests multiple candidates, best first",
             candidates.first().map(String::as_str) == Some("Can't come tomorrow.")
                 && candidates.len() > 1
-                && candidates.len() <= 3
+                && candidates.len() <= 5
                 && error.is_none(),
             format!("{candidates:?} {error:?}"),
         )?;
@@ -690,14 +709,14 @@ mod selftest {
         )?;
         dismiss_suggestions(app.clone());
 
-        // 4. A keep result shows no bar at all.
+        // 4. A zero-candidate result shows no bar at all.
         inject_capture(
             app.clone(),
             capture("st_3", "profile_default", "open usr/bin and q3_finl_v2.pdf"),
         )
         .await;
         check(
-            "keep shows nothing",
+            "zero candidates show nothing",
             state(&app) == Snapshot::Idle,
             format!("{:?}", state(&app)),
         )?;
@@ -733,6 +752,66 @@ mod selftest {
             metrics.requests >= 6 && metrics.schema_invalid == 0,
             format!("{metrics:?}"),
         )?;
+        Ok(())
+    }
+}
+
+/// Headless validation of the pushed app client against the real local
+/// sidecar and Qwen server. This deliberately checks the process boundary and
+/// UI state conversion without selecting or persisting a model suggestion.
+mod live_selftest {
+    use super::*;
+
+    pub async fn run(app: AppHandle) -> Result<(), String> {
+        let health = get_health(app.clone());
+        if health.status != quip_contracts::HealthStatus::Ready || !health.loaded.base {
+            return Err(format!("sidecar health was not live-ready: {health:?}"));
+        }
+        println!("LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded");
+
+        inject_capture(
+            app.clone(),
+            CaptureResult::Ready {
+                burst_id: "live_selftest".to_owned(),
+                destination_id: "destination_live_selftest".to_owned(),
+                profile_id: "profile_default".to_owned(),
+                draft: "see you tomorow".to_owned(),
+                trigger: Trigger::Idle,
+                caret: Rect {
+                    x: 512.0,
+                    y: 384.0,
+                    width: 2.0,
+                    height: 18.0,
+                },
+            },
+        )
+        .await;
+
+        let snapshot = {
+            let engine = app.state::<EngineState>();
+            let engine = engine.0.lock().unwrap();
+            engine.current_snapshot()
+        };
+        match snapshot {
+            Snapshot::Suggesting {
+                candidates,
+                backend: Some(quip_contracts::Backend::Live),
+                latency_ms: Some(latency_ms),
+                error: None,
+                ..
+            } if !candidates.is_empty() && latency_ms > 0 => {
+                println!(
+                    "LIVE SELFTEST ok: app rendered live candidates in {latency_ms} ms: {candidates:?}"
+                );
+            }
+            other => return Err(format!("unexpected live composition state: {other:?}")),
+        }
+
+        let metrics = get_metrics(app);
+        if metrics.requests != 1 || metrics.ok != 1 || metrics.schema_invalid != 0 {
+            return Err(format!("unexpected live metrics: {metrics:?}"));
+        }
+        println!("LIVE SELFTEST ok: app metrics recorded one schema-valid live result");
         Ok(())
     }
 }

@@ -32,16 +32,13 @@ export interface PredictionRequest {
   personal_patterns: PersonalPattern[];
 }
 
-export type PredictionAction = "keep" | "replace";
-
 export type PredictionResult =
   | {
       status: "ok";
       request_id: string;
       model_variant: ModelVariant;
       backend: Backend;
-      action: PredictionAction;
-      /** Empty for `keep`; one to three full-input replacements, best first, for `replace`. */
+      /** Zero to five ranked, deduplicated full-input replacements. Empty means skip. */
       candidates: string[];
       latency_ms: number;
     }
