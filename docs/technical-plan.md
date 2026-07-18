@@ -12,14 +12,14 @@ Source: `docs/SPEC.md`
 - **model family**: start with Qwen3.5-2B at 4-bit; benchmark Qwen3.5-4B only after 2B establishes a working latency and quality baseline.
 - **global training**: Flash `EnvironmentSingleTurn` for dataset construction, SFT, optional GRPO, checkpoint evaluation, inspected rollouts, and global LoRA export.
 - **personalization**: Freesolo-trained per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
-- **storage**: local files or an embedded local store for settings, personal examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database in the judged build.
-- **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; upload only compact confirmed examples selected for a private Freesolo training run.
+- **storage**: local files or an embedded local store for settings, confirmed examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database is required for the judged build.
+- **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; Freesolo profile runs may use a substantial deduplicated set of confirmed interactions.
 
 ## Key decisions and rejected alternatives
 
 **compose before commit**: Quip captures the writing burst in its own temporary box and commits only after explicit confirmation. Direct edits to destination fields were rejected because they make cancellation, protected-token preservation, and trust harder to demonstrate.
 
-**local inference with Freesolo training**: The base model, exported adapters, prompts, drafts, ambient context, and primary personal record store stay on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or compact confirmed profile examples. Remote inference was rejected.
+**local inference with Freesolo training**: The base model and exported adapters run on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or deduplicated confirmed profile examples. This is a hackathon validation target, not a production privacy guarantee.
 
 **Accessibility text over screenshots or OCR**: Window context comes from bounded accessible text snippets ranked locally by focus, recency, and relevance. Screenshots and OCR were rejected for the hackathon build because they increase privacy risk, implementation complexity, and demo fragility.
 
@@ -33,7 +33,7 @@ Source: `docs/SPEC.md`
 
 **adapter composition with merge fallback**: The preferred runtime loads the Qwen base, frozen global Freesolo adapter, and separate user adapter together. If stacking fails, merge the global adapter into the base once and load a single user adapter over it.
 
-**private Freesolo profile runs**: Per-user LoRA training uses private Freesolo runs so the sponsor technology is part of both global improvement and personalization. Only compact confirmed examples enter a profile run, and the exported adapter returns to local inference.
+**Freesolo profile runs**: Per-user LoRA training uses Freesolo so the sponsor technology is part of both global improvement and personalization. Confirmed interactions can provide much of the profile training data, and the exported adapter returns to local inference.
 
 **narrow judged app scope**: The demo targets TextEdit, Notes, and one standard browser input. Rich editors, terminals, PDFs, secure fields, canvas editors, unusual Electron controls, and universal macOS support are explicitly out of scope.
 
@@ -45,7 +45,7 @@ Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibil
 
 The UI always presents the exact draft plus any schema-valid candidates. On confirmation, the commit layer restores the original destination and inserts or replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
 
-The training path is separate from the inference path. Flash owns global and per-user adapter training, checkpoint inspection, evaluation, and export. SFT learns the JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces the same schema. Profile runs receive only compact confirmed labeled examples, never live inference traffic or ambient window context by default.
+The training path is separate from the inference path. Flash owns global and per-user adapter training, checkpoint inspection, evaluation, and export. SFT learns the JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces the same schema. Profile runs use deduplicated confirmed interactions; excluding ambient context is preferred but not a blocking hackathon requirement.
 
 ## Module and folder structure
 

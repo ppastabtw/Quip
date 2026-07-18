@@ -6,14 +6,14 @@ Quip is a fast, local macOS composition layer for compressed, misspelled, or pho
 
 The Freesolo-trained model should beat base Qwen by decoding noisy text while making fewer unnecessary edits. The live comparison reports unnecessary edit rate, protected-token preservation, shorthand and phonetic decoding, and latency.
 
-### Locality contract
+### Prototype data posture
 
-- All inference runs on the Mac and remains available offline after model installation.
-- The Qwen base, exported global adapter, exported per-user adapters, and primary personal record store stay local for inference.
-- Temporary drafts, selections, prompts, context, and outputs never go to a remote inference service.
-- Freesolo uses a prepared project dataset to train and export the global adapter. Managed endpoints are limited to training inspection and debugging.
-- Per-user adapter training also runs through Freesolo. Quip uploads only a compact, deduplicated set of confirmed labeled examples for a private profile run, then downloads the resulting adapter for local inference.
-- Open-window context is processed in memory and is not uploaded or retained by default.
+- The hackathon validates behavior and technical feasibility; it does not claim a production-grade privacy architecture.
+- Inference targets the Mac and remains available offline after model installation.
+- Freesolo trains both the global adapter and separate per-user adapters. User-confirmed interactions may become a substantial source of training data.
+- Quip turns confirmed interactions into a deduplicated profile dataset, submits a profile run, then downloads the adapter for local inference.
+- Prefer excluding ambient open-window context from profile training unless a confirmed labeled example needs it. This is a prototype default, not a blocking requirement.
+- Never use credentials or obviously sensitive personal data in the hackathon datasets or demo.
 
 ## Experience
 
@@ -79,7 +79,7 @@ Every user starts with the frozen global Freesolo adapter and receives a separat
 - corrections made immediately after a Quip commit
 - repeated personal abbreviations, names, vocabulary, and expansions
 
-Quip does not store every keystroke. It appends compact labeled interactions locally, deduplicates repeated patterns, and submits only the resulting minimal profile dataset when refreshing the user adapter through Freesolo. Ambient window text is excluded unless it was deliberately retained in a confirmed labeled example. Before enough examples exist for training, a compact local pattern dictionary provides immediate personalization.
+Quip does not treat every keystroke as a training label. It collects useful confirmed interactions, deduplicates repeated patterns, and can build a substantial per-user dataset for Freesolo. Prefer excluding ambient window text unless it is needed for a confirmed labeled example. Before enough examples exist for training, a compact local pattern dictionary provides immediate personalization.
 
 If the runtime cannot stack adapters, Quip merges the global adapter into the base once and loads one user adapter over it. Users can pause learning, inspect stored patterns, or reset their local adapter and records.
 
