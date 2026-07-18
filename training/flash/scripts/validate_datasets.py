@@ -1,74 +1,127 @@
-"""Validate Quip Flash rows, gold outputs, and held-out separation."""
+"""Validate Quip Flash smoke rows or the complete sourced corpus."""
 
 from __future__ import annotations
 
+import argparse
 import json
+import re
 import sys
-from collections import Counter
+import unicodedata
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scoring import score_completion  # noqa: E402
+from dataset_compiler.contract import DATASET_DIR, REPORT_PATH, validate_compiled_datasets  # noqa: E402
+from scoring import parse_prediction, score_completion  # noqa: E402
 
 
-ALLOWED_ROW_KEYS = {"input", "output", "metadata"}
+SMOKE_METADATA_KEYS = {
+    "example_id",
+    "category",
+    "target_changed",
+    "accepted_suggestions",
+    "protected_tokens",
+}
 
 
-def load_rows(path: Path) -> list[dict]:
-    rows = []
+def normalize(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value)
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
+    inputs: set[str] = set()
+    example_ids: set[str] = set()
+    rows = 0
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
                 continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(row, dict) or set(row) != ALLOWED_ROW_KEYS:
-                raise ValueError(f"{path}:{line_number}: row keys must be input, output, metadata")
-            if not isinstance(row["input"], str) or not isinstance(row["output"], str):
-                raise ValueError(f"{path}:{line_number}: input and output must be strings")
-            if not isinstance(row["metadata"], dict):
-                raise ValueError(f"{path}:{line_number}: metadata must be an object")
+            row = json.loads(line)
+            if not isinstance(row, dict) or set(row) != {"input", "output", "metadata"}:
+                raise ValueError(f"{path}:{line_number}: invalid row shape")
+            input_payload = json.loads(row["input"])
+            if (
+                not isinstance(input_payload, dict)
+                or set(input_payload) != {"text"}
+                or not isinstance(input_payload["text"], str)
+                or not input_payload["text"].strip()
+            ):
+                raise ValueError(f"{path}:{line_number}: invalid input")
+            prediction = parse_prediction(row["output"])
+            metadata = row["metadata"]
+            if not isinstance(metadata, dict) or set(metadata) != SMOKE_METADATA_KEYS:
+                raise ValueError(f"{path}:{line_number}: invalid smoke metadata")
+            if not isinstance(metadata["target_changed"], bool):
+                raise ValueError(f"{path}:{line_number}: target_changed must be boolean")
+            if metadata["target_changed"] != (
+                prediction.suggestion != input_payload["text"]
+            ):
+                raise ValueError(f"{path}:{line_number}: target_changed is incorrect")
+            accepted = metadata["accepted_suggestions"]
+            if (
+                not isinstance(accepted, list)
+                or not accepted
+                or not all(isinstance(item, str) and item.strip() for item in accepted)
+                or normalize(prediction.suggestion) not in {normalize(item) for item in accepted}
+            ):
+                raise ValueError(f"{path}:{line_number}: invalid accepted_suggestions")
+            if not isinstance(metadata["protected_tokens"], list) or not all(
+                isinstance(item, str) and item for item in metadata["protected_tokens"]
+            ):
+                raise ValueError(f"{path}:{line_number}: invalid protected_tokens")
             result = score_completion(
                 input_text=row["input"],
                 expected_output=row["output"],
-                metadata=row["metadata"],
+                metadata=metadata,
                 response_text=row["output"],
             )
             if result.score != 1.0 or not result.success:
-                raise ValueError(f"{path}:{line_number}: gold output does not earn full reward: {result.reason}")
-            rows.append(row)
+                raise ValueError(
+                    f"{path}:{line_number}: gold output failed reward: {result.reason}"
+                )
+            normalized_input = normalize(input_payload["text"])
+            if normalized_input in inputs:
+                raise ValueError(f"{path}:{line_number}: duplicate input")
+            example_id = metadata["example_id"]
+            if not isinstance(example_id, str) or not example_id or example_id in example_ids:
+                raise ValueError(f"{path}:{line_number}: invalid or duplicate example_id")
+            inputs.add(normalized_input)
+            example_ids.add(example_id)
+            rows += 1
     if not rows:
         raise ValueError(f"{path}: dataset is empty")
-    return rows
+    print(f"{path.stem}: {rows} smoke rows")
+    return inputs, example_ids
+
+
+def validate_smoke_datasets() -> None:
+    train_inputs, train_ids = validate_smoke_split(DATASET_DIR / "train.jsonl")
+    eval_inputs, eval_ids = validate_smoke_split(DATASET_DIR / "eval.jsonl")
+    if train_inputs & eval_inputs:
+        raise ValueError("smoke train and eval inputs overlap")
+    if train_ids & eval_ids:
+        raise ValueError("smoke train and eval example IDs overlap")
 
 
 def main() -> int:
-    train_path = ROOT / "dataset" / "train.jsonl"
-    eval_path = ROOT / "dataset" / "eval.jsonl"
-    train_rows = load_rows(train_path)
-    eval_rows = load_rows(eval_path)
-
-    train_inputs = {row["input"] for row in train_rows}
-    eval_inputs = {row["input"] for row in eval_rows}
-    overlap = train_inputs & eval_inputs
-    if overlap:
-        raise ValueError(f"train and eval contain {len(overlap)} duplicate inputs")
-
-    ids = [row["metadata"].get("example_id") for row in train_rows + eval_rows]
-    if any(not isinstance(example_id, str) or not example_id for example_id in ids):
-        raise ValueError("every row requires metadata.example_id")
-    if len(set(ids)) != len(ids):
-        raise ValueError("metadata.example_id values must be unique")
-
-    for name, rows in (("train", train_rows), ("eval", eval_rows)):
-        counts = Counter(row["metadata"].get("category", "missing") for row in rows)
-        summary = ", ".join(f"{category}={count}" for category, count in sorted(counts.items()))
-        print(f"{name}: {len(rows)} rows ({summary})")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="validate the small integration corpus without sourced-build quotas",
+    )
+    args = parser.parse_args()
+    if args.smoke:
+        validate_smoke_datasets()
+        return 0
+    validate_compiled_datasets(
+        train_path=DATASET_DIR / "train.jsonl",
+        eval_path=DATASET_DIR / "eval.jsonl",
+        report_path=REPORT_PATH,
+    )
     return 0
 
 

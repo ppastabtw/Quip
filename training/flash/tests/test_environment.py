@@ -5,15 +5,15 @@ from environment import QuipEnvironment, load_environment
 
 class EnvironmentTests(unittest.TestCase):
     def test_loads_train_and_eval_splits(self):
-        self.assertEqual(len(load_environment(split="train").dataset), 30)
-        self.assertEqual(len(load_environment(split="eval").dataset), 20)
+        self.assertEqual(len(load_environment(split="train").dataset), 25)
+        self.assertEqual(len(load_environment(split="eval").dataset), 16)
 
     def test_prompt_contains_policy_and_input(self):
         environment = QuipEnvironment(split="train")
         example = environment.dataset[0]
         messages = environment.build_prompt_messages(example, "")
         self.assertEqual(messages[0]["role"], "system")
-        self.assertIn("restraint-first", messages[0]["content"])
+        self.assertIn("one full-text suggestion", messages[0]["content"])
         self.assertEqual(messages[1]["content"], example.input)
 
     def test_gold_output_passes_environment_reward(self):

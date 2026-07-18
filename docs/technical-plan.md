@@ -21,11 +21,13 @@ Source: `docs/SPEC.md`
 
 **local inference with Freesolo training**: The base model and exported adapters run on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or deduplicated confirmed profile examples. This is a hackathon validation target, not a production privacy guarantee.
 
+**managed Windows playground, local Quip inference**: The disposable Windows model playground calls Freesolo managed serving so the training owner can probe base models and deployed checkpoints without building a second local runtime. It is an evaluation tool only. The actual Quip application does not use this remote inference path; it loads the exported model and adapters locally on macOS.
+
 **Accessibility text over screenshots or OCR**: Window context comes from bounded accessible text snippets ranked locally by focus, recency, and relevance. Screenshots and OCR were rejected for the hackathon build because they increase privacy risk, implementation complexity, and demo fragility.
 
 **one prediction per burst**: Prediction runs after punctuation, Return, or a short idle pause instead of on every character. Per-keystroke inference was rejected because it increases latency pressure and makes local model comparison noisier.
 
-**guided JSON output contract**: The model emits either `keep` with no candidates or `replace` with one to three full-input candidates. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
+**guided JSON model contract**: Each model completion emits exactly one full-input `suggestion`. The inference layer removes exact-draft completions. It returns `keep` when none remain, or deduplicates and orders at most three changed suggestions for `replace`. This converts the model output to the shared `action` and `candidates` wire format. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
 
 **exact draft is always a commit option**: The application adds the unchanged draft as the first option even when the model recommends `keep`. Auto-committing `keep` was rejected because it bypasses the confirmation contract.
 
@@ -45,7 +47,7 @@ Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibil
 
 The UI always presents the exact draft plus any schema-valid candidates. On confirmation, the commit layer restores the original destination and inserts or replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
 
-The training path is separate from the inference path. Flash owns global and per-user adapter training, checkpoint inspection, evaluation, and export. SFT learns the JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces the same schema. Profile runs use deduplicated confirmed interactions; excluding ambient context is preferred but not a blocking hackathon requirement.
+The training path is separate from the inference path. Flash owns global and per-user adapter training, checkpoint inspection, evaluation, and export. SFT learns the single-suggestion JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces that model schema. The inference adapter converts model suggestions to the separate shared `prediction_result` schema. Profile runs use deduplicated confirmed interactions; excluding ambient context is preferred but not a blocking hackathon requirement.
 
 ## Module and folder structure
 

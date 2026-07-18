@@ -10,6 +10,7 @@ The Freesolo-trained model should beat base Qwen by decoding noisy text while ma
 
 - The hackathon validates behavior and technical feasibility; it does not claim a production-grade privacy architecture.
 - Inference targets the Mac and remains available offline after model installation.
+- The Windows model playground uses Freesolo managed serving only for training iteration and checkpoint inspection. This remote prototype path does not change the actual Quip product, which runs inference locally on the Mac.
 - Freesolo trains both the global adapter and separate per-user adapters. User-confirmed interactions may become a substantial source of training data.
 - Quip turns confirmed interactions into a deduplicated profile dataset, submits a profile run, then downloads the adapter for local inference.
 - Prefer excluding ambient open-window context from profile training unless a confirmed labeled example needs it. This is a prototype default, not a blocking requirement.
@@ -48,19 +49,15 @@ A global shortcut can load selected existing text into the same temporary box. C
 
 ### Model contract
 
-The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. SFT learns the JSON contract from gold outputs because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`, and the local runtime enforces the same schema at inference.
-
-Valid outputs are:
+The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. Each completion returns exactly one full-input suggestion:
 
 ```json
-{ "action": "keep", "candidates": [] }
+{ "suggestion": "best full text" }
 ```
 
-```json
-{ "action": "replace", "candidates": ["best candidate"] }
-```
+SFT learns this JSON contract from gold outputs because Flash rejects `structured_outputs` for SFT. GRPO constrains sampled rollouts with `train.structured_outputs`, and the local runtime enforces the same schema at inference.
 
-`action` is exactly `keep` or `replace`. `keep` has no candidates; `replace` has one to three, ordered best first. Each candidate replaces the full bounded input. The application always adds the exact draft as a separate commit option.
+The inference layer compares every sampled suggestion with the exact draft and removes exact matches from the candidate set. If no changed suggestion remains, it returns a shared `keep` result with no candidates. Otherwise it deduplicates and orders the changed suggestions, keeps at most three, and returns a shared `replace` result. The shared `prediction_result` wire format remains defined by `docs/phase-0.schema.json`. The application always adds the exact draft as a separate commit option.
 
 Protected content includes paths, filenames, names, commands, URLs, identifiers, version strings, and intentional slang, including examples such as `usr/bin` and `q3_finl_v2.pdf`.
 

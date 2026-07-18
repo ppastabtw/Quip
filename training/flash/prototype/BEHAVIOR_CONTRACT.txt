@@ -1,0 +1,50 @@
+Behavior Contract: Quip model playground
+
+Target
+
+- Surface: http://127.0.0.1:8765
+- User posture: a developer on the Windows training machine with Flash authenticated in Ubuntu WSL2
+- Build or version: the current checkout's training/flash/prototype files
+
+Setup
+
+- Start the server with ./training/flash/prototype/start.ps1 from PowerShell.
+- Use non-sensitive synthetic text only.
+- The launcher may read the existing Flash credential inside Ubuntu WSL2. The browser must never receive it.
+
+Clauses
+
+- BV-1: Given a running server, when the developer opens the root URL, then the page shows only the Quip title, model, system prompt, draft, temperature, max tokens, suggestions, run control, and any current result or error.
+  Evidence: visible browser state.
+- BV-2: The page does not show example chips or the phrases Training workbench, shorthand, typo, protected token, or synthetic text only.
+  Evidence: visible browser state.
+- BV-3: Given a blank draft, when the developer runs the model, then the page rejects the request without sending an inference call.
+  Evidence: visible validation message.
+- BV-4: Given a valid draft, model ID, system prompt, temperature, max tokens, and suggestion count N, when managed inference succeeds, then the page shows exactly N individually numbered suggestions with changed state and per-suggestion latency.
+  Evidence: visible result and the API response fields.
+- BV-5: Given a changed system prompt, temperature, max tokens, or suggestion count, when the developer runs again, then the submitted API request and result metadata reflect the changed controls.
+  Evidence: browser-visible controls and API response fields.
+- BV-6: Given a changed draft, when the developer runs the model again, then the displayed suggestions come from new managed completions rather than static fixture text.
+  Evidence: two distinct requests and responses.
+- BV-7: Given an invalid or unavailable model ID, when the developer runs it, then the page shows a useful error without exposing a credential.
+  Evidence: visible error and redacted response inspection.
+
+Anti-cheat probes
+
+- Submit an empty draft.
+- Request three suggestions and verify three separate result items.
+- Change the system prompt and temperature between successful requests.
+- Submit a deliberately invalid model ID.
+- Inspect browser-visible responses for credential-like values.
+
+Exclusions
+
+- Training, deployment, adapter selection, model export, and paid operations.
+- The macOS app, Accessibility capture, Tauri, Metal, and local adapter loading.
+- Authentication, persistence, history, streaming, and production security hardening.
+
+Stop conditions
+
+- Flash authentication is missing inside Ubuntu WSL2.
+- Freesolo managed serving is unreachable.
+- No successfully serving model is available for BV-3 and BV-4.

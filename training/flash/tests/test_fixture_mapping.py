@@ -23,6 +23,9 @@ class FixtureMappingTests(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         self.assertTrue(all(set(row) == {"input", "output", "metadata"} for row in rows))
         self.assertTrue(all("base" not in row["metadata"]["example_id"] for row in rows))
+        self.assertTrue(
+            all(set(json.loads(row["output"])) == {"suggestion"} for row in rows)
+        )
 
     def test_protected_fixture_keeps_both_tokens(self):
         source = json.loads((ROOT.parents[1] / "docs" / "fixtures" / "phase-0-examples.json").read_text())

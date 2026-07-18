@@ -17,7 +17,7 @@ lora_alpha = 64
 group_size = 8
 max_completion_tokens = 128
 max_context_tokens = 1024
-structured_outputs = { json = { type = "object", properties = { action = { type = "string", enum = ["keep", "replace"] }, candidates = { type = "array", items = { type = "string" }, maxItems = 3 } }, required = ["action", "candidates"], additionalProperties = false }, disable_additional_properties = true }
+structured_outputs = { json = { type = "object", properties = { suggestion = { type = "string", minLength = 1 } }, required = ["suggestion"], additionalProperties = false }, disable_additional_properties = true }
 
 # After SFT wins on held-out evaluation, set init_from_adapter to its run id
 # and remove lora_rank and lora_alpha because the source adapter owns both.

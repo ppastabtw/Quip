@@ -18,6 +18,7 @@ The executable shapes live in `docs/phase-0.schema.json`. Examples live in `docs
 
 - Accessibility element handles, insertion markers, and destination restoration state
 - UI candidate and transition state
+- the model completion shape, sampling count, ordering, and deduplication
 - personal-example storage
 - model and adapter paths
 - idle timing, draft limits, and other tuning values
@@ -28,10 +29,12 @@ The Accessibility layer exposes an opaque `destination_id`. The UI returns that 
 
 - A request carries bounded draft text, bounded window snippets, and compact personal patterns.
 - `model_variant` identifies `base`, `global`, or `global_plus_personal`. `backend` independently identifies `fixture` or `live`.
+- Each internal model completion contains one full-input `suggestion`.
+- Inference removes exact-draft suggestions, returns `keep` when no changed suggestion remains, and otherwise returns `replace` with at most three deduplicated changed suggestions.
 - A successful `keep` result has no candidates.
 - A successful `replace` result has one to three full-input replacements, ordered best first.
 - Failures use an explicit error result. They do not invent an action or candidates.
-- The application adds the exact draft option. The model does not return it.
+- The application adds the exact draft option independently. A matching model suggestion is not exposed as a candidate.
 - Secure and unsupported fields produce an unavailable capture result and never reach inference.
 - Internal Accessibility state and personal records stay local to the Mac.
 

@@ -3,7 +3,8 @@
 !AGENTS.md
 !docs/
 !docs/**/*
-!training/
+!training/flash/dataset/ATTRIBUTION.md
+
 .workspace/
 .workspace/**/*
 .claude/

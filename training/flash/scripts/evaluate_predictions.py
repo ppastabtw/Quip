@@ -57,7 +57,7 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
         )
         for key, value in (
             ("schema_valid", result.schema_valid),
-            ("action_correct", result.action_correct),
+            ("change_correct", result.change_correct),
             ("content_correct", result.content_correct),
             ("protected_preserved", result.protected_preserved),
             ("success", result.success),
@@ -66,10 +66,14 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
                 totals[key] += 1
                 categories[category][key] += 1
 
-        if metadata.get("expected_action") == "keep":
-            totals["keep_examples"] += 1
-            categories[category]["keep_examples"] += 1
-            if result.prediction is not None and result.prediction.action == "replace":
+        if metadata.get("target_changed") is False:
+            totals["unchanged_examples"] += 1
+            categories[category]["unchanged_examples"] += 1
+            input_text = json.loads(row["input"])["text"]
+            if (
+                result.prediction is not None
+                and result.prediction.suggestion != input_text
+            ):
                 totals["unnecessary_edits"] += 1
                 categories[category]["unnecessary_edits"] += 1
 
@@ -81,10 +85,12 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
         "examples": totals["examples"],
         "missing_predictions": totals["missing"],
         "schema_validity": _rate(totals["schema_valid"], totals["examples"]),
-        "action_accuracy": _rate(totals["action_correct"], totals["examples"]),
+        "change_accuracy": _rate(totals["change_correct"], totals["examples"]),
         "decode_success": _rate(totals["content_correct"], totals["examples"]),
         "protected_token_preservation": _rate(totals["protected_preserved"], totals["examples"]),
-        "unnecessary_edit_rate": _rate(totals["unnecessary_edits"], totals["keep_examples"]),
+        "unnecessary_edit_rate": _rate(
+            totals["unnecessary_edits"], totals["unchanged_examples"]
+        ),
         "overall_success": _rate(totals["success"], totals["examples"]),
         "mean_latency_ms": round(sum(latency_values) / len(latency_values), 2) if latency_values else None,
         "categories": {},
@@ -94,7 +100,9 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
         report["categories"][category] = {
             "examples": count,
             "success_rate": _rate(values["success"], count),
-            "unnecessary_edit_rate": _rate(values["unnecessary_edits"], values["keep_examples"]),
+            "unnecessary_edit_rate": _rate(
+                values["unnecessary_edits"], values["unchanged_examples"]
+            ),
         }
     return report
 

@@ -17,7 +17,10 @@ class ManagedEvalTests(unittest.TestCase):
         payload = MODULE.request_payload(row, "Qwen/Qwen3.5-2B")
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
         self.assertEqual(payload["response_format"]["type"], "json_schema")
-        self.assertEqual(payload["response_format"]["json_schema"]["schema"]["required"], ["action", "candidates"])
+        self.assertEqual(
+            payload["response_format"]["json_schema"]["schema"]["required"],
+            ["suggestion"],
+        )
 
 
 if __name__ == "__main__":

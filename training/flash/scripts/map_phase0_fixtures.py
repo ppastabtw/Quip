@@ -19,12 +19,13 @@ def map_exchange(exchange: dict) -> dict | None:
     if result.get("status") != "ok" or request.get("model_variant") == "base":
         return None
 
-    payload = {
-        "text": request["draft"],
-        "window_context_snippets": request.get("context_snippets", []),
-        "personal_patterns": request.get("personal_patterns", []),
-    }
-    output = {"action": result["action"], "candidates": result["candidates"]}
+    payload = {"text": request["draft"]}
+    suggestion = (
+        request["draft"]
+        if result["action"] == "keep"
+        else result["candidates"][0]
+    )
+    output = {"suggestion": suggestion}
     protected_tokens = []
     if exchange["case_id"] == "protected_global":
         protected_tokens = ["usr/bin", "q3_finl_v2.pdf"]
@@ -34,8 +35,8 @@ def map_exchange(exchange: dict) -> dict | None:
         "metadata": {
             "example_id": f"phase0_{exchange['case_id']}",
             "category": exchange["case_id"],
-            "expected_action": result["action"],
-            "accepted_candidates": result["candidates"],
+            "target_changed": suggestion != request["draft"],
+            "accepted_suggestions": [suggestion],
             "protected_tokens": protected_tokens,
         },
     }

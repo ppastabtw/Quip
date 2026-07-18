@@ -32,17 +32,17 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(report["unnecessary_edit_rate"], 0.0)
         self.assertEqual(report["mean_latency_ms"], 100.0)
 
-    def test_wrong_replace_counts_as_unnecessary_edit(self):
+    def test_wrong_change_counts_as_unnecessary_edit(self):
         prediction = {
             "example_id": "eval_009",
-            "response": '{"action":"replace","candidates":["/opt/homebrew/bun"]}',
+            "response": '{"suggestion":"/opt/homebrew/bun"}',
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "predictions.jsonl"
             path.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
             report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
         self.assertGreater(report["unnecessary_edit_rate"], 0.0)
-        self.assertEqual(report["missing_predictions"], 19)
+        self.assertEqual(report["missing_predictions"], 15)
 
 
 if __name__ == "__main__":

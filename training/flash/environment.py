@@ -1,4 +1,4 @@
-"""Freesolo environment for Quip keep-or-decode training."""
+"""Freesolo environment for Quip suggestion training."""
 
 from __future__ import annotations
 
@@ -13,20 +13,15 @@ from scoring import score_completion
 
 ROOT = Path(__file__).parent
 
-SYSTEM_PROMPT = """You are Quip, a restraint-first English text decoder.
+SYSTEM_PROMPT = """You are an English text corrector.
 
-Given a JSON input containing text, optional window context, and optional personal patterns, decide whether the text should remain exact or receive a minimal full-text replacement.
+Given a JSON object containing text, predict one full-text suggestion.
 
-Return exactly one JSON object with no markdown or commentary:
-{"action":"keep","candidates":[]}
-or
-{"action":"replace","candidates":["best full replacement"]}
+Return exactly one JSON object with no commentary:
+{"suggestion":"best full text"}
 
 Rules:
-- Use action keep when the input is already intentional or uncertain.
-- Preserve paths, filenames, names, commands, URLs, identifiers, version strings, and intentional slang exactly.
-- Use action replace only for a confident typo, phonetic spelling, compressed phrase, or context-supported expansion.
-- Return one to three complete replacements, ordered best first.
+- Return one conservative correction of a confident typo, phonetic spelling, or compressed phrase.
 - Make the smallest useful change. Do not add facts or change tone.
 """
 

@@ -10,30 +10,25 @@ from difflib import SequenceMatcher
 from typing import Any, Mapping
 
 
-ALLOWED_ACTIONS = {"keep", "replace"}
-OUTPUT_KEYS = {"action", "candidates"}
+OUTPUT_KEYS = {"suggestion"}
 OUTPUT_JSON_SCHEMA = {
     "type": "object",
-    "properties": {
-        "action": {"type": "string", "enum": ["keep", "replace"]},
-        "candidates": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
-    },
-    "required": ["action", "candidates"],
+    "properties": {"suggestion": {"type": "string", "minLength": 1}},
+    "required": ["suggestion"],
     "additionalProperties": False,
 }
 
 
 @dataclass(frozen=True)
 class Prediction:
-    action: str
-    candidates: tuple[str, ...]
+    suggestion: str
 
 
 @dataclass(frozen=True)
 class ScoreResult:
     score: float
     schema_valid: bool
-    action_correct: bool
+    change_correct: bool
     content_correct: bool
     protected_preserved: bool
     prediction: Prediction | None
@@ -41,7 +36,12 @@ class ScoreResult:
 
     @property
     def success(self) -> bool:
-        return self.schema_valid and self.action_correct and self.content_correct
+        return (
+            self.schema_valid
+            and self.change_correct
+            and self.content_correct
+            and self.protected_preserved
+        )
 
 
 def _normalize(value: str) -> str:
@@ -51,61 +51,44 @@ def _normalize(value: str) -> str:
 
 def _input_payload(input_text: str) -> dict[str, Any]:
     payload = json.loads(input_text)
-    if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
-        raise ValueError("input must be a JSON object with string field text")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"text"}
+        or not isinstance(payload.get("text"), str)
+    ):
+        raise ValueError("input must contain only string field text")
     return payload
 
 
 def parse_prediction(response_text: str) -> Prediction:
-    raw = response_text.strip()
-    payload = json.loads(raw)
+    payload = json.loads(response_text.strip())
     if not isinstance(payload, dict) or set(payload) != OUTPUT_KEYS:
-        raise ValueError("output must contain exactly action and candidates")
-
-    action = payload["action"]
-    candidates = payload["candidates"]
-    if action not in ALLOWED_ACTIONS:
-        raise ValueError("action must be keep or replace")
-    if not isinstance(candidates, list) or not all(isinstance(item, str) for item in candidates):
-        raise ValueError("candidates must be a string array")
-    if any(not candidate.strip() for candidate in candidates):
-        raise ValueError("candidates cannot be empty strings")
-    if len({_normalize(candidate) for candidate in candidates}) != len(candidates):
-        raise ValueError("candidates must be unique")
-    if action == "keep" and candidates:
-        raise ValueError("keep must have zero candidates")
-    if action == "replace" and not 1 <= len(candidates) <= 3:
-        raise ValueError("replace must have one to three candidates")
-    return Prediction(action=action, candidates=tuple(candidates))
+        raise ValueError("output must contain exactly suggestion")
+    suggestion = payload["suggestion"]
+    if not isinstance(suggestion, str) or not suggestion.strip():
+        raise ValueError("suggestion must be a non-empty string")
+    return Prediction(suggestion=suggestion)
 
 
-def _expected_action(expected_output: object, metadata: Mapping[str, Any]) -> str:
-    declared = metadata.get("expected_action")
-    if declared in ALLOWED_ACTIONS:
-        return str(declared)
-    if isinstance(expected_output, str):
-        return parse_prediction(expected_output).action
-    raise ValueError("expected action is missing")
-
-
-def _accepted_candidates(expected_output: object, metadata: Mapping[str, Any]) -> tuple[str, ...]:
-    declared = metadata.get("accepted_candidates")
-    if isinstance(declared, list) and all(isinstance(item, str) for item in declared):
+def _accepted_suggestions(
+    expected_output: object, metadata: Mapping[str, Any]
+) -> tuple[str, ...]:
+    declared = metadata.get("accepted_suggestions")
+    if (
+        isinstance(declared, list)
+        and declared
+        and all(isinstance(item, str) and item.strip() for item in declared)
+    ):
         return tuple(declared)
     if isinstance(expected_output, str):
-        return parse_prediction(expected_output).candidates
-    return ()
+        return (parse_prediction(expected_output).suggestion,)
+    raise ValueError("accepted suggestions are missing")
 
 
-def _preserves_tokens(prediction: Prediction, protected_tokens: object) -> bool:
+def _preserves_tokens(suggestion: str, protected_tokens: object) -> bool:
     if not isinstance(protected_tokens, list) or not protected_tokens:
         return True
-    if prediction.action == "keep":
-        return True
-    return all(
-        isinstance(token, str) and all(token in candidate for candidate in prediction.candidates)
-        for token in protected_tokens
-    )
+    return all(isinstance(token, str) and token in suggestion for token in protected_tokens)
 
 
 def score_completion(
@@ -118,15 +101,21 @@ def score_completion(
     try:
         prediction = parse_prediction(response_text)
         input_payload = _input_payload(input_text)
-        expected_action = _expected_action(expected_output, metadata)
+        accepted = _accepted_suggestions(expected_output, metadata)
+        target_changed = metadata.get("target_changed")
+        if not isinstance(target_changed, bool):
+            target_changed = accepted[0] != input_payload["text"]
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         return ScoreResult(0.0, False, False, False, False, None, f"invalid schema: {exc}")
 
-    action_correct = prediction.action == expected_action
-    protected_preserved = _preserves_tokens(prediction, metadata.get("protected_tokens"))
+    predicted_changed = prediction.suggestion != input_payload["text"]
+    change_correct = predicted_changed == target_changed
+    protected_preserved = _preserves_tokens(
+        prediction.suggestion, metadata.get("protected_tokens")
+    )
     score = 0.15
 
-    if not action_correct:
+    if not change_correct:
         return ScoreResult(
             score,
             True,
@@ -134,26 +123,19 @@ def score_completion(
             False,
             protected_preserved,
             prediction,
-            "wrong action",
+            "wrong change decision",
         )
 
     score += 0.25
-    if expected_action == "keep":
-        return ScoreResult(1.0, True, True, True, True, prediction, "correct keep")
-
-    accepted = _accepted_candidates(expected_output, metadata)
-    accepted_normalized = {_normalize(candidate) for candidate in accepted}
-    candidate_normalized = [_normalize(candidate) for candidate in prediction.candidates]
-    content_correct = any(candidate in accepted_normalized for candidate in candidate_normalized)
+    accepted_normalized = {_normalize(suggestion) for suggestion in accepted}
+    suggestion_normalized = _normalize(prediction.suggestion)
+    content_correct = suggestion_normalized in accepted_normalized
 
     if content_correct:
-        score += 0.45
-        if candidate_normalized[0] in accepted_normalized:
-            score += 0.10
-    elif accepted:
+        score += 0.55
+    else:
         best_similarity = max(
-            SequenceMatcher(None, candidate, gold).ratio()
-            for candidate in candidate_normalized
+            SequenceMatcher(None, suggestion_normalized, gold).ratio()
             for gold in accepted_normalized
         )
         score += 0.25 * best_similarity
@@ -162,7 +144,7 @@ def score_completion(
         score += 0.05
 
     score = round(min(score, 1.0), 6)
-    reason = "accepted replacement" if content_correct else "replacement not accepted"
+    reason = "accepted suggestion" if content_correct else "suggestion not accepted"
     if not protected_preserved:
         reason = f"{reason}; protected token changed"
     return ScoreResult(

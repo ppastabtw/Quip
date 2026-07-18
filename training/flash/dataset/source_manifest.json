@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "corpus_policy": "research_only",
+  "sources": {
+    "uci_sms_ham": {
+      "url": "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip",
+      "revision": "uci-static-228",
+      "filename": "sms-spam-collection.zip",
+      "sha256": "1587ea43e58e82b14ff1f5425c88e17f8496bfcdb67a583dbff9eefaf9963ce3",
+      "license": "CC BY 4.0",
+      "permitted_use": "attribution required",
+      "split_policy": "train_only"
+    },
+    "multilexnorm_en_train": {
+      "url": "https://huggingface.co/datasets/larrylawl/multilexnorm/resolve/b4c95cd95c9ce981a1fa12de9277fe28e3431323/data/en/train.norm?download=true",
+      "revision": "b4c95cd95c9ce981a1fa12de9277fe28e3431323",
+      "filename": "multilexnorm-en-train.norm",
+      "sha256": "358ed199527f61398b5f7d25f8822fb352112db98070e34d9f21917e3273a81a",
+      "license": "CC BY 4.0",
+      "permitted_use": "attribution required",
+      "split_policy": "train_only"
+    },
+    "multilexnorm_en_test": {
+      "url": "https://huggingface.co/datasets/larrylawl/multilexnorm/resolve/b4c95cd95c9ce981a1fa12de9277fe28e3431323/data/en/test.norm?download=true",
+      "revision": "b4c95cd95c9ce981a1fa12de9277fe28e3431323",
+      "filename": "multilexnorm-en-test.norm",
+      "sha256": "92fdd608040504431ffea1ed3bc3e8cb21a411a9388f1d66a4e0218df449316d",
+      "license": "CC BY 4.0",
+      "permitted_use": "attribution required",
+      "split_policy": "eval_only"
+    },
+    "jfleg_test_source": {
+      "url": "https://raw.githubusercontent.com/keisks/jfleg/ee06ff806a208aba815ac45313f4e750a48330a5/test/test.src",
+      "revision": "ee06ff806a208aba815ac45313f4e750a48330a5",
+      "filename": "jfleg-test.src",
+      "sha256": "893db119162487aa7f956b65978453576919e6797cd6c1955f93b7a8b9f4bbd8",
+      "license": "CC BY-NC-SA 4.0",
+      "permitted_use": "noncommercial research with attribution and share alike",
+      "split_policy": "eval_only"
+    },
+    "jfleg_test_ref0": {
+      "url": "https://raw.githubusercontent.com/keisks/jfleg/ee06ff806a208aba815ac45313f4e750a48330a5/test/test.ref0",
+      "revision": "ee06ff806a208aba815ac45313f4e750a48330a5",
+      "filename": "jfleg-test.ref0",
+      "sha256": "875953280a3ea1dea2827337b1778c0105f0c0aa79f2517a6e0e42db5e5e170c",
+      "license": "CC BY-NC-SA 4.0",
+      "permitted_use": "noncommercial research with attribution and share alike",
+      "split_policy": "eval_only"
+    },
+    "jfleg_test_ref1": {
+      "url": "https://raw.githubusercontent.com/keisks/jfleg/ee06ff806a208aba815ac45313f4e750a48330a5/test/test.ref1",
+      "revision": "ee06ff806a208aba815ac45313f4e750a48330a5",
+      "filename": "jfleg-test.ref1",
+      "sha256": "190d3398f2765f54a39b5489d1e96c483412a656086c731f8712ad0591087d80",
+      "license": "CC BY-NC-SA 4.0",
+      "permitted_use": "noncommercial research with attribution and share alike",
+      "split_policy": "eval_only"
+    },
+    "jfleg_test_ref2": {
+      "url": "https://raw.githubusercontent.com/keisks/jfleg/ee06ff806a208aba815ac45313f4e750a48330a5/test/test.ref2",
+      "revision": "ee06ff806a208aba815ac45313f4e750a48330a5",
+      "filename": "jfleg-test.ref2",
+      "sha256": "0e3c6abe934ccd16c9dffb2fd889d6f55afc3ad13a63c1e148c720bb4e99046b",
+      "license": "CC BY-NC-SA 4.0",
+      "permitted_use": "noncommercial research with attribution and share alike",
+      "split_policy": "eval_only"
+    },
+    "jfleg_test_ref3": {
+      "url": "https://raw.githubusercontent.com/keisks/jfleg/ee06ff806a208aba815ac45313f4e750a48330a5/test/test.ref3",
+      "revision": "ee06ff806a208aba815ac45313f4e750a48330a5",
+      "filename": "jfleg-test.ref3",
+      "sha256": "19f49de6eff813b26505ecf756c20dc301aeb80696696b01ca950298f6e58441",
+      "license": "CC BY-NC-SA 4.0",
+      "permitted_use": "noncommercial research with attribution and share alike",
+      "split_policy": "eval_only"
+    }
+  }
+}
