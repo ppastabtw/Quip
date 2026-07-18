@@ -1,0 +1,4 @@
+interface:
+  display_name: "Send Discord Message"
+  short_description: "Send confirmed messages to Discord chats"
+  default_prompt: "Use $send-discord-message to send this message to the hackthe6ix group chat."

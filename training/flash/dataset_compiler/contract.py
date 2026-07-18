@@ -198,8 +198,8 @@ def make_row(candidate: Candidate, *, generation: dict[str, Any]) -> dict[str, A
     }
     example_id = "quip_" + sha256_bytes(compact_json(identity).encode("utf-8"))[:20]
     return {
-        "input": compact_json({"text": candidate.text}),
-        "output": compact_json(output_payload),
+        "input": {"text": candidate.text},
+        "output": output_payload,
         "metadata": {
             "example_id": example_id,
             "family_id": candidate.family_id,
@@ -217,20 +217,14 @@ def make_row(candidate: Candidate, *, generation: dict[str, Any]) -> dict[str, A
 
 
 def row_text(row: dict[str, Any], path: Path, line_number: int) -> str:
-    try:
-        payload = json.loads(row["input"])
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{path}:{line_number}: input is not valid JSON") from exc
+    payload = row["input"]
     if not isinstance(payload, dict) or set(payload) != {"text"} or not isinstance(payload["text"], str):
         raise ValueError(f"{path}:{line_number}: input must contain only string field text")
     return payload["text"]
 
 
 def row_suggestion(row: dict[str, Any], path: Path, line_number: int) -> str:
-    try:
-        payload = json.loads(row["output"])
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{path}:{line_number}: output is not valid JSON") from exc
+    payload = row["output"]
     if not isinstance(payload, dict) or set(payload) != {"suggestion"} or not isinstance(payload["suggestion"], str):
         raise ValueError(f"{path}:{line_number}: output must contain only string field suggestion")
     return payload["suggestion"]
@@ -280,8 +274,8 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
             if not isinstance(row, dict) or set(row) != ALLOWED_ROW_KEYS:
                 raise ValueError(f"{path}:{line_number}: row keys must be input, output, metadata")
-            if not isinstance(row["input"], str) or not isinstance(row["output"], str):
-                raise ValueError(f"{path}:{line_number}: input and output must be strings")
+            if not isinstance(row["input"], dict) or not isinstance(row["output"], dict):
+                raise ValueError(f"{path}:{line_number}: input and output must be objects")
             metadata = row["metadata"]
             if not isinstance(metadata, dict) or not REQUIRED_METADATA_KEYS.issubset(metadata):
                 raise ValueError(f"{path}:{line_number}: metadata provenance fields are incomplete")
@@ -321,7 +315,7 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
                 input_text=row["input"],
                 expected_output=row["output"],
                 metadata=metadata,
-                response_text=row["output"],
+                response_text=compact_json(row["output"]),
             )
             if result.score != 1.0 or not result.success:
                 raise ValueError(f"{path}:{line_number}: gold output failed reward: {result.reason}")

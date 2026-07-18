@@ -68,7 +68,7 @@ def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
         if metadata.get("target_changed") is False:
             totals["unchanged_examples"] += 1
             categories[category]["unchanged_examples"] += 1
-            input_text = json.loads(row["input"])["text"]
+            input_text = row["input"]["text"]
             if (
                 result.prediction is not None
                 and result.prediction.suggestion != input_text

@@ -2,6 +2,7 @@ import unittest
 
 from dataset_compiler.contract import CONTRACT
 from environment import QuipEnvironment, load_environment
+from scoring import model_text
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -24,7 +25,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_gold_output_passes_environment_reward(self):
         environment = QuipEnvironment(split="eval")
         example = environment.dataset[0]
-        reward = environment.score_response(example, str(example.output))
+        reward = environment.score_response(example, model_text(example.output))
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)
 
