@@ -86,6 +86,15 @@ pub struct ContextSnippetLimit {
 }
 
 #[allow(dead_code)]
+pub fn accessibility_permission_status() -> AccessibilityPermissionStatus {
+    if axuielement::is_process_trusted() {
+        AccessibilityPermissionStatus::Trusted
+    } else {
+        AccessibilityPermissionStatus::NotTrusted
+    }
+}
+
+#[allow(dead_code)]
 fn is_supported_app(bundle_id: &str) -> bool {
     matches!(
         bundle_id,
@@ -97,11 +106,27 @@ fn is_supported_app(bundle_id: &str) -> bool {
     )
 }
 
+#[allow(dead_code)]
+fn capture_preflight(
+    permission_status: AccessibilityPermissionStatus,
+    bundle_id: &str,
+) -> Result<(), AccessibilityError> {
+    if permission_status == AccessibilityPermissionStatus::NotTrusted {
+        return Err(AccessibilityError::PermissionMissing);
+    }
+
+    if !is_supported_app(bundle_id) {
+        return Err(AccessibilityError::UnsupportedApp);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_supported_app, AccessibilityError, AccessibilityPermissionStatus, ContextSnippetLimit,
-        DestinationRegistry, DestinationSnapshot,
+        capture_preflight, is_supported_app, AccessibilityError, AccessibilityPermissionStatus,
+        ContextSnippetLimit, DestinationRegistry, DestinationSnapshot,
     };
 
     #[test]
@@ -171,6 +196,36 @@ mod tests {
         assert_eq!(
             AccessibilityError::NotEditable.unavailable_reason(),
             "not_editable"
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_missing_process_trust_before_app_gate() {
+        assert_eq!(
+            capture_preflight(
+                AccessibilityPermissionStatus::NotTrusted,
+                "com.apple.TextEdit"
+            ),
+            Err(AccessibilityError::PermissionMissing)
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_unsupported_app_when_process_is_trusted() {
+        assert_eq!(
+            capture_preflight(AccessibilityPermissionStatus::Trusted, "com.apple.Terminal"),
+            Err(AccessibilityError::UnsupportedApp)
+        );
+    }
+
+    #[test]
+    fn preflight_allows_supported_app_when_process_is_trusted() {
+        assert_eq!(
+            capture_preflight(
+                AccessibilityPermissionStatus::Trusted,
+                "com.vivaldi.Vivaldi"
+            ),
+            Ok(())
         );
     }
 }
