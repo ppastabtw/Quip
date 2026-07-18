@@ -1,0 +1,81 @@
+{
+  "entries": [
+    {
+      "draft": "i went to the store instaed",
+      "model_variant": "base",
+      "has_context": false,
+      "action": "replace",
+      "candidates": ["I went to the store instead."],
+      "latency_ms": 543
+    },
+    {
+      "draft": "i went to the store instaed",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": ["i went to the store instead"],
+      "latency_ms": 498
+    },
+    {
+      "draft": "meet there tmrw",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": ["Meet there tomorrow."],
+      "latency_ms": 462
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "shorthand",
+      "title": "Noisy shorthand",
+      "description": "Compressed phrase decoding: the trained model keeps the writer's register instead of inventing a subject.",
+      "draft": "cnt cm tmrw",
+      "context_snippets": [],
+      "left": { "label": "Base Qwen", "model_variant": "base", "profile_id": "profile_default", "use_context": false },
+      "right": { "label": "Freesolo-trained", "model_variant": "global", "profile_id": "profile_default", "use_context": false }
+    },
+    {
+      "case_id": "typo",
+      "title": "Ordinary typo",
+      "description": "Minimal useful correction: the base model also rewrites capitalization and punctuation nobody asked for.",
+      "draft": "i went to the store instaed",
+      "context_snippets": [],
+      "left": { "label": "Base Qwen", "model_variant": "base", "profile_id": "profile_default", "use_context": false },
+      "right": { "label": "Freesolo-trained", "model_variant": "global", "profile_id": "profile_default", "use_context": false }
+    },
+    {
+      "case_id": "protected",
+      "title": "Protected tokens",
+      "description": "Paths and filenames survive: the base model 'fixes' usr/bin and q3_finl_v2.pdf, the trained model keeps them.",
+      "draft": "open usr/bin and q3_finl_v2.pdf",
+      "context_snippets": [],
+      "left": { "label": "Base Qwen", "model_variant": "base", "profile_id": "profile_default", "use_context": false },
+      "right": { "label": "Freesolo-trained", "model_variant": "global", "profile_id": "profile_default", "use_context": false }
+    },
+    {
+      "case_id": "context",
+      "title": "Window context",
+      "description": "Bounded accessible text from an open Notes window resolves an ambiguous 'there'.",
+      "draft": "meet there tmrw",
+      "context_snippets": [
+        {
+          "app_name": "Notes",
+          "window_title": "Trip planning",
+          "visible_text": "Tomorrow: meet at Union Station at 8:30 AM."
+        }
+      ],
+      "left": { "label": "No context", "model_variant": "global", "profile_id": "profile_default", "use_context": false },
+      "right": { "label": "With window context", "model_variant": "global", "profile_id": "profile_default", "use_context": true }
+    },
+    {
+      "case_id": "personal",
+      "title": "Two personalized profiles",
+      "description": "The same shorthand decodes differently per user from locally learned patterns.",
+      "draft": "ship spec tn",
+      "context_snippets": [],
+      "left": { "label": "Profile A", "model_variant": "global_plus_personal", "profile_id": "profile_a", "use_context": false },
+      "right": { "label": "Profile B", "model_variant": "global_plus_personal", "profile_id": "profile_b", "use_context": false }
+    }
+  ]
+}

@@ -7,8 +7,14 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <h1>Quip</h1>
-    <p class="placeholder">Composition box placeholder — candidate flow lands next.</p>
+    <div class="compose-header" data-tauri-drag-region>
+      <span class="title" data-tauri-drag-region>Quip</span>
+      <span id="variant" class="pill" data-tauri-drag-region></span>
+    </div>
+    <textarea id="draft" rows="2" placeholder="Type a burst — punctuation, Return, or a pause predicts" spellcheck="false"></textarea>
+    <div id="status"></div>
+    <ol id="options"></ol>
+    <div id="commit-flash"></div>
     <script type="module" src="./composition.ts"></script>
   </body>
 </html>

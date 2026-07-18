@@ -8,7 +8,29 @@
   </head>
   <body>
     <h1>Demo harness</h1>
-    <p class="placeholder">Demo harness placeholder — corpus comparison, health panel, and scripted capture events land next.</p>
+
+    <h2>Sidecar health &amp; metrics</h2>
+    <div class="card statline" id="healthline">
+      <span id="health_status" class="pill"></span>
+      <span id="health_loaded" class="muted"></span>
+      <span id="metrics" class="muted"></span>
+      <label class="row" style="padding: 0">
+        <input type="checkbox" id="simulate_failure" /> Simulate adapter failure
+      </label>
+    </div>
+
+    <h2>Deterministic corpus comparison</h2>
+    <div class="case-list" id="cases"></div>
+    <div id="comparison"></div>
+
+    <h2>Composition driver</h2>
+    <div class="statline">
+      <button id="fire_textedit">Send TextEdit capture fixture</button>
+      <button id="fire_secure">Send secure-field capture</button>
+      <span class="muted" id="last_state"></span>
+    </div>
+    <p class="muted" id="last_commit" style="margin-top: 6px"></p>
+
     <script type="module" src="./demo.ts"></script>
   </body>
 </html>
