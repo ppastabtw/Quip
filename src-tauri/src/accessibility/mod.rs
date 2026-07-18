@@ -25,6 +25,19 @@ pub enum AccessibilityError {
     NotEditable,
 }
 
+impl AccessibilityError {
+    #[allow(dead_code)]
+    fn unavailable_reason(&self) -> &'static str {
+        match self {
+            Self::PermissionMissing => "accessibility_permission_missing",
+            Self::DestinationNotFound => "destination_not_found",
+            Self::UnsupportedApp => "unsupported_app",
+            Self::SecureField => "secure_field",
+            Self::NotEditable => "not_editable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 struct DestinationSnapshot {
@@ -72,10 +85,22 @@ pub struct ContextSnippetLimit {
     pub max_chars_per_snippet: usize,
 }
 
+#[allow(dead_code)]
+fn is_supported_app(bundle_id: &str) -> bool {
+    matches!(
+        bundle_id,
+        "com.apple.TextEdit"
+            | "com.apple.Notes"
+            | "com.vivaldi.Vivaldi"
+            | "com.google.Chrome"
+            | "com.apple.Safari"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessibilityError, AccessibilityPermissionStatus, ContextSnippetLimit,
+        is_supported_app, AccessibilityError, AccessibilityPermissionStatus, ContextSnippetLimit,
         DestinationRegistry, DestinationSnapshot,
     };
 
@@ -104,5 +129,48 @@ mod tests {
         ));
 
         assert!(destination_id.starts_with("destination_"));
+    }
+
+    #[test]
+    fn supported_app_allows_textedit_notes_vivaldi_chrome_and_safari() {
+        let allowed = [
+            "com.apple.TextEdit",
+            "com.apple.Notes",
+            "com.vivaldi.Vivaldi",
+            "com.google.Chrome",
+            "com.apple.Safari",
+        ];
+
+        assert!(allowed.iter().all(|bundle_id| is_supported_app(bundle_id)));
+    }
+
+    #[test]
+    fn supported_app_rejects_out_of_scope_apps() {
+        let rejected = [
+            "com.apple.Terminal",
+            "com.microsoft.VSCode",
+            "com.apple.finder",
+            "org.mozilla.firefox",
+        ];
+
+        assert!(rejected
+            .iter()
+            .all(|bundle_id| !is_supported_app(bundle_id)));
+    }
+
+    #[test]
+    fn secure_field_maps_to_unavailable_secure_field() {
+        assert_eq!(
+            AccessibilityError::SecureField.unavailable_reason(),
+            "secure_field"
+        );
+    }
+
+    #[test]
+    fn missing_editable_element_maps_to_unavailable_not_editable() {
+        assert_eq!(
+            AccessibilityError::NotEditable.unavailable_reason(),
+            "not_editable"
+        );
     }
 }

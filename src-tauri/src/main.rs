@@ -34,13 +34,28 @@ fn main() {
 
             // Placeholder tray controls; the toggles become functional when the
             // settings module lands.
-            let enabled = CheckMenuItem::with_id(app, "enabled", "Enabled", true, false, None::<&str>)?;
-            let window_context =
-                CheckMenuItem::with_id(app, "window_context", "Window context", true, false, None::<&str>)?;
-            let pause_learning =
-                CheckMenuItem::with_id(app, "pause_learning", "Pause learning", true, false, None::<&str>)?;
-            let profile = MenuItem::with_id(app, "profile", "Profile: default", false, None::<&str>)?;
-            let open_settings = MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
+            let enabled =
+                CheckMenuItem::with_id(app, "enabled", "Enabled", true, false, None::<&str>)?;
+            let window_context = CheckMenuItem::with_id(
+                app,
+                "window_context",
+                "Window context",
+                true,
+                false,
+                None::<&str>,
+            )?;
+            let pause_learning = CheckMenuItem::with_id(
+                app,
+                "pause_learning",
+                "Pause learning",
+                true,
+                false,
+                None::<&str>,
+            )?;
+            let profile =
+                MenuItem::with_id(app, "profile", "Profile: default", false, None::<&str>)?;
+            let open_settings =
+                MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
             let open_demo = MenuItem::with_id(app, "open_demo", "Demo…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Quip", true, None::<&str>)?;
 
