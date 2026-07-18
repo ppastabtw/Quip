@@ -1,105 +1,25 @@
-# Quip UI pivot: IME-style candidate bar
+# Quip IME candidate bar
 
-Decided 2026-07-18. Quip dropped the separate composition box in favor of the
-interaction model of Sogou and the macOS Pinyin input method. `docs/SPEC.md`
-is updated and authoritative; this doc summarizes the pivot, what Workstream 4
-already implemented, and what Workstream 3 must do differently.
+Decided 2026-07-18. `docs/SPEC.md` is authoritative. This note preserves only the cross-workstream interaction boundary.
 
-## Interaction model
+## Interaction
 
-1. The user types in their own textbox (TextEdit, Notes, a browser input).
-   Keystrokes pass through untouched — the destination always receives the
-   text as typed.
-2. Predictions run **continuously while the burst grows** (~150 ms debounce;
-   punctuation and the 80-char window fire immediately). The bar refreshes in
-   place with each result, keeping its current candidates visible while the
-   next one computes — no flicker, exactly like the Pinyin candidate window.
-3. `replace` result → a small non-focusable bar floats directly above the
-   caret with up to three numbered candidates. `keep` result → **nothing
-   appears**; the user is never interrupted.
-4. While candidates are visible: `1`–`3` (or click) picks one, **Tab accepts
-   the highlighted candidate** (Space stays a real character in English, so
-   Tab plays Space's Pinyin role), `Esc` keeps the literal text, and any
-   other key types through while the bar refreshes. A sentence boundary
-   (whitespace after `.!?`, or a newline) closes the session and counts
-   visible candidates as a stable dismissal.
-5. The bar never takes keyboard focus. Focus stays in the destination the
-   whole time.
+1. The user types directly in the destination. Quip never moves focus to a composition box.
+2. Predictions run as the current burst grows. The existing bar remains visible while a newer prediction computes.
+3. Each completion emits one full-text suggestion. Inference drops exact-input results, merges duplicate changed results, ranks them by vote count with earliest completion as the tie breaker, and exposes up to five candidates.
+4. Zero candidates means skip. Nothing appears and the typed text remains unchanged.
+5. While candidates are visible, keys `1` through `5` or a click select a candidate, Tab selects the highlighted candidate, and Esc dismisses the bar. Other typing passes through and refreshes the burst.
+6. Selecting a candidate replaces the current burst range in place. The bar never takes keyboard focus.
 
-Consequences of the model:
+## Workstream boundaries
 
-- There is no exact-draft option anymore. Keeping the typed text is the
-  do-nothing default because the text is already in the destination.
-- Commit semantics changed from "insert into a restored field" to "replace
-  the burst range in place."
-- Learning labels: selected candidate → `replace` example; dismissal of
-  visible candidates (Esc or typing on) → `keep` example; a `keep` result
-  records nothing (no user signal).
+- Workstream 1 owns model output, exact-input filtering, deduplication, ranking, and candidate limits.
+- Workstream 3 owns passive Accessibility observation, burst markers, caret geometry, in-place replacement, secure-field exclusion, and candidate selection keys.
+- Workstream 4 owns the non-focusable candidate bar and its visual states.
+- Internal learning labels are separate from the inference result. Leaving text unchanged is not a model action.
 
-## Contract changes (Phase 0, v0)
+## Shared-contract migration
 
-- `capture_result.ready` gained a **required `caret` field**: a rect in
-  logical screen coordinates (origin top-left) anchoring the bar.
-  Updated in `docs/phase-0.schema.json`, `docs/fixtures/phase-0-examples.json`,
-  `crates/quip-contracts` (Rust), and `src/ui/contracts.ts` (TS).
-- `prediction_request` / `prediction_result` / `sidecar_health` are
-  **unchanged** — Workstreams 1 and 2 are unaffected.
-- Invariants reworded in `docs/phase-0-contracts.md`: the typed burst stays in
-  the destination as typed; the UI shows model candidates only; committing a
-  candidate replaces the burst range; dismissal and `keep` change nothing.
+The current Phase 0 schema, fixtures, Rust contract, TypeScript contract, inference adapter, and composition consumer still encode the earlier action field and smaller candidate cap. Their owners must migrate them as one integration change. Do not update only one producer or consumer.
 
-## Implemented (Workstream 4, branch `w4-composition-ui`)
-
-- **Engine** (`src-tauri/src/composition/`): `Idle → Predicting → Suggesting`;
-  keep → no bar; errors → explicit error chip with no candidates; stale
-  results dropped after dismissal; typing over suggestions counts as a stable
-  dismissal.
-- **Candidate bar** (`suggestions` window + `src/ui/suggestions.*`):
-  frameless, transparent, `focusable: false`, auto-sized, positioned above
-  the caret by the Rust side on every snapshot.
-- **Playground** (demo window): a textarea simulating any macOS textbox —
-  trigger detection, caret geometry to screen coordinates, digit selection,
-  Esc/type-through dismissal, and in-place replacement — so the full IME feel
-  is demoable before Workstream 3 lands.
-- **Unchanged**: learning store and pattern dictionary, settings + tray,
-  corpus comparison screens, health panel, metrics, structured logs.
-- **Validated**: 25 unit tests; headless selftest (`QUIP_SELFTEST=1`) drives
-  capture → suggest → select/dismiss/keep/failure through the real app,
-  7 checks passing; visual check via `QUIP_DEMO_CAPTURE=1` confirmed the bar
-  renders at caret coordinates without stealing focus.
-
-## Required changes to Workstream 3
-
-The pivot deletes W3's hardest problems (keystroke rerouting, focus restore)
-and adds one scoped responsibility (selection keys).
-
-1. **Passive observation instead of interception.** Do not swallow or reroute
-   typing. Watch the focused editable element via `AXObserver`
-   (value-changed / selection-changed), maintain the burst buffer, and keep a
-   text marker for the burst start.
-2. **Emit captures continuously.** Send `capture_result.ready` (draft plus
-   the `caret` rect in logical screen coordinates) as the burst grows — a
-   short debounce (~150 ms) on text changes, immediate on punctuation and the
-   draft-window cap — not just once per burst. The engine drops stale
-   results. Validate against the shared fixtures.
-3. **Commit = in-place replacement.** Select the burst range (burst-start
-   marker → current caret) and replace it with the selected candidate via
-   Accessibility; fallback is select-range + simulated paste with clipboard
-   preserve/restore. There is no destination-restore step: focus never moved.
-4. **Selection keys while the bar is visible.** A CGEventTap must swallow
-   only `1`–`3`, `Tab`, and `Esc` when suggestions are showing (observe
-   `composition://state` or call `get_composition_state`) and forward them as
-   `select_candidate` / `dismiss_suggestions`. Every other key passes through
-   while the bar keeps refreshing; a sentence boundary or newline ends the
-   session as a stable dismissal.
-5. **Unchanged:** secure-field exclusion (`unavailable` captures), supported
-   app gating, bounded window-context collection.
-
-## Open items
-
-- `docs/technical-plan.md` still describes the old compose-box model in its
-  W3/W4 sections; SPEC.md wins where they conflict.
-- Bar polish before the judged demo: multi-display coordinate clamping,
-  appear/dismiss animation, light-mode variant, real app icon.
-- Existing-text mode (global shortcut over a selection) is specced for the
-  same bar but not yet implemented.
+The migration is complete when one shared fixture proves zero candidates, ranked deduplication, five candidates, selection keys `1` through `5`, dismissal without replacement, and explicit failure behavior.

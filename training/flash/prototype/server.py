@@ -21,6 +21,12 @@ from flash.serve.deploy import serving_openai_base_url
 FLASH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(FLASH_ROOT))
 
+from augmentation import (  # noqa: E402
+    DEFAULT_WEIGHTS,
+    MAX_EVENTS,
+    augment_text,
+    normalize_weights,
+)
 from environment import SYSTEM_PROMPT  # noqa: E402
 from scoring import OUTPUT_JSON_SCHEMA, parse_prediction  # noqa: E402
 
@@ -35,6 +41,7 @@ MAX_REQUEST_BYTES = 32_768
 MAX_DRAFT_CHARS = 4_000
 MAX_SYSTEM_PROMPT_CHARS = 8_000
 MAX_SUGGESTIONS = 5
+MAX_SEED = 2_147_483_647
 
 
 class PlaygroundError(Exception):
@@ -93,6 +100,29 @@ def validate_request(payload: Any) -> tuple[str, dict[str, Any], dict[str, Any]]
         ),
     }
     return model, model_input, settings
+
+
+def run_augmentation(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise PlaygroundError(HTTPStatus.BAD_REQUEST, "request body must be a JSON object")
+    text = _required_text(payload, "text", MAX_DRAFT_CHARS)
+    seed = int(_number(payload, "seed", 0, 0, MAX_SEED, integer=True))
+    event_count = int(
+        _number(payload, "event_count", 1, 1, MAX_EVENTS, integer=True)
+    )
+    weights = payload.get("weights", DEFAULT_WEIGHTS)
+    if not isinstance(weights, dict):
+        raise PlaygroundError(HTTPStatus.BAD_REQUEST, "weights must be an object")
+    try:
+        normalized_weights = normalize_weights(weights)
+    except ValueError as error:
+        raise PlaygroundError(HTTPStatus.BAD_REQUEST, str(error)) from error
+    return augment_text(
+        text,
+        seed=seed,
+        event_count=event_count,
+        weights=normalized_weights,
+    )
 
 
 def request_payload(
@@ -182,6 +212,34 @@ def _run_suggestion(
     }
 
 
+def _rank_candidates(
+    suggestions: list[dict[str, Any]], original: str
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in suggestions:
+        suggestion = item["suggestion"]
+        if suggestion == original:
+            continue
+        groups.setdefault(suggestion, []).append(item)
+
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda group: (-len(group), group[0]["index"]),
+    )
+    candidates = []
+    for rank, group in enumerate(ordered_groups, start=1):
+        candidate = dict(group[0])
+        candidate.update(
+            {
+                "rank": rank,
+                "vote_count": len(group),
+                "completion_indices": [item["index"] for item in group],
+            }
+        )
+        candidates.append(candidate)
+    return candidates
+
+
 def run_prediction(payload: Any) -> dict[str, Any]:
     model, model_input, settings = validate_request(payload)
     _, api_key = load_credentials()
@@ -198,12 +256,17 @@ def run_prediction(payload: Any) -> dict[str, Any]:
             pool.submit(_run_suggestion, model, model_input, settings, headers, index)
             for index in range(1, settings["suggestion_count"] + 1)
         ]
-        suggestions = [future.result() for future in futures]
+        completions = [future.result() for future in futures]
+
+    suggestions = _rank_candidates(completions, model_input["text"])
 
     return {
         "model": model,
         "latency_ms": round((time.perf_counter() - started) * 1000),
+        "completion_count": len(completions),
+        "candidate_count": len(suggestions),
         "settings": {
+            "system_prompt": settings["system_prompt"],
             "temperature": settings["temperature"],
             "max_tokens": settings["max_tokens"],
             "suggestion_count": settings["suggestion_count"],
@@ -254,7 +317,7 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/predict":
+        if self.path not in {"/api/predict", "/api/augment"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -262,7 +325,11 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
             if content_length <= 0 or content_length > MAX_REQUEST_BYTES:
                 raise PlaygroundError(HTTPStatus.BAD_REQUEST, "request body size is invalid")
             payload = json.loads(self.rfile.read(content_length))
-            self._send_json(HTTPStatus.OK, run_prediction(payload))
+            if self.path == "/api/augment":
+                response = run_augmentation(payload)
+            else:
+                response = run_prediction(payload)
+            self._send_json(HTTPStatus.OK, response)
         except json.JSONDecodeError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "request body must be valid JSON"})
         except PlaygroundError as error:

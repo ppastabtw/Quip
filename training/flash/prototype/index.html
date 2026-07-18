@@ -13,15 +13,23 @@
     }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; }
-    main { width: min(760px, calc(100% - 32px)); margin: 36px auto; }
+    main { width: min(900px, calc(100% - 32px)); margin: 36px auto; }
     h1 { font-size: 28px; letter-spacing: -.03em; margin: 0 0 18px; }
+    h2 { font-size: 19px; letter-spacing: -.02em; margin: 0 0 8px; }
+    h3 { font-size: 14px; margin: 20px 0 4px; }
     .panel { background: #fffdf8; border: 1px solid #d9d4ca; border-radius: 18px; box-shadow: 0 18px 50px rgba(44, 47, 42, .08); padding: 24px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .tab { border: 1px solid #aaa59b; border-radius: 999px; background: transparent; color: #4d514e; cursor: pointer; font: inherit; font-size: 13px; font-weight: 800; padding: 9px 15px; }
+    .tab[aria-selected="true"] { background: #183d30; border-color: #183d30; color: #fff; }
+    .tab:focus-visible { outline: 3px solid rgba(57, 112, 91, .25); outline-offset: 2px; }
+    .lede { color: #666b68; font-size: 13px; line-height: 1.45; margin: 0 0 18px; }
     label { display: block; font-size: 13px; font-weight: 750; margin-bottom: 8px; }
     input, textarea { width: 100%; border: 1px solid #cac5bb; border-radius: 10px; background: #fff; color: inherit; font: inherit; padding: 12px 14px; outline: none; }
     input:focus, textarea:focus { border-color: #39705b; box-shadow: 0 0 0 3px rgba(57, 112, 91, .13); }
     textarea { line-height: 1.5; resize: vertical; }
     #system-prompt { min-height: 180px; }
     #draft { min-height: 110px; }
+    #correct-text, #augmented-text { min-height: 92px; }
     .field + .field { margin-top: 18px; }
     .controls { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); margin-top: 18px; }
     .control-head { align-items: baseline; display: flex; justify-content: space-between; }
@@ -31,6 +39,8 @@
     .run { border: 0; border-radius: 10px; background: #183d30; color: #fff; cursor: pointer; font: inherit; font-weight: 800; padding: 12px 18px; }
     .run:hover { background: #245744; }
     .run:disabled { cursor: wait; opacity: .58; }
+    .secondary { border: 1px solid #aaa59b; border-radius: 10px; background: #fff; color: #183d30; cursor: pointer; font: inherit; font-weight: 750; padding: 11px 16px; }
+    .secondary:hover { background: #f4f1eb; }
     #status { color: #666b68; font-size: 13px; }
     #error { background: #fff1ee; border: 1px solid #efb8ad; border-radius: 10px; color: #9b3020; margin-top: 18px; padding: 12px 14px; }
     #result { margin-top: 18px; }
@@ -40,15 +50,87 @@
     .suggestion-index { color: #39705b; font-size: 12px; font-weight: 850; }
     .suggestion p { line-height: 1.45; margin: 0; white-space: pre-wrap; }
     .suggestion-meta { color: #777b78; font-size: 11px; white-space: nowrap; }
+    .weight-grid { display: grid; gap: 12px; grid-template-columns: repeat(6, 1fr); margin-top: 12px; }
+    .weight-grid label { font-size: 11px; }
+    .weight-grid input { padding: 9px 10px; }
+    .weight-label { align-items: center; display: flex; gap: 5px; margin-bottom: 8px; }
+    .weight-label label { margin: 0; }
+    .tooltip-trigger { align-items: center; background: #ebe7de; border: 0; border-radius: 50%; color: #565b57; cursor: help; display: inline-flex; font: 800 10px/1 ui-sans-serif, system-ui, sans-serif; height: 16px; justify-content: center; padding: 0; position: relative; width: 16px; }
+    .tooltip-trigger:focus-visible { outline: 3px solid rgba(57, 112, 91, .25); outline-offset: 2px; }
+    .tooltip-text { background: #183d30; border-radius: 8px; bottom: calc(100% + 8px); color: #fff; display: none; font-size: 11px; font-weight: 500; left: 50%; line-height: 1.4; padding: 8px 10px; position: absolute; text-align: left; transform: translateX(-50%); width: 190px; z-index: 2; }
+    .tooltip-trigger:hover .tooltip-text, .tooltip-trigger:focus .tooltip-text { display: block; }
+    #augment-error { background: #fff1ee; border: 1px solid #efb8ad; border-radius: 10px; color: #9b3020; margin-top: 18px; padding: 12px 14px; }
+    #augment-result { background: #f7f4ed; border: 1px solid #ded8cd; border-radius: 12px; margin-top: 18px; padding: 16px; }
+    #operation-trace { color: #4d514e; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.5; margin: 12px 0 0; padding-left: 22px; }
     [hidden] { display: none !important; }
-    @media (max-width: 600px) { main { margin: 22px auto; } .panel { padding: 18px; } .controls { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) { main { margin: 22px auto; } .panel { padding: 18px; } .controls, .weight-grid { grid-template-columns: 1fr 1fr; } }
   </style>
 </head>
 <body>
   <main>
     <h1>Quip</h1>
 
-    <section class="panel">
+    <div class="tabs" role="tablist" aria-label="Prototype tools">
+      <button class="tab" id="augment-tab" role="tab" type="button" aria-selected="true" aria-controls="augment-panel">Augmentation lab</button>
+      <button class="tab" id="model-tab" role="tab" type="button" tabindex="-1" aria-selected="false" aria-controls="model-panel">Model playground</button>
+    </div>
+
+    <section class="panel" id="augment-panel" role="tabpanel" aria-labelledby="augment-tab">
+      <h2 id="augment-heading">QWERTY augmentation lab</h2>
+      <p class="lede">Generate reproducible US QWERTY typing errors locally. The weights below are tunable lab defaults, not population truth. This endpoint does not call a model.</p>
+
+      <form id="augment-form">
+        <div class="field">
+          <label for="correct-text">Correct text</label>
+          <textarea id="correct-text" placeholder="Meet me by the station at seven." autofocus></textarea>
+        </div>
+
+        <div class="controls">
+          <div>
+            <label for="augment-seed">Seed</label>
+            <input id="augment-seed" type="number" min="0" max="2147483647" step="1">
+          </div>
+          <div>
+            <div class="control-head"><label for="event-count">Error count</label><output id="event-count-value">1</output></div>
+            <input id="event-count" type="range" min="1" max="10" step="1" value="1">
+          </div>
+        </div>
+
+        <h3>Operator weights</h3>
+        <p class="lede">Relative values are normalized when generated.</p>
+        <div class="weight-grid">
+          <div><div class="weight-label"><label for="weight-substitution">Substitution</label><button class="tooltip-trigger" type="button" aria-label="About substitution" aria-describedby="tooltip-substitution">?<span class="tooltip-text" id="tooltip-substitution" role="tooltip">Replaces a character with a nearby key on a US QWERTY keyboard.</span></button></div><input id="weight-substitution" data-operator="substitution" type="number" min="0" max="1000" step="1" value="59"></div>
+          <div><div class="weight-label"><label for="weight-deletion">Deletion</label><button class="tooltip-trigger" type="button" aria-label="About deletion" aria-describedby="tooltip-deletion">?<span class="tooltip-text" id="tooltip-deletion" role="tooltip">Removes one character from the text.</span></button></div><input id="weight-deletion" data-operator="deletion" type="number" min="0" max="1000" step="1" value="16"></div>
+          <div><div class="weight-label"><label for="weight-insertion">Insertion</label><button class="tooltip-trigger" type="button" aria-label="About insertion" aria-describedby="tooltip-insertion">?<span class="tooltip-text" id="tooltip-insertion" role="tooltip">Adds a nearby QWERTY key beside an existing character.</span></button></div><input id="weight-insertion" data-operator="insertion" type="number" min="0" max="1000" step="1" value="10"></div>
+          <div><div class="weight-label"><label for="weight-transposition">Transpose</label><button class="tooltip-trigger" type="button" aria-label="About transpose" aria-describedby="tooltip-transpose">?<span class="tooltip-text" id="tooltip-transpose" role="tooltip">Swaps two adjacent characters.</span></button></div><input id="weight-transposition" data-operator="transposition" type="number" min="0" max="1000" step="1" value="2"></div>
+          <div><div class="weight-label"><label for="weight-repeat">Repeat</label><button class="tooltip-trigger" type="button" aria-label="About repeat" aria-describedby="tooltip-repeat">?<span class="tooltip-text" id="tooltip-repeat" role="tooltip">Duplicates one non-space character.</span></button></div><input id="weight-repeat" data-operator="repeat" type="number" min="0" max="1000" step="1" value="8"></div>
+          <div><div class="weight-label"><label for="weight-spacing">Spacing</label><button class="tooltip-trigger" type="button" aria-label="About spacing" aria-describedby="tooltip-spacing">?<span class="tooltip-text" id="tooltip-spacing" role="tooltip">Adds a missing space or removes an existing one.</span></button></div><input id="weight-spacing" data-operator="spacing" type="number" min="0" max="1000" step="1" value="5"></div>
+        </div>
+
+        <div class="actions">
+          <button class="run" id="augment-run" type="submit">Generate corruption</button>
+          <button class="secondary" id="reset-weights" type="button">Reset defaults</button>
+          <span id="augment-status"></span>
+        </div>
+      </form>
+
+      <div id="augment-error" role="alert" hidden></div>
+      <section id="augment-result" aria-live="polite" hidden>
+        <div class="field">
+          <label for="augmented-text">Corrupted draft</label>
+          <textarea id="augmented-text" readonly></textarea>
+        </div>
+        <div class="meta" id="augment-meta"></div>
+        <ol id="operation-trace"></ol>
+        <div class="actions">
+          <button class="secondary" id="use-draft" type="button">Use as model draft</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel" id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
+      <h2>Model playground</h2>
+      <p class="lede">Probe a catalog base model or deployed Flash run alias through managed serving.</p>
       <form id="form">
         <div class="field">
           <label for="model">Model</label>
@@ -63,7 +145,7 @@
 
         <div class="field">
           <label for="draft">Draft</label>
-          <textarea id="draft" name="draft" placeholder="cnt cm tmrw" autofocus></textarea>
+          <textarea id="draft" name="draft" placeholder="cnt cm tmrw"></textarea>
         </div>
 
         <div class="controls">
@@ -76,7 +158,7 @@
             <input id="max-tokens" type="range" min="16" max="512" step="16" value="128">
           </div>
           <div>
-            <div class="control-head"><label for="suggestion-count">Suggestions</label><output id="suggestion-count-value">3</output></div>
+            <div class="control-head"><label for="suggestion-count">Completions</label><output id="suggestion-count-value">3</output></div>
             <input id="suggestion-count" type="range" min="1" max="5" step="1" value="3">
           </div>
         </div>
@@ -91,6 +173,7 @@
 
       <section id="result" aria-live="polite" hidden>
         <div class="meta" id="meta"></div>
+        <p class="lede" id="empty-candidates" hidden>No changed candidates. Skipped.</p>
         <ol id="suggestions"></ol>
       </section>
     </section>
@@ -109,6 +192,46 @@
     const status = document.querySelector('#status');
     const errorBox = document.querySelector('#error');
     const result = document.querySelector('#result');
+    const augmentForm = document.querySelector('#augment-form');
+    const correctText = document.querySelector('#correct-text');
+    const augmentSeed = document.querySelector('#augment-seed');
+    const eventCount = document.querySelector('#event-count');
+    const augmentRun = document.querySelector('#augment-run');
+    const augmentStatus = document.querySelector('#augment-status');
+    const augmentError = document.querySelector('#augment-error');
+    const augmentResult = document.querySelector('#augment-result');
+    const augmentedText = document.querySelector('#augmented-text');
+    const weightControls = [...document.querySelectorAll('[data-operator]')];
+    const defaultWeights = {substitution: 59, deletion: 16, insertion: 10, transposition: 2, repeat: 8, spacing: 5};
+    const tabControls = [...document.querySelectorAll('[role="tab"]')];
+
+    function randomSeed() {
+      const values = new Uint32Array(1);
+      crypto.getRandomValues(values);
+      return values[0] & 0x7fffffff;
+    }
+
+    augmentSeed.value = randomSeed();
+
+    function activateTab(selectedTab) {
+      tabControls.forEach(tabControl => {
+        const selected = tabControl === selectedTab;
+        tabControl.setAttribute('aria-selected', String(selected));
+        tabControl.tabIndex = selected ? 0 : -1;
+        document.querySelector(`#${tabControl.getAttribute('aria-controls')}`).hidden = !selected;
+      });
+    }
+
+    tabControls.forEach(tabControl => {
+      tabControl.addEventListener('click', () => activateTab(tabControl));
+      tabControl.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const nextIndex = (tabControls.indexOf(tabControl) + (event.key === 'ArrowRight' ? 1 : -1) + tabControls.length) % tabControls.length;
+        activateTab(tabControls[nextIndex]);
+        tabControls[nextIndex].focus();
+      });
+    });
     function requestBody() {
       return {
         model: model.value.trim(),
@@ -125,6 +248,76 @@
       errorBox.hidden = false;
       result.hidden = true;
     }
+
+    function showAugmentError(message) {
+      augmentError.textContent = message;
+      augmentError.hidden = false;
+      augmentResult.hidden = true;
+    }
+
+    augmentForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      augmentError.hidden = true;
+      augmentResult.hidden = true;
+      if (!correctText.value.trim()) {
+        showAugmentError('Enter correct text to corrupt.');
+        correctText.focus();
+        return;
+      }
+
+      const weights = Object.fromEntries(weightControls.map(control => [control.dataset.operator, Number(control.value)]));
+      const body = {
+        text: correctText.value,
+        seed: Number(augmentSeed.value),
+        event_count: Number(eventCount.value),
+        weights
+      };
+      augmentRun.disabled = true;
+      augmentStatus.textContent = 'Generating locally...';
+      try {
+        const response = await fetch('/api/augment', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Request failed with HTTP ${response.status}`);
+
+        augmentedText.value = data.augmented;
+        document.querySelector('#augment-meta').textContent = `Seed ${data.seed} | ${data.applied_events} of ${data.requested_events} errors applied`;
+        const trace = document.querySelector('#operation-trace');
+        trace.replaceChildren();
+        data.operations.forEach(operation => {
+          const item = document.createElement('li');
+          item.textContent = `${operation.operator} at ${operation.index}: ${JSON.stringify(operation.source)} to ${JSON.stringify(operation.replacement)}`;
+          trace.append(item);
+        });
+        augmentResult.hidden = false;
+        augmentStatus.textContent = 'Complete';
+      } catch (error) {
+        showAugmentError(error.message);
+        augmentStatus.textContent = 'Request failed';
+      } finally {
+        augmentRun.disabled = false;
+      }
+    });
+
+    document.querySelector('#reset-weights').addEventListener('click', () => {
+      weightControls.forEach(control => {
+        control.value = defaultWeights[control.dataset.operator];
+      });
+    });
+
+    document.querySelector('#use-draft').addEventListener('click', () => {
+      draft.value = augmentedText.value;
+      activateTab(document.querySelector('#model-tab'));
+      draft.focus();
+      draft.scrollIntoView({behavior: 'smooth', block: 'center'});
+    });
+
+    eventCount.addEventListener('input', () => {
+      document.querySelector('#event-count-value').textContent = eventCount.value;
+    });
 
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -159,20 +352,21 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `Request failed with HTTP ${response.status}`);
 
-        document.querySelector('#meta').textContent = `${data.model} | ${data.latency_ms} ms`;
+        document.querySelector('#meta').textContent = `${data.model} | ${data.latency_ms} ms | ${data.completion_count} completions | ${data.candidate_count} candidates`;
         const list = document.querySelector('#suggestions');
         list.replaceChildren();
+        document.querySelector('#empty-candidates').hidden = data.suggestions.length !== 0;
         data.suggestions.forEach(item => {
           const row = document.createElement('li');
           row.className = 'suggestion';
           const index = document.createElement('span');
           index.className = 'suggestion-index';
-          index.textContent = item.index;
+          index.textContent = item.rank;
           const text = document.createElement('p');
           text.textContent = item.suggestion;
           const itemMeta = document.createElement('span');
           itemMeta.className = 'suggestion-meta';
-          itemMeta.textContent = `${item.changed ? 'changed' : 'unchanged'} | ${item.latency_ms} ms`;
+          itemMeta.textContent = `${item.vote_count} ${item.vote_count === 1 ? 'vote' : 'votes'} | ${item.latency_ms} ms`;
           row.append(index, text, itemMeta);
           list.append(row);
         });

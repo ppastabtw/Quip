@@ -4,20 +4,19 @@ Source: `docs/SPEC.md`
 
 ## Tech stack
 
-- **desktop shell**: Tauri 2 for the menu bar app, settings UI, composition box, global shortcut, and clipboard integration.
+- **desktop shell**: Tauri 2 for the menu bar app, settings UI, candidate bar, global shortcut, and clipboard integration.
 - **system layer**: Rust for macOS integration, application state, orchestration, sidecar control, and packaging-sensitive code.
 - **macOS Accessibility**: `axuielement` for Accessibility trust, focused elements, text markers, and `AXObserver`; `objc2` ApplicationServices bindings only where `axuielement` lacks coverage.
-- **composition UI**: HTML and CSS rendered through Tauri for the temporary writing box, exact-draft option, candidate list, settings, and demo controls.
+- **composition UI**: HTML and CSS rendered through Tauri for the caret-anchored candidate bar, settings, and demo controls.
 - **local inference**: `mistral.rs` with Metal as the leading runtime for Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and Rust-facing integration.
 - **model family**: start with Qwen3.5-2B at 4-bit; benchmark Qwen3.5-4B only after 2B establishes a working latency and quality baseline.
-- **global training**: Flash `EnvironmentSingleTurn` for dataset construction, SFT, optional GRPO, checkpoint evaluation, inspected rollouts, and global LoRA export.
 - **personalization**: Freesolo-trained per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
 - **storage**: local files or an embedded local store for settings, confirmed examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database is required for the judged build.
 - **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; Freesolo profile runs may use a substantial deduplicated set of confirmed interactions.
 
 ## Key decisions and rejected alternatives
 
-**compose before commit**: Quip captures the writing burst in its own temporary box and commits only after explicit confirmation. Direct edits to destination fields were rejected because they make cancellation, protected-token preservation, and trust harder to demonstrate.
+**observe before explicit candidate commit**: Quip passively observes the writing burst in the destination field and changes text only after the user selects a model candidate. The literal input remains in place when no candidate appears or the candidate is dismissed.
 
 **local inference with Freesolo training**: The base model and exported adapters run on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or deduplicated confirmed profile examples. This is a hackathon validation target, not a production privacy guarantee.
 
@@ -25,17 +24,15 @@ Source: `docs/SPEC.md`
 
 **Accessibility text over screenshots or OCR**: Window context comes from bounded accessible text snippets ranked locally by focus, recency, and relevance. Screenshots and OCR were rejected for the hackathon build because they increase privacy risk, implementation complexity, and demo fragility.
 
-**one prediction per burst**: Prediction runs after punctuation, Return, or a short idle pause instead of on every character. Per-keystroke inference was rejected because it increases latency pressure and makes local model comparison noisier.
+**continuous prediction with bounded churn**: Prediction runs as the burst grows, with a short debounce and immediate refresh at punctuation, Return, or the draft-window cap. Stale results are dropped while the current bar remains visible.
 
-**guided JSON model contract**: Each model completion emits exactly one full-input `suggestion`. The inference layer removes exact-draft completions. It returns `keep` when none remain, or deduplicates and orders at most three changed suggestions for `replace`. This converts the model output to the shared `action` and `candidates` wire format. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
+**guided JSON model contract**: Each model completion emits exactly `{ "suggestion": "..." }` with one full-input suggestion. The inference layer drops exact-input suggestions, deduplicates and ranks changed suggestions, and exposes up to five candidates. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
 
-**exact draft is always a commit option**: The application adds the unchanged draft as the first option even when the model recommends `keep`. Auto-committing `keep` was rejected because it bypasses the confirmation contract.
+**literal input remains the default**: The application does not add the unchanged draft as a candidate because it is already present in the destination. Only an explicit candidate selection changes it.
 
 **mistral.rs sidecar first, direct SDK later**: Start with a bundled local loopback sidecar for inference so model lifecycle failures are isolated from the Tauri app. Direct Rust SDK integration remains a later optimization once adapter loading and schema decoding are proven.
 
 **adapter composition with merge fallback**: The preferred runtime loads the Qwen base, frozen global Freesolo adapter, and separate user adapter together. If stacking fails, merge the global adapter into the base once and load a single user adapter over it.
-
-**Freesolo profile runs**: Per-user LoRA training uses Freesolo so the sponsor technology is part of both global improvement and personalization. Confirmed interactions can provide much of the profile training data, and the exported adapter returns to local inference.
 
 **narrow judged app scope**: The demo targets TextEdit, Notes, and one standard browser input. Rich editors, terminals, PDFs, secure fields, canvas editors, unusual Electron controls, and universal macOS support are explicitly out of scope.
 
@@ -43,21 +40,19 @@ Source: `docs/SPEC.md`
 
 ## Architecture overview
 
-Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibility layer detects supported editable destinations, records the active app, element, selection, insertion point, and nearby visible text, then routes the user's writing burst into Quip's temporary composition box. The orchestration layer waits for punctuation, Return, or an idle trigger, builds a bounded model input from the draft or selection, relevant window snippets, and compact user patterns, then calls the local inference sidecar for the base Qwen and global Freesolo adapter comparison.
+Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibility layer detects supported editable destinations and passively observes the writing burst, active app, element, selection, insertion point, and nearby visible text. The orchestration layer waits for punctuation, Return, or an idle trigger, builds a bounded model input from the draft or selection, relevant window snippets, and compact user patterns, then calls the local inference sidecar for the base Qwen and global Freesolo adapter comparison.
 
-The UI always presents the exact draft plus any schema-valid candidates. On confirmation, the commit layer restores the original destination and inserts or replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
-
-The training path is separate from the inference path. Flash owns global and per-user adapter training, checkpoint inspection, evaluation, and export. SFT learns the single-suggestion JSON contract from gold `output` values because Flash rejects `structured_outputs` for SFT; GRPO constrains sampled rollouts with `train.structured_outputs`; local inference enforces that model schema. The inference adapter converts model suggestions to the separate shared `prediction_result` schema. Profile runs use deduplicated confirmed interactions; excluding ambient context is preferred but not a blocking hackathon requirement.
+The UI shows up to five ranked, schema-valid changed suggestions and shows nothing when all suggestions equal the input. On candidate selection, the commit layer replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
 
 ## Module and folder structure
 
-The repository has no application source yet. A likely implementation structure is:
+The implementation follows this structure:
 
 ```text
 src-tauri/
   src/
     accessibility/      # focused element detection, text markers, observers, window text, secure-field exclusion
-    composition/        # burst capture, idle trigger, draft bounds, candidate state, exact-draft handling
+    composition/        # burst capture, idle trigger, draft bounds, candidate and skip state
     commit/             # destination restore, accessibility insertion, selection replacement, paste fallback
     inference/          # sidecar client, schema validation, base-vs-trained comparison, latency metrics
     learning/           # local examples, pattern dictionary, profile state, adapter refresh orchestration
@@ -65,7 +60,7 @@ src-tauri/
   sidecars/
     inference/          # local model runtime wrapper around mistral.rs or fallback runtime
 src/
-  ui/                   # Tauri webview composition box, settings, demo harness
+  ui/                   # Tauri webview candidate bar, settings, demo harness
 training/
   flash/                # global and profile datasets, reward/eval scripts, checkpoint comparison, adapter export notes
 artifacts/
@@ -89,7 +84,7 @@ docs/
 
 **latency on target hardware**: Failure looks like the 700 to 900 ms idle trigger feels broken because local inference returns too slowly or memory pressure destabilizes the demo. Roll back to Qwen3.5-2B at 4-bit, shorter prompts, smaller context, or deterministic corpus comparison. De-risk by measuring base and trained-model latency on both target Macs before expanding model size or context.
 
-**evaluation credibility**: Failure looks like the trained model improvement appears cherry-picked or the held-out split leaks into training. Roll back to fewer but inspected examples with clear category reporting. De-risk by keeping held-out prompts distinct, deduplicating normalized patterns, rerunning important evaluations, and showing category-level error rates.
+**evaluation credibility**: Failure looks like the trained model improvement appears cherry-picked or the locked test split leaks into iteration. Roll back to fewer but inspected examples with clear category reporting. De-risk by separating a development split from the locked test split, splitting by source family, deduplicating normalized patterns, and reporting correction accuracy separately from false-correction rate.
 
 **demo integration**: Failure looks like all subsystems work separately but the live flow cannot complete in the allotted pitch time. Roll back to a deterministic corpus comparison plus a fallback recording. De-risk with a final integration phase, scripted examples from real model outputs, rehearsal, and compatibility testing.
 
@@ -117,14 +112,11 @@ docs/
 
 ### Workstream 1: Flash training and evaluation
 
-1. Scaffold the single-turn, non-reasoning Flash environment with `EnvironmentSingleTurn`, prompt construction, and `RewardResult` scoring.
-2. Package `dataset/train.jsonl` and `dataset/eval.jsonl` with top-level `input`, optional `output`, and optional `metadata` keys only.
-3. Baseline Qwen3.5 on the held-out split and report category-level errors, unnecessary edit rate, protected-token preservation, shorthand and phonetic decoding, schema validity, and latency.
-4. Run SFT with JSON gold outputs and positive `train.max_examples`, then evaluate the adapter on the untouched split.
-5. Warm-start GRPO with `init_from_adapter` only if SFT improves the task; omit LoRA rank and alpha, constrain rollouts with the Quip JSON schema, and use explicit `max_steps` and `save_at_steps`.
-6. Run Flash dry-run and cost-estimation checks before training submission.
-7. Export the chosen adapter immediately to a team-owned Hugging Face repository and document checkpoint, rank, quantization target, held-out metrics, and inspected failure cases.
-8. Add a private per-user Freesolo run path from compact confirmed examples, then export and evaluate two distinct profile adapters.
+1. Build the corpus and splits defined in `docs/SPEC.md` from pinned, licensed, attributed, and filtered sources, recording augmentation provenance.
+2. Package the single-turn Flash environment and baseline Qwen3.5.
+3. Run SFT and choose steps, checkpoints, and any OPD or GRPO follow-up from development results.
+4. Report correction accuracy separately from false-correction rate, plus category, protected-token, schema, and latency results. Use the locked test split only for selected comparisons.
+5. Export the selected global adapter with its metrics and inspected failures, then train and evaluate two private profile adapters from compact confirmed examples.
 
 ### Workstream 2: local inference, adapters, and packaging
 
@@ -145,12 +137,12 @@ docs/
 5. Restore the destination and commit confirmed text through Accessibility insertion or selection replacement.
 6. Add simulated paste fallback that preserves and restores the previous clipboard.
 7. Collect bounded accessible window text from supported apps, rank snippets locally, and expose only bounded context records to the orchestration layer.
-8. Validate cancellation, exact-draft commit, candidate commit, wrong-field prevention, secure-field avoidance, and context toggle behavior across TextEdit, Notes, and the chosen browser.
+8. Validate cancellation, unchanged-input behavior, candidate commit, wrong-field prevention, secure-field avoidance, and context toggle behavior across TextEdit, Notes, and the chosen browser.
 
 ### Workstream 4: Tauri composition UI, learning, and demo harness
 
 1. Build the Tauri menu-bar shell with enabled state, context toggle, learning pause/reset, profile selection, settings access, and existing-text shortcut.
-2. Implement the composition box with stable candidate layout, exact draft first, up to three model candidates, loading state, unavailable state, and cancel behavior.
+2. Implement the candidate bar with up to five ranked, numbered changed suggestions, no candidate when all suggestions equal the input, loading state, unavailable state, and cancel behavior.
 3. Wire fixture-backed candidate rendering before the live inference sidecar is ready.
 4. Store compact local labeled examples from confirmed candidates, stable dismissed suggestions, post-commit corrections, and repeated personal patterns, then package only selected examples for Freesolo profile training.
 5. Build the local pattern dictionary for immediate personalization before adapter training has enough examples.
@@ -163,7 +155,7 @@ docs/
 2. Connect Workstream 4 prompt construction to Workstream 2 fixture mode, then to live sidecar inference once the adapter-loading proof passes.
 3. Connect Workstream 1 exported adapter artifacts to Workstream 2 packaging and verify the demo corpus uses real model outputs, not hand-written candidates.
 4. Connect Workstream 4 selected profile examples to Workstream 1 Freesolo profile training, then connect the exported adapters to Workstream 2 and verify two local profiles produce different candidates.
-5. Run an end-to-end TextEdit flow: capture, predict, exact-draft option, candidate option, cancel, restore, commit, comparison, and local example capture.
+5. Run an end-to-end TextEdit flow: observe, predict, skip unchanged suggestions, show and select up to five numbered candidates, cancel, commit, compare models, and capture a local example.
 6. Run an end-to-end browser flow with bounded window context and protected-token examples.
 
 ### Final hardening
