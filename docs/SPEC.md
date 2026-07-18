@@ -2,7 +2,7 @@
 
 ## Product statement
 
-Quip is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is speed.
+Quip is a local macOS text decoder for compressed, misspelled, or phonetic English. Its defining behavior is speed. It improves for each user by learning their confirmed language patterns and by using relevant text from their open windows as temporary context.
 
 ## Locality contract
 
@@ -12,7 +12,9 @@ Quip is a local macOS text decoder for compressed, misspelled, or phonetic Engli
 - The application must remain functional without an internet connection after model installation.
 - Freesolo is used for post-training and adapter export, not as the product's inference endpoint.
 - Managed endpoints may be used only for training-time inspection or debugging and are not part of the judged product path.
-- Training data is a prepared project dataset, not text collected from Quip users.
+- Freesolo training uses a prepared project dataset and produces the global Quip adapter.
+- Per-user training runs on the user's Mac and produces a separate local adapter from that user's confirmed usage patterns.
+- Open-window context is processed in memory for the current prediction and is not uploaded or retained by default.
 
 ## Core claim
 
@@ -33,9 +35,11 @@ Quip runs as a macOS menu-bar application.
 2. Wait for a completed writing burst rather than running inference per character.
 3. Trigger at a text boundary such as a space, punctuation, Return, or an idle pause.
 4. Read only a capped recent-text window.
-5. Ask the model for `keep` or up to three minimal replacement candidates.
-6. Remain silent for `keep`.
-7. Require explicit confirmation before replacing text.
+5. Gather bounded, relevant context from accessible open windows.
+6. Add the user's learned language patterns.
+7. Ask the local model for `keep` or up to three minimal replacement candidates.
+8. Remain silent for `keep`.
+9. Require explicit confirmation before replacing text.
 
 Initial timing proposal: trigger after roughly 700 to 900 ms of inactivity. Initial context proposal: at most 80 recent characters. Both values require testing.
 
@@ -45,6 +49,47 @@ Intelligent mode covers both:
 - compressed or phonetic phrases such as `cnt cm tmrw`
 
 Single-word corrections should use a stricter confidence threshold. Shorthand decoding and protected-text restraint remain the primary product story.
+
+## Per-user learning
+
+Quip starts with the same Freesolo-trained global adapter for every user. It then learns a separate local adapter for each macOS user profile.
+
+### Learning signals
+
+The personal training set is built from deliberate product interactions:
+
+- confirmed replacement candidates
+- dismissed suggestions, which become `keep` examples when the surrounding text remains unchanged
+- user corrections made immediately after a Quip replacement
+- repeated personal abbreviations, names, vocabulary, and expansions
+
+Quip must not treat every keystroke as training data. It stores compact input and outcome records only when an interaction supplies a useful label.
+
+### Personal training loop
+
+1. Append labeled interactions to a local per-user dataset.
+2. Deduplicate and group repeated patterns.
+3. Train or refresh a small per-user LoRA adapter locally when enough new examples accumulate.
+4. Keep the global Freesolo adapter frozen.
+5. Apply the per-user adapter during local inference.
+
+Training runs as a periodic background job while Quip is idle, not after every correction. Before enough examples exist for useful training, Quip may inject a compact local pattern dictionary into the prompt so personalization improves immediately.
+
+If the runtime cannot stack the global and user adapters, merge the global adapter into the base model once and load the user adapter over that merged model. Each user can pause learning, inspect the stored patterns, or reset their local adapter and training records.
+
+## Intelligent window context
+
+Open windows provide temporary context for ambiguous shorthand, names, projects, and domain vocabulary.
+
+For each prediction, Quip may inspect accessible visible windows and collect:
+
+- application name
+- window title
+- a bounded visible-text snippet
+
+Quip ranks candidate windows locally by focus, recency, and relevance to the current text. Only the most relevant snippets enter the model context. The hackathon build uses Accessibility text only and does not use screenshots or OCR.
+
+Secure text fields and excluded applications are never read. Window context is not persisted or added to personal training data unless a confirmed Quip interaction creates a compact labeled example. The menu-bar interface provides a visible switch for window context.
 
 ### Manual mode
 
@@ -71,7 +116,7 @@ Rich browser editors, Google Docs, terminals, PDFs, password fields, canvas edit
 
 ## Model behavior
 
-Input consists of a bounded recent-text span or explicit selection.
+Input consists of a bounded recent-text span or explicit selection, relevant open-window context, and a compact representation of learned user patterns.
 
 The model runs in non-thinking mode for minimum latency and compatibility with guided decoding. Flash should constrain every response to a JSON schema from the first generated token.
 
@@ -154,6 +199,8 @@ The held-out evaluation must not be identical to the optimized reward. Evaluatio
 
 Flash produces a LoRA adapter over the selected Qwen3.5 base. Export the adapter after training. The macOS application must run the base and adapter locally through a compatible inference runtime. Managed Flash deployment is useful for development checks, but it does not satisfy Quip's local-product claim.
 
+The exported Freesolo adapter is Quip's global adapter. Each user has an additional local adapter trained on that user's labeled interactions. Both adapters and the personal training records remain on the Mac.
+
 The Flash catalog currently presented in the sponsor deck includes Qwen3.5 checkpoints at 0.8B, 2B, 4B, and 9B parameters. Final checkpoint selection depends on the demo Mac's memory and measured latency.
 
 ## Demo shape
@@ -164,7 +211,9 @@ The live demo should show:
 2. The Freesolo-trained model returning `keep` for that same text.
 3. Both models receiving noisy shorthand or a typo.
 4. The trained model proposing a minimal useful correction.
-5. The user confirming the candidate and Quip replacing it in another application.
+5. Relevant text from another open window resolving an otherwise ambiguous correction.
+6. Two local user profiles producing different candidates from their learned usage patterns.
+7. The user confirming the candidate and Quip replacing it in another application.
 
 The evaluation comparison should run live from a deterministic corpus rather than being prerecorded.
 
@@ -177,9 +226,9 @@ The trained model and its evaluation are the central technical contribution. The
 With four builders and 30 hours, work should split into four tracks:
 
 1. Flash environment, dataset, training, and checkpoint comparison.
-2. Local Rust inference compatibility and model packaging.
-3. macOS Accessibility, global shortcut, and replacement behavior.
-4. Tauri overlay, demo harness, presentation, and integration support.
+2. Local inference, per-user training, adapter composition, and model packaging.
+3. macOS Accessibility, global shortcut, replacement behavior, and open-window context.
+4. Tauri overlay, personal pattern storage, demo harness, and integration support.
 
 Manual selection and confirmation are required for the judged build. Intelligent background triggering begins only after the manual path and local trained-model inference work end to end. Reserve the final six hours for integration, compatibility testing, demo rehearsal, and fallback recording.
 
@@ -193,8 +242,10 @@ The judged build is complete when:
 4. Quip remains silent for `keep` and shows a confirmation overlay for replacements.
 5. Confirming a candidate replaces the original text in place.
 6. A live comparison demonstrates shorthand decoding and protected-text restraint.
+7. Accessible text from an open window changes an ambiguous prediction in a useful way.
+8. A local user profile demonstrates a learned personal expansion without remote inference.
 
-Intelligent background triggering, additional application compatibility, and packaging polish are stretch goals.
+Automatic per-user retraining, intelligent background triggering, additional application compatibility, and packaging polish are stretch goals. The judged build may use a pre-trained local user adapter produced from a recorded local interaction dataset.
 
 ## Target hardware
 
@@ -222,6 +273,7 @@ Use Rust bindings over macOS Accessibility APIs to:
 - request and verify Accessibility permission
 - inspect the focused application and editable element
 - read selected or recent text
+- enumerate accessible open windows and read bounded visible text
 - observe relevant text changes where supported
 - replace text through Accessibility
 - locate the selection or caret for overlay placement
@@ -232,10 +284,12 @@ The current leading crate is `axuielement`, which exposes `AXUIElement`, process
 
 The leading Rust inference candidate is `mistral.rs` with Metal acceleration. It currently advertises Qwen3.5 support, 4-bit quantization, LoRA weight merging, strict schema support, and a Rust SDK.
 
-The first inference milestone is a compatibility spike that loads the exact Freesolo-exported adapter over the selected Qwen3.5 base and produces schema-constrained output on both target Macs. Do this before coupling inference into the application.
+The first inference milestone is a compatibility spike that loads the exact Freesolo-exported adapter over the selected Qwen3.5 base and produces schema-constrained output on both target Macs. The next spike must prove that a separate per-user adapter can be composed with it. Do this before coupling inference into the application.
 
 For the first demo implementation, Quip may run `mistral.rs` as a bundled local sidecar process and call its loopback API. This preserves a Rust implementation while isolating model startup and inference failures from the overlay. Linking the Rust SDK directly into the application is an optimization after the model path is proven.
 
 ### Architecture fallback
 
 If the exported adapter does not work with `mistral.rs` on Metal, keep the macOS application in Rust and temporarily use a replaceable local inference sidecar that can load the artifact. Do not switch the product to remote inference merely to preserve an all-Rust claim.
+
+Local per-user training may use a separate bundled sidecar if the Rust inference runtime cannot train LoRA adapters. The training sidecar receives only the local labeled interaction dataset and writes only the local user adapter.
