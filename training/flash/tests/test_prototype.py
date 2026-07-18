@@ -3,11 +3,24 @@ import unittest
 
 from unittest.mock import patch
 
-from prototype.server import PlaygroundError, request_payload, run_prediction, validate_request
+from prototype.server import (
+    DEFAULT_MODEL,
+    MODEL_OPTIONS,
+    PlaygroundError,
+    request_payload,
+    run_prediction,
+    validate_request,
+)
 from environment import SYSTEM_PROMPT
 
 
 class PrototypeRequestTests(unittest.TestCase):
+    def test_model_catalog_has_unique_ids_and_contains_default(self):
+        ids = [item["id"] for item in MODEL_OPTIONS]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn(DEFAULT_MODEL, ids)
+        self.assertTrue(all(item["name"] for item in MODEL_OPTIONS))
+
     def test_builds_training_contract_input(self):
         model, model_input, settings = validate_request(
             {

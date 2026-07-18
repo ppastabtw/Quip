@@ -52,7 +52,8 @@
       <form id="form">
         <div class="field">
           <label for="model">Model</label>
-          <input id="model" name="model" autocomplete="off" spellcheck="false">
+          <input id="model" name="model" autocomplete="off" spellcheck="false" list="model-options">
+          <datalist id="model-options"></datalist>
         </div>
 
         <div class="field">
@@ -98,6 +99,7 @@
   <script>
     const form = document.querySelector('#form');
     const model = document.querySelector('#model');
+    const modelOptions = document.querySelector('#model-options');
     const systemPrompt = document.querySelector('#system-prompt');
     const draft = document.querySelector('#draft');
     const temperature = document.querySelector('#temperature');
@@ -107,7 +109,6 @@
     const status = document.querySelector('#status');
     const errorBox = document.querySelector('#error');
     const result = document.querySelector('#result');
-
     function requestBody() {
       return {
         model: model.value.trim(),
@@ -199,6 +200,13 @@
     fetch('/api/config')
       .then(response => response.json())
       .then(config => {
+        const catalog = Array.isArray(config.models) ? config.models : [];
+        catalog.forEach(item => {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.label = item.name;
+          modelOptions.append(option);
+        });
         model.value = config.default_model;
         systemPrompt.value = config.system_prompt;
       })

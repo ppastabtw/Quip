@@ -28,6 +28,8 @@ Clauses
   Evidence: two distinct requests and responses.
 - BV-7: Given an invalid or unavailable model ID, when the developer runs it, then the page shows a useful error without exposing a credential.
   Evidence: visible error and redacted response inspection.
+- BV-8: Given the model control, when the developer opens it, then Flash catalog models appear as suggestions while a free-form model ID can still be submitted.
+  Evidence: visible suggestions and API request fields for catalog and custom values.
 
 Anti-cheat probes
 
@@ -35,6 +37,7 @@ Anti-cheat probes
 - Request three suggestions and verify three separate result items.
 - Change the system prompt and temperature between successful requests.
 - Submit a deliberately invalid model ID.
+- Submit a catalog model and a custom model ID through the same control.
 - Inspect browser-visible responses for credential-like values.
 
 Exclusions

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from flash.catalog import list_models
 from flash.client.config import load_credentials
 from flash.serve.deploy import serving_openai_base_url
 
@@ -26,6 +27,10 @@ from scoring import OUTPUT_JSON_SCHEMA, parse_prediction  # noqa: E402
 
 INDEX_PATH = Path(__file__).with_name("index.html")
 DEFAULT_MODEL = "Qwen/Qwen3.5-2B"
+MODEL_OPTIONS = [
+    {"id": model.id, "name": model.display_name}
+    for model in list_models()
+]
 MAX_REQUEST_BYTES = 32_768
 MAX_DRAFT_CHARS = 4_000
 MAX_SYSTEM_PROMPT_CHARS = 8_000
@@ -227,7 +232,11 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
         if self.path == "/api/config":
             self._send_json(
                 HTTPStatus.OK,
-                {"default_model": DEFAULT_MODEL, "system_prompt": SYSTEM_PROMPT},
+                {
+                    "default_model": DEFAULT_MODEL,
+                    "models": MODEL_OPTIONS,
+                    "system_prompt": SYSTEM_PROMPT,
+                },
             )
             return
         if self.path not in ("/", "/index.html"):
