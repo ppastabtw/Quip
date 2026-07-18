@@ -649,8 +649,11 @@ mod selftest {
         inject_capture(app.clone(), capture("st_1", "profile_default", "cnt cm tmrw")).await;
         let (candidates, error) = suggesting(&app)?;
         check(
-            "shorthand suggests the fixture candidate",
-            candidates == vec!["Can't come tomorrow.".to_string()] && error.is_none(),
+            "shorthand suggests multiple candidates, best first",
+            candidates.first().map(String::as_str) == Some("Can't come tomorrow.")
+                && candidates.len() > 1
+                && candidates.len() <= 3
+                && error.is_none(),
             format!("{candidates:?} {error:?}"),
         )?;
 

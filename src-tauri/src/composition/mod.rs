@@ -428,7 +428,8 @@ mod tests {
         else {
             panic!("expected suggesting");
         };
-        assert_eq!(candidates, vec!["Can't come tomorrow."]);
+        assert_eq!(candidates[0], "Can't come tomorrow.");
+        assert!(candidates.len() > 1 && candidates.len() <= 3);
         assert_eq!(recommended, 0);
         assert_eq!(at, caret());
         assert!(error.is_none());

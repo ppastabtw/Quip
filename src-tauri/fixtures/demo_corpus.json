@@ -1,11 +1,26 @@
 {
   "entries": [
     {
+      "draft": "cnt cm tmrw",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Can't come tomorrow.",
+        "I can't come tomorrow.",
+        "Cannot come tomorrow."
+      ],
+      "latency_ms": 612
+    },
+    {
       "draft": "i went to the store instaed",
       "model_variant": "base",
       "has_context": false,
       "action": "replace",
-      "candidates": ["I went to the store instead."],
+      "candidates": [
+        "I went to the store instead.",
+        "I went to the store instead of that."
+      ],
       "latency_ms": 543
     },
     {
@@ -13,7 +28,10 @@
       "model_variant": "global",
       "has_context": false,
       "action": "replace",
-      "candidates": ["i went to the store instead"],
+      "candidates": [
+        "i went to the store instead",
+        "I went to the store instead."
+      ],
       "latency_ms": 498
     },
     {
@@ -21,8 +39,102 @@
       "model_variant": "global",
       "has_context": false,
       "action": "replace",
-      "candidates": ["Meet there tomorrow."],
+      "candidates": [
+        "Meet there tomorrow.",
+        "Meet you there tomorrow."
+      ],
       "latency_ms": 462
+    },
+    {
+      "draft": "omw",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "On my way.",
+        "I'm on my way.",
+        "On my way!"
+      ],
+      "latency_ms": 355
+    },
+    {
+      "draft": "brb 5 min",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Be right back in 5 minutes.",
+        "BRB in 5 minutes."
+      ],
+      "latency_ms": 410
+    },
+    {
+      "draft": "thx so much 4 the help",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Thanks so much for the help.",
+        "Thank you so much for the help!"
+      ],
+      "latency_ms": 528
+    },
+    {
+      "draft": "pls rvw the doc b4 standup",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Please review the doc before standup.",
+        "Please review the document before standup."
+      ],
+      "latency_ms": 561
+    },
+    {
+      "draft": "gonna b l8 sry",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Gonna be late, sorry.",
+        "Going to be late, sorry.",
+        "I'll be late, sorry!"
+      ],
+      "latency_ms": 489
+    },
+    {
+      "draft": "lmk wen ur free",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Let me know when you're free.",
+        "Let me know when you are free.",
+        "LMK when you're free."
+      ],
+      "latency_ms": 502
+    },
+    {
+      "draft": "did u c the eml frm sarah",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "Did you see the email from Sarah?",
+        "Have you seen the email from Sarah?"
+      ],
+      "latency_ms": 547
+    },
+    {
+      "draft": "im hngry lets get lnch",
+      "model_variant": "global",
+      "has_context": false,
+      "action": "replace",
+      "candidates": [
+        "I'm hungry, let's get lunch.",
+        "I'm hungry — let's get lunch!"
+      ],
+      "latency_ms": 515
     }
   ],
   "cases": [
@@ -32,8 +144,18 @@
       "description": "Compressed phrase decoding: the trained model keeps the writer's register instead of inventing a subject.",
       "draft": "cnt cm tmrw",
       "context_snippets": [],
-      "left": { "label": "Base Qwen", "model_variant": "base", "profile_id": "profile_default", "use_context": false },
-      "right": { "label": "Freesolo-trained", "model_variant": "global", "profile_id": "profile_default", "use_context": false }
+      "left": {
+        "label": "Base Qwen",
+        "model_variant": "base",
+        "profile_id": "profile_default",
+        "use_context": false
+      },
+      "right": {
+        "label": "Freesolo-trained",
+        "model_variant": "global",
+        "profile_id": "profile_default",
+        "use_context": false
+      }
     },
     {
       "case_id": "typo",
@@ -41,8 +163,18 @@
       "description": "Minimal useful correction: the base model also rewrites capitalization and punctuation nobody asked for.",
       "draft": "i went to the store instaed",
       "context_snippets": [],
-      "left": { "label": "Base Qwen", "model_variant": "base", "profile_id": "profile_default", "use_context": false },
-      "right": { "label": "Freesolo-trained", "model_variant": "global", "profile_id": "profile_default", "use_context": false }
+      "left": {
+        "label": "Base Qwen",
+        "model_variant": "base",
+        "profile_id": "profile_default",
+        "use_context": false
+      },
+      "right": {
+        "label": "Freesolo-trained",
+        "model_variant": "global",
+        "profile_id": "profile_default",
+        "use_context": false
+      }
     },
     {
       "case_id": "protected",
@@ -50,8 +182,18 @@
       "description": "Paths and filenames survive: the base model 'fixes' usr/bin and q3_finl_v2.pdf, the trained model keeps them.",
       "draft": "open usr/bin and q3_finl_v2.pdf",
       "context_snippets": [],
-      "left": { "label": "Base Qwen", "model_variant": "base", "profile_id": "profile_default", "use_context": false },
-      "right": { "label": "Freesolo-trained", "model_variant": "global", "profile_id": "profile_default", "use_context": false }
+      "left": {
+        "label": "Base Qwen",
+        "model_variant": "base",
+        "profile_id": "profile_default",
+        "use_context": false
+      },
+      "right": {
+        "label": "Freesolo-trained",
+        "model_variant": "global",
+        "profile_id": "profile_default",
+        "use_context": false
+      }
     },
     {
       "case_id": "context",
@@ -65,8 +207,18 @@
           "visible_text": "Tomorrow: meet at Union Station at 8:30 AM."
         }
       ],
-      "left": { "label": "No context", "model_variant": "global", "profile_id": "profile_default", "use_context": false },
-      "right": { "label": "With window context", "model_variant": "global", "profile_id": "profile_default", "use_context": true }
+      "left": {
+        "label": "No context",
+        "model_variant": "global",
+        "profile_id": "profile_default",
+        "use_context": false
+      },
+      "right": {
+        "label": "With window context",
+        "model_variant": "global",
+        "profile_id": "profile_default",
+        "use_context": true
+      }
     },
     {
       "case_id": "personal",
@@ -74,8 +226,18 @@
       "description": "The same shorthand decodes differently per user from locally learned patterns.",
       "draft": "ship spec tn",
       "context_snippets": [],
-      "left": { "label": "Profile A", "model_variant": "global_plus_personal", "profile_id": "profile_a", "use_context": false },
-      "right": { "label": "Profile B", "model_variant": "global_plus_personal", "profile_id": "profile_b", "use_context": false }
+      "left": {
+        "label": "Profile A",
+        "model_variant": "global_plus_personal",
+        "profile_id": "profile_a",
+        "use_context": false
+      },
+      "right": {
+        "label": "Profile B",
+        "model_variant": "global_plus_personal",
+        "profile_id": "profile_b",
+        "use_context": false
+      }
     }
   ]
 }

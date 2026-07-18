@@ -70,11 +70,12 @@ impl FixtureBackend {
             serde_json::from_str(DEMO_CORPUS).expect("demo corpus must parse");
 
         // Successful fixture exchanges become lookup entries; the error
-        // fixture is reachable through `simulate_failure` instead.
-        let mut entries: Vec<CorpusEntry> = fixtures
-            .prediction_exchanges
-            .iter()
-            .filter_map(|exchange| match &exchange.result {
+        // fixture is reachable through `simulate_failure` instead. Corpus
+        // entries come first so they can override a fixture draft with a
+        // richer candidate list (lookup takes the first match).
+        let mut entries = corpus.entries;
+        entries.extend(fixtures.prediction_exchanges.iter().filter_map(
+            |exchange| match &exchange.result {
                 PredictionResult::Ok {
                     action,
                     candidates,
@@ -90,9 +91,8 @@ impl FixtureBackend {
                     latency_ms: *latency_ms,
                 }),
                 PredictionResult::Error { .. } => None,
-            })
-            .collect();
-        entries.extend(corpus.entries);
+            },
+        ));
 
         Self {
             entries,
@@ -120,8 +120,8 @@ impl FixtureBackend {
         // personal variant is that the same draft answers differently per
         // profile, so a shared fixture entry must not shadow it.
         if request.model_variant == ModelVariant::GlobalPlusPersonal {
-            if let Some(candidate) = personal_substitute(request) {
-                return ok_result(request, PredictionAction::Replace, vec![candidate], 641);
+            if let Some(candidates) = personal_substitute(request) {
+                return ok_result(request, PredictionAction::Replace, candidates, 641);
             }
         }
 
@@ -154,10 +154,13 @@ impl FixtureBackend {
         variant: ModelVariant,
         has_context: bool,
     ) -> Option<PredictionResult> {
+        // Trailing terminators come along when the punctuation trigger fires
+        // ("omw." should still match the "omw" entry).
+        let draft = normalize_draft(&request.draft);
         self.entries
             .iter()
             .find(|e| {
-                e.draft == request.draft
+                normalize_draft(&e.draft) == draft
                     && e.model_variant == variant
                     && e.has_context == has_context
             })
@@ -212,9 +215,10 @@ fn ok_result(
     }
 }
 
-/// Applies the request's personal patterns token-by-token, then tidies the
-/// sentence surface. Returns None when no pattern matched.
-fn personal_substitute(request: &PredictionRequest) -> Option<String> {
+/// Applies the request's personal patterns token-by-token. Returns a tidied
+/// best candidate plus the raw substitution as an alternative when they
+/// differ; None when no pattern matched.
+fn personal_substitute(request: &PredictionRequest) -> Option<Vec<String>> {
     let mut replaced = false;
     let tokens: Vec<String> = request
         .draft
@@ -235,15 +239,25 @@ fn personal_substitute(request: &PredictionRequest) -> Option<String> {
     if !replaced {
         return None;
     }
-    let mut text = tokens.join(" ");
-    if let Some(first) = text.get(..1) {
-        let upper = first.to_uppercase();
-        text.replace_range(..1, &upper);
+    let raw = tokens.join(" ");
+    let tidied = base_overedit(&raw);
+    let mut candidates = vec![tidied];
+    if candidates[0] != raw {
+        candidates.push(raw);
     }
-    if !text.ends_with(['.', '!', '?']) {
-        text.push('.');
-    }
-    Some(text)
+    Some(candidates)
+}
+
+/// Lookup key normalization: case-insensitive, trailing sentence terminators
+/// stripped, whitespace collapsed.
+fn normalize_draft(draft: &str) -> String {
+    draft
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Capitalizes the first letter and appends a period — the deterministic
@@ -373,10 +387,10 @@ mod tests {
         });
         let without = backend.predict(&request("meet there tmrw", ModelVariant::Global));
         let with = backend.predict(&with_context);
-        assert_eq!(candidates(&without), vec!["Meet there tomorrow."]);
+        assert_eq!(candidates(&without)[0], "Meet there tomorrow.");
         assert_eq!(
-            candidates(&with),
-            vec!["Meet at Union Station at 8:30 AM tomorrow."]
+            candidates(&with)[0],
+            "Meet at Union Station at 8:30 AM tomorrow."
         );
     }
 
@@ -393,18 +407,34 @@ mod tests {
             shorthand: "tn".into(),
             expansion: "tomorrow night".into(),
         });
-        assert_eq!(candidates(&backend.predict(&a)), vec!["Ship spec tonight."]);
+        let a_candidates = candidates(&backend.predict(&a));
+        let b_candidates = candidates(&backend.predict(&b));
+        // Tidied best candidate plus the raw substitution as an alternative.
         assert_eq!(
-            candidates(&backend.predict(&b)),
-            vec!["Ship spec tomorrow night."]
+            a_candidates,
+            vec!["Ship spec tonight.", "ship spec tonight"]
         );
+        assert_eq!(
+            b_candidates,
+            vec!["Ship spec tomorrow night.", "ship spec tomorrow night"]
+        );
+    }
+
+    #[test]
+    fn lookup_ignores_trailing_terminators_and_case() {
+        let backend = FixtureBackend::new();
+        let result = backend.predict(&request("Omw.", ModelVariant::Global));
+        assert_eq!(candidates(&result)[0], "On my way.");
     }
 
     #[test]
     fn personal_variant_without_matching_patterns_falls_back_to_global() {
         let backend = FixtureBackend::new();
         let result = backend.predict(&request("cnt cm tmrw", ModelVariant::GlobalPlusPersonal));
-        assert_eq!(candidates(&result), vec!["Can't come tomorrow."]);
+        let list = candidates(&result);
+        assert_eq!(list[0], "Can't come tomorrow.");
+        // Corpus overrides the single-candidate fixture with alternatives.
+        assert!(list.len() > 1 && list.len() <= 3);
     }
 
     #[test]
