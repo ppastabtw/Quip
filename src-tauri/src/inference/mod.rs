@@ -3,9 +3,13 @@
 //! The deterministic [`FixtureBackend`] answers from the shared Phase 0
 //! fixtures plus the demo corpus, and applies personal-pattern substitution
 //! for `global_plus_personal` so two profiles diverge before any model
-//! exists. The live sidecar client is a stub that reports an explicit error
-//! until Workstream 2's sidecar lands (transport to be confirmed; the
-//! `predict` seam isolates it). Every result is schema-validated and counted.
+//! exists. Live mode keeps one Workstream 2 sidecar child alive and exchanges
+//! newline-delimited JSON commands over stdin/stdout. Every result is
+//! schema-validated and counted.
+
+mod sidecar_client;
+
+pub use sidecar_client::SidecarClient;
 
 use quip_contracts::{
     Backend, ContextSnippet, ErrorInfo, FixtureFile, HealthStatus, LoadedArtifacts, ModelVariant,
@@ -270,36 +274,6 @@ fn base_overedit(draft: &str) -> String {
         text.push('.');
     }
     text
-}
-
-/// The live-mode stand-in until Workstream 2's sidecar exists.
-pub fn sidecar_predict_stub(request: &PredictionRequest) -> PredictionResult {
-    PredictionResult::Error {
-        request_id: request.request_id.clone(),
-        model_variant: request.model_variant,
-        error: ErrorInfo {
-            code: "sidecar_unavailable".to_string(),
-            message: "The local inference sidecar is not running.".to_string(),
-            retryable: true,
-        },
-    }
-}
-
-pub fn sidecar_health_stub() -> SidecarHealth {
-    SidecarHealth {
-        status: HealthStatus::Unavailable,
-        fixture_available: false,
-        loaded: LoadedArtifacts {
-            base: false,
-            global_adapter: false,
-            user_adapter: false,
-        },
-        error: Some(ErrorInfo {
-            code: "sidecar_unavailable".to_string(),
-            message: "The local inference sidecar is not running.".to_string(),
-            retryable: true,
-        }),
-    }
 }
 
 /// Demo-visible counters over every prediction the app has run.

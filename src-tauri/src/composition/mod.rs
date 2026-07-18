@@ -9,7 +9,7 @@
 //! dismissal (a `keep` learning label).
 
 use crate::commit::{self, CommitOutcome};
-use crate::inference::{sidecar_predict_stub, FixtureBackend, Metrics};
+use crate::inference::{FixtureBackend, Metrics, SidecarClient};
 use crate::learning::{self, LabeledExample, LearningStore};
 use crate::settings::{AppSettings, BackendMode};
 use quip_contracts::{
@@ -102,6 +102,7 @@ pub struct Engine {
     pub settings: AppSettings,
     pub learning: LearningStore,
     pub backend: FixtureBackend,
+    sidecar: SidecarClient,
     pub metrics: Metrics,
     state: State,
     burst_seq: u64,
@@ -114,6 +115,7 @@ impl Engine {
             settings: AppSettings::load(data_dir),
             learning: LearningStore::open(data_dir),
             backend: FixtureBackend::new(),
+            sidecar: SidecarClient::auto(),
             metrics: Metrics::default(),
             state: State::Idle,
             burst_seq: 0,
@@ -191,7 +193,7 @@ impl Engine {
     pub fn predict(&mut self, request: &PredictionRequest, mode: BackendMode) -> PredictionResult {
         let result = match mode {
             BackendMode::Fixture => self.backend.predict(request),
-            BackendMode::Live => sidecar_predict_stub(request),
+            BackendMode::Live => self.sidecar.predict(request),
         };
         let valid = self.metrics.record(&result);
         if valid {
@@ -388,10 +390,10 @@ impl Engine {
         }
     }
 
-    pub fn health(&self) -> SidecarHealth {
+    pub fn health(&mut self) -> SidecarHealth {
         match self.settings.backend_mode {
             BackendMode::Fixture => self.backend.health(),
-            BackendMode::Live => crate::inference::sidecar_health_stub(),
+            BackendMode::Live => self.sidecar.health(),
         }
     }
 }
