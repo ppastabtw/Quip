@@ -1,6 +1,6 @@
 ---
 name: run-freesolo-flash-wsl
-description: Run hackthe6ix Freesolo Flash work from Windows through Ubuntu WSL2. Use for setup, authentication, environment publication, training, checkpoint evaluation, deployment, export, or native Windows fcntl failures.
+description: Run Quip Freesolo Flash work from Windows through Ubuntu WSL2. Use for setup, authentication, environment publication, training, checkpoint evaluation, deployment, export, or native Windows fcntl failures.
 ---
 
 # Run Freesolo Flash through WSL
@@ -21,7 +21,7 @@ $quipRepo = (Resolve-Path .).Path
 $quipDrive = $quipRepo.Substring(0, 1).ToLowerInvariant()
 $quipWslRepo = "/mnt/$quipDrive$($quipRepo.Substring(2).Replace('\', '/'))"
 $quipLinuxHome = (wsl -d Ubuntu -- bash -lc 'printf %s "$HOME"').Trim()
-$quipVenv = "$quipLinuxHome/.local/share/hackthe6ix-workstream1/.venv"
+$quipVenv = "$quipLinuxHome/.local/share/quip-workstream1/.venv"
 $quipFlash = "$quipVenv/bin/flash"
 $quipPython = "$quipVenv/bin/python"
 ```
@@ -29,7 +29,7 @@ $quipPython = "$quipVenv/bin/python"
 If the environment is absent, create it with the project-tested versions:
 
 ```powershell
-wsl -d Ubuntu -- bash -lc 'V="$HOME/.local/share/hackthe6ix-workstream1/.venv"; U="$(command -v uv)"; "$U" venv "$V" --python 3.12; "$U" pip install --python "$V/bin/python" freesolo-flash==1.0.0 freesolo==0.2.56 httpx==0.28.1'
+wsl -d Ubuntu -- bash -lc 'V="$HOME/.local/share/quip-workstream1/.venv"; U="$(command -v uv)"; "$U" venv "$V" --python 3.12; "$U" pip install --python "$V/bin/python" freesolo-flash==1.0.0 freesolo==0.2.56 httpx==0.28.1'
 ```
 
 Authenticate only inside an interactive WSL shell. Read the key silently, export it for `flash login`, then unset it. Never print or pipe a key from PowerShell. If a key appears in output, require rotation.

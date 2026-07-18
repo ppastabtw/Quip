@@ -97,7 +97,7 @@ docs/
 
 - `docs/SPEC.md` is the design source of truth in place of `plans/design.md`.
 - The technical plan artifact should live at `docs/technical-plan.md`, not `plans/technical-plan.md`.
-- The judged build optimizes for a live Hack the 6ix demo over general-purpose macOS compatibility.
+- The judged build optimizes for a live Quip demo over general-purpose macOS compatibility.
 - The team has four builders available and should work in parallel across model training, local inference, Accessibility, and Tauri/demo integration.
 - The primary demo machine is an M3 Pro with 18 GB unified memory, with an M4 MacBook Air with 16 GB as the compatibility target.
 - The app can require Accessibility permissions for the judged build.
