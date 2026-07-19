@@ -32,7 +32,7 @@ QUIP_SELFTEST=1 \
 grep -F "SELFTEST PASS" "$SELFTEST_LOG" >/dev/null
 
 echo "==> safe demo startup"
-DEBUG_DIR=".workspace/quip-debug"
+DEBUG_DIR="$ROOT/.workspace/quip-debug"
 EVENT_LOG="$DEBUG_DIR/events.jsonl"
 SAFE_LOG="$TMP_ROOT/safe-demo.log"
 rm -rf "$DEBUG_DIR"

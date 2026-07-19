@@ -242,10 +242,10 @@ Required `capture_retry` payload:
 
 ## Execution Progress
 
-- [ ] Demo gap fixes: `pending`
-- [ ] Safe demo fallback: `pending`
-- [ ] Validation skill/script: `pending`
-- [ ] Manual QA: `pending`
+- [x] Demo gap fixes: `complete`
+- [x] Safe demo fallback: `complete`
+- [x] Validation skill/script: `complete`
+- [x] Manual QA: `validate-quip-demo passed`
 
 ## Testing & Validation Plan
 
