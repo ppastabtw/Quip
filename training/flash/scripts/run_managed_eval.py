@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,10 @@ from environment import SYSTEM_PROMPT  # noqa: E402
 from scoring import model_text  # noqa: E402
 
 
+COMPLETION_COUNT = 5
+PRODUCT_TEMPERATURE = 0.7
+
+
 def load_jsonl(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
@@ -32,7 +37,7 @@ def request_payload(row: dict, model: str) -> dict:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": model_text(row["input"])},
         ],
-        "temperature": 0.0,
+        "temperature": PRODUCT_TEMPERATURE,
         "max_tokens": 128,
         "chat_template_kwargs": {"enable_thinking": False},
     }
@@ -53,15 +58,22 @@ def run(dataset: Path, output: Path, model: str, limit: int | None = None) -> in
         with output.open("w", encoding="utf-8", newline="\n") as handle:
             for index, row in enumerate(rows, 1):
                 started = time.perf_counter()
-                response = client.post("/chat/completions", json=request_payload(row, model))
-                response.raise_for_status()
-                body = response.json()
-                content = body["choices"][0]["message"]["content"]
-                if not isinstance(content, str):
-                    raise ValueError("serving response content must be a string")
+                payload = request_payload(row, model)
+
+                def complete() -> str:
+                    response = client.post("/chat/completions", json=payload)
+                    response.raise_for_status()
+                    body = response.json()
+                    content = body["choices"][0]["message"]["content"]
+                    if not isinstance(content, str):
+                        raise ValueError("serving response content must be a string")
+                    return content
+
+                with ThreadPoolExecutor(max_workers=COMPLETION_COUNT) as pool:
+                    responses = list(pool.map(lambda _: complete(), range(COMPLETION_COUNT)))
                 prediction = {
                     "example_id": row["metadata"]["example_id"],
-                    "response": content,
+                    "responses": responses,
                     "latency_ms": round((time.perf_counter() - started) * 1000),
                     "model": model,
                 }

@@ -8,6 +8,7 @@ import re
 import statistics
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -23,6 +24,8 @@ REPO_ROOT = FLASH_ROOT.parents[1]
 BACKBOARD_BASE_URL = "https://app.backboard.io/api"
 BACKBOARD_MESSAGE_PATH = "/threads/messages"
 BACKBOARD_MEMORY_MODE = "off"
+COMPLETION_COUNT = 5
+PRODUCT_TEMPERATURE = 0.7
 
 
 @dataclass(frozen=True)
@@ -201,7 +204,7 @@ def freesolo_request_payload(
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": model_text(row["input"])},
         ],
-        "temperature": 0.0,
+        "temperature": PRODUCT_TEMPERATURE,
         "max_tokens": max_tokens,
         "chat_template_kwargs": {"enable_thinking": False},
     }
@@ -427,6 +430,46 @@ class BackboardTransport:
                 self.prices.get((str(spec.provider), spec.model)),
             ),
         }
+
+
+def complete_candidate_set(
+    transport: Any,
+    row: Mapping[str, Any],
+    spec: ModelSpec,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """Run the product's five completions concurrently and aggregate runtime usage."""
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=COMPLETION_COUNT) as pool:
+        results = list(
+            pool.map(
+                lambda _: transport.complete(row, spec, max_tokens),
+                range(COMPLETION_COUNT),
+            )
+        )
+
+    def summed(key: str) -> int | float | None:
+        values = [
+            result[key]
+            for result in results
+            if isinstance(result.get(key), (int, float))
+            and not isinstance(result.get(key), bool)
+        ]
+        return sum(values) if values else None
+
+    first = results[0]
+    return {
+        "responses": [result["response"] for result in results],
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "completion_latencies_ms": [result["latency_ms"] for result in results],
+        "returned_provider": first.get("returned_provider"),
+        "returned_model": first.get("returned_model"),
+        "status": "COMPLETED",
+        "input_tokens": summed("input_tokens"),
+        "output_tokens": summed("output_tokens"),
+        "total_tokens": summed("total_tokens"),
+        "estimated_cost_usd": summed("estimated_cost_usd"),
+    }
 
 
 def validate_freesolo_models(specs: Sequence[ModelSpec]) -> None:

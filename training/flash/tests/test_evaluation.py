@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scoring import parse_gold_output
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "evaluate_predictions.py"
 SPEC = importlib.util.spec_from_file_location("evaluate_predictions", SCRIPT)
@@ -18,7 +20,7 @@ class EvaluationTests(unittest.TestCase):
         predictions = [
             {
                 "example_id": row["metadata"]["example_id"],
-                "response": row["output"]["suggestion"],
+                "responses": [parse_gold_output(row["output"]).suggestion] * 5,
                 "latency_ms": 100,
             }
             for row in dataset
@@ -28,6 +30,8 @@ class EvaluationTests(unittest.TestCase):
             path.write_text("".join(json.dumps(item) + "\n" for item in predictions), encoding="utf-8")
             report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
         self.assertEqual(report["overall_success"], 1.0)
+        self.assertEqual(report["candidate_recall_at_5"], 1.0)
+        self.assertEqual(report["mean_completion_success"], 1.0)
         self.assertEqual(report["unnecessary_edit_rate"], 0.0)
         self.assertEqual(report["mean_latency_ms"], 100.0)
 
@@ -38,7 +42,7 @@ class EvaluationTests(unittest.TestCase):
         )
         prediction = {
             "example_id": unchanged["metadata"]["example_id"],
-            "response": "/opt/homebrew/bun",
+            "responses": ["/opt/homebrew/bun"] * 5,
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "predictions.jsonl"
@@ -46,6 +50,47 @@ class EvaluationTests(unittest.TestCase):
             report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
         self.assertGreater(report["unnecessary_edit_rate"], 0.0)
         self.assertEqual(report["missing_predictions"], len(dataset) - 1)
+
+    def test_majority_rank_and_pass_at_five_are_reported_separately(self):
+        dataset = MODULE.load_jsonl(ROOT / "dataset" / "eval.jsonl")
+        changed = next(
+            row for row in dataset if row["metadata"]["target_changed"] is True
+        )
+        input_text = changed["input"]["text"]
+        gold = parse_gold_output(changed["output"]).suggestion
+        wrong = input_text + " wrong"
+        prediction = {
+            "example_id": changed["metadata"]["example_id"],
+            "responses": [wrong, wrong, wrong, gold, gold],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "predictions.jsonl"
+            path.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+            report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
+
+        self.assertEqual(report["overall_success"], 0.0)
+        self.assertGreater(report["candidate_recall_at_5"], 0.0)
+        self.assertGreater(report["mean_completion_success"], 0.0)
+
+    def test_one_false_edit_interrupts_an_unchanged_candidate_bar(self):
+        dataset = MODULE.load_jsonl(ROOT / "dataset" / "eval.jsonl")
+        unchanged = next(
+            row for row in dataset if row["metadata"]["target_changed"] is False
+        )
+        original = parse_gold_output(unchanged["output"]).suggestion
+        false_edit = unchanged["input"]["text"] + " changed"
+        prediction = {
+            "example_id": unchanged["metadata"]["example_id"],
+            "responses": [original, original, original, original, false_edit],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "predictions.jsonl"
+            path.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+            report = MODULE.evaluate(ROOT / "dataset" / "eval.jsonl", path)
+
+        self.assertEqual(report["overall_success"], 0.0)
+        self.assertGreater(report["unnecessary_edit_rate"], 0.0)
+        self.assertGreater(report["mean_completion_success"], 0.0)
 
 
 if __name__ == "__main__":

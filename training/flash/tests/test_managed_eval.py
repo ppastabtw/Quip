@@ -17,6 +17,7 @@ class ManagedEvalTests(unittest.TestCase):
         payload = MODULE.request_payload(row, "Qwen/Qwen3.5-2B")
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
         self.assertNotIn("response_format", payload)
+        self.assertEqual(payload["temperature"], 0.7)
 
 
 if __name__ == "__main__":

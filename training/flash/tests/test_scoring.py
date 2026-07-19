@@ -1,7 +1,12 @@
 import json
 import unittest
 
-from scoring import parse_gold_output, parse_prediction, score_completion
+from scoring import (
+    parse_gold_output,
+    parse_prediction,
+    rank_candidate_items,
+    score_completion,
+)
 
 
 def input_json(text: str) -> str:
@@ -49,7 +54,6 @@ class ScoreCompletionTests(unittest.TestCase):
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
-
     def test_unnecessary_edit_is_severely_penalized(self):
         result = score_completion(
             input_text=input_json("q3_finl_v2.pdf"),
@@ -75,6 +79,26 @@ class ScoreCompletionTests(unittest.TestCase):
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
+
+
+class CandidateRankingTests(unittest.TestCase):
+    def test_ranks_by_votes_then_first_completion_and_hides_unchanged(self):
+        candidates = rank_candidate_items(
+            [
+                {"index": 1, "suggestion": "draft"},
+                {"index": 2, "suggestion": "corrected"},
+                {"index": 3, "suggestion": "alternate"},
+                {"index": 4, "suggestion": "corrected"},
+                {"index": 5, "suggestion": "alternate"},
+            ],
+            "draft",
+        )
+
+        self.assertEqual(
+            [candidate["suggestion"] for candidate in candidates],
+            ["corrected", "alternate"],
+        )
+        self.assertEqual(candidates[0]["completion_indices"], [2, 4])
 
 if __name__ == "__main__":
     unittest.main()

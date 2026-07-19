@@ -7,6 +7,7 @@ from benchmarking import (
     BackboardTransport,
     ModelSpec,
     backboard_request_payload,
+    complete_candidate_set,
     freesolo_request_payload,
     load_config,
     markdown_report,
@@ -36,7 +37,7 @@ def test_payload_uses_prompt_plain_text_and_non_thinking_mode():
     freesolo = freesolo_request_payload(row, "Qwen/Qwen3.5-2B", 128)
     assert freesolo["messages"][0]["role"] == "system"
     assert freesolo["messages"][1] == {"role": "user", "content": row["input"]}
-    assert freesolo["temperature"] == 0.0
+    assert freesolo["temperature"] == 0.7
     assert freesolo["chat_template_kwargs"] == {"enable_thinking": False}
     assert "response_format" not in freesolo
 
@@ -136,6 +137,34 @@ def test_backboard_transport_forces_memory_off_for_every_message_request():
         {"memory": "off"},
         {"content": "hi", "memory": "off"},
     ]
+
+
+def test_candidate_set_runs_five_completions_and_aggregates_usage():
+    class FixtureTransport:
+        def complete(self, row, spec, max_tokens):
+            del row, spec, max_tokens
+            return {
+                "response": '{"suggestion":"fixed"}',
+                "latency_ms": 10,
+                "returned_provider": "fixture",
+                "returned_model": "fixture-model",
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "total_tokens": 6,
+                "estimated_cost_usd": 0.001,
+            }
+
+    result = complete_candidate_set(
+        FixtureTransport(),
+        {"input": {"text": "draft"}},
+        ModelSpec("Fixture", "freesolo", "fixture-model"),
+        128,
+    )
+
+    assert len(result["responses"]) == 5
+    assert result["input_tokens"] == 20
+    assert result["output_tokens"] == 10
+    assert result["estimated_cost_usd"] == 0.005
 
 
 def test_dataset_gold_outputs_pass_benchmark_contract():

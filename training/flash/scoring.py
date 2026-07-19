@@ -7,7 +7,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from freesolo.utils.core import serialize_value
 
@@ -83,6 +83,37 @@ def parse_gold_output(output_value: object) -> Prediction:
     if not isinstance(suggestion, str) or not suggestion.strip():
         raise ValueError("gold suggestion must be a non-empty string")
     return Prediction(suggestion=suggestion)
+
+
+def rank_candidate_items(
+    suggestions: Sequence[Mapping[str, Any]], original: str
+) -> list[dict[str, Any]]:
+    """Rank changed suggestions exactly as the five-completion product surface does."""
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for item in suggestions:
+        suggestion = item.get("suggestion")
+        if not isinstance(suggestion, str):
+            raise ValueError("candidate suggestion must be a string")
+        if suggestion == original:
+            continue
+        groups.setdefault(suggestion, []).append(item)
+
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda group: (-len(group), int(group[0].get("index", 0))),
+    )
+    candidates: list[dict[str, Any]] = []
+    for rank, group in enumerate(ordered_groups, start=1):
+        candidate = dict(group[0])
+        candidate.update(
+            {
+                "rank": rank,
+                "vote_count": len(group),
+                "completion_indices": [item.get("index") for item in group],
+            }
+        )
+        candidates.append(candidate)
+    return candidates
 
 
 def _accepted_suggestions(

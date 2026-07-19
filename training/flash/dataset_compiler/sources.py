@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import urllib.request
 import random
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -100,8 +101,11 @@ def sample_massive_windows(
     partition: str,
     required_by_size: dict[int, int],
     rng: random.Random,
-    buffer_rows: int | None = None,
+    buffer_rows: int | Mapping[int, int] | None = None,
+    sampling: str = "random_contiguous",
 ) -> dict[int, list[Candidate]]:
+    if sampling not in {"random_contiguous", "runtime_chunks"}:
+        raise ValueError(f"unknown MASSIVE sampling mode: {sampling}")
     windows: dict[int, list[Candidate]] = {size: [] for size in CONTRACT.window_sizes}
     seen: dict[int, set[str]] = {size: set() for size in CONTRACT.window_sizes}
     pool_targets = {
@@ -109,6 +113,8 @@ def sample_massive_windows(
         + (
             max(10, required_by_size[size] // 5)
             if buffer_rows is None
+            else buffer_rows[size]
+            if isinstance(buffer_rows, Mapping)
             else buffer_rows
         )
         for size in CONTRACT.window_sizes
@@ -123,11 +129,25 @@ def sample_massive_windows(
         if source_rejection_reason(utterance) or source_quality_rejection_reason(utterance):
             continue
         tokens = utterance.split()
-        eligible_sizes = [
-            size
-            for size in CONTRACT.window_sizes
-            if len(tokens) >= size and len(windows[size]) < pool_targets[size]
-        ]
+        runtime_starts: dict[int, list[int]] = {
+            size: [] for size in CONTRACT.window_sizes
+        }
+        if sampling == "runtime_chunks":
+            for start in range(0, len(tokens), max(CONTRACT.window_sizes)):
+                size = min(max(CONTRACT.window_sizes), len(tokens) - start)
+                if size in runtime_starts:
+                    runtime_starts[size].append(start)
+            eligible_sizes = [
+                size
+                for size, starts in runtime_starts.items()
+                if starts and len(windows[size]) < pool_targets[size]
+            ]
+        else:
+            eligible_sizes = [
+                size
+                for size in CONTRACT.window_sizes
+                if len(tokens) >= size and len(windows[size]) < pool_targets[size]
+            ]
         if not eligible_sizes:
             continue
         rng.shuffle(eligible_sizes)
@@ -135,7 +155,11 @@ def sample_massive_windows(
             eligible_sizes,
             key=lambda value: len(windows[value]) / pool_targets[value],
         )
-        start = rng.randrange(0, len(tokens) - size + 1)
+        start = (
+            rng.choice(runtime_starts[size])
+            if sampling == "runtime_chunks"
+            else rng.randrange(0, len(tokens) - size + 1)
+        )
         text = " ".join(tokens[start : start + size])
         if window_rejection_reason(
             text,

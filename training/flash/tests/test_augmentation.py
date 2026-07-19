@@ -40,12 +40,21 @@ class AugmentationTests(unittest.TestCase):
             "transposition": "hello",
             "repeat": "hello",
             "spacing": "hello world",
+            "vowel_deletion": "hello",
+            "phonetic_rewrite": "phone",
         }
         for operator, text in cases.items():
             with self.subTest(operator=operator):
                 result = augment_text(text, seed=7, weights=only(operator))
                 self.assertNotEqual(result["augmented"], text)
                 self.assertEqual(result["operations"][0]["operator"], operator)
+
+    def test_multiple_events_never_revisit_a_prior_surface(self):
+        result = augment_text("Meet me by the station.", seed=9402, event_count=8)
+        surfaces = [result["original"]]
+        surfaces.extend(operation["after"] for operation in result["operations"])
+
+        self.assertEqual(len(surfaces), len(set(surfaces)))
 
     def test_impossible_weighted_operator_returns_a_no_op(self):
         result = augment_text("a", seed=7, event_count=3, weights=only("transposition"))
@@ -60,6 +69,28 @@ class AugmentationTests(unittest.TestCase):
         self.assertEqual(tuple(normalized), OPERATOR_NAMES)
         self.assertAlmostEqual(sum(normalized.values()), 1.0)
         self.assertAlmostEqual(normalized["substitution"], 0.59)
+
+    def test_legacy_weight_profile_defaults_new_zero_weight_operators(self):
+        legacy = {
+            name: weight
+            for name, weight in DEFAULT_WEIGHTS.items()
+            if name != "vowel_deletion"
+        }
+
+        normalized = normalize_weights(legacy)
+
+        self.assertEqual(normalized["vowel_deletion"], 0.0)
+
+    def test_letter_neighbor_mode_avoids_symbol_replacements(self):
+        result = augment_text(
+            "on my shopping",
+            seed=23,
+            event_count=8,
+            weights=only("substitution"),
+            letter_neighbors_only=True,
+        )
+
+        self.assertTrue(all(character.isalpha() or character.isspace() for character in result["augmented"]))
 
     def test_rejects_invalid_event_count_and_weight_profile(self):
         with self.assertRaisesRegex(ValueError, "event_count must be between"):
