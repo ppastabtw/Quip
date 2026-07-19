@@ -5,8 +5,9 @@
 //! webviews are pure renderers: every mutation goes through a command into
 //! the [`composition::Engine`], and every state change is broadcast as an
 //! event. Dev/validation hooks: `QUIP_DATA_DIR` overrides the data dir,
-//! `QUIP_SHOW=demo,settings` shows windows at startup, `QUIP_SELFTEST=1`
-//! drives the full fixture flow headlessly and exits.
+//! `QUIP_SHOW=demo,settings` shows windows at startup,
+//! `QUIP_DEMO_SAFE_MODE=1` starts the presenter fallback, and
+//! `QUIP_SELFTEST=1` drives the full fixture flow headlessly and exits.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -1200,37 +1201,25 @@ fn main() {
             let handles = build_tray(app, &settings, &profiles)?;
             app.manage(TrayState(Mutex::new(Some(handles))));
 
+            let safe_demo_mode = std::env::var("QUIP_DEMO_SAFE_MODE").as_deref() == Ok("1");
+
             if let Ok(show) = std::env::var("QUIP_SHOW") {
                 for label in show.split(',').map(str::trim).filter(|l| !l.is_empty()) {
                     show_window(app.handle(), label);
                 }
             }
+            if safe_demo_mode {
+                show_window(app.handle(), "demo");
+            }
 
-            // Dev/validation hook: fire the TextEdit capture fixture shortly
-            // after startup so the bar can be inspected without a typist.
-            if std::env::var("QUIP_DEMO_CAPTURE").as_deref() == Ok("1") {
+            // Dev/validation hook: run the explicit presenter fallback shortly
+            // after startup so the candidate bar can be inspected without a
+            // fragile Accessibility focus handoff.
+            if safe_demo_mode {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    inject_capture(
-                        handle,
-                        CaptureResult::Ready {
-                            burst_id: "burst_demo_env".into(),
-                            destination_id: "destination_textedit".into(),
-                            profile_id: "profile_default".into(),
-                            draft: "cnt cm tmrw".into(),
-                            trigger: Trigger::Idle,
-                            word_offset: None,
-                            caret: Rect {
-                                x: 512.0,
-                                y: 384.0,
-                                width: 2.0,
-                                height: 18.0,
-                            },
-                        },
-                        None,
-                    )
-                    .await;
+                    let _ = run_safe_demo(handle, Some("primary".into())).await;
                 });
             }
 
