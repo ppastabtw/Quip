@@ -1256,7 +1256,12 @@ mod selftest {
 
     /// A sliding-window burst at a session word offset, for the barless /
     /// edit-accumulator path (marks, not bars).
-    fn capture_at(burst_id: &str, profile_id: &str, draft: &str, word_offset: u32) -> CaptureResult {
+    fn capture_at(
+        burst_id: &str,
+        profile_id: &str,
+        draft: &str,
+        word_offset: u32,
+    ) -> CaptureResult {
         CaptureResult::Ready {
             burst_id: burst_id.to_string(),
             destination_id: "destination_selftest".to_string(),
@@ -1443,9 +1448,9 @@ mod selftest {
         let marks = get_marks(app.clone());
         check(
             "an unhardened mark records the proposed correction",
-            marks
-                .iter()
-                .any(|m| m.start_word == 0 && !m.stable && m.replacement == "I can't come tomorrow."),
+            marks.iter().any(|m| {
+                m.start_word == 0 && !m.stable && m.replacement == "I can't come tomorrow."
+            }),
             format!("{marks:?}"),
         )?;
 
@@ -1507,6 +1512,63 @@ mod live_selftest {
         }
         println!("LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded");
 
+        // A slow local model must not hold the composition mutex. Prove that
+        // the app can retract a predicting burst promptly, then verify the
+        // eventual stale model result stays retracted.
+        let inflight_app = app.clone();
+        let inflight = tauri::async_runtime::spawn(async move {
+            inject_capture(
+                inflight_app,
+                CaptureResult::Ready {
+                    burst_id: "live_selftest_dismiss".to_owned(),
+                    destination_id: "destination_live_selftest".to_owned(),
+                    profile_id: "profile_default".to_owned(),
+                    draft: "this sa sntece".to_owned(),
+                    trigger: Trigger::Idle,
+                    word_offset: None,
+                    caret: Rect {
+                        x: 512.0,
+                        y: 384.0,
+                        width: 2.0,
+                        height: 18.0,
+                    },
+                },
+                None,
+            )
+            .await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    get_composition_state(app.clone()),
+                    Snapshot::Predicting { .. }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| "live prediction did not enter predicting state".to_owned())?;
+        let retract_started = std::time::Instant::now();
+        retract_offer(app.clone(), "live_selftest_dismiss".to_owned());
+        let retract_ms = retract_started.elapsed().as_millis();
+        if retract_ms > 250 || get_composition_state(app.clone()) != Snapshot::Idle {
+            return Err(format!(
+                "live retraction blocked behind inference: {retract_ms} ms, state {:?}",
+                get_composition_state(app.clone())
+            ));
+        }
+        inflight
+            .await
+            .map_err(|error| format!("live dismissal worker failed: {error}"))?;
+        if get_composition_state(app.clone()) != Snapshot::Idle {
+            return Err("retracted live result was not dropped as stale".to_owned());
+        }
+        println!(
+            "LIVE SELFTEST ok: composition stayed responsive during inference ({retract_ms} ms retraction)"
+        );
+
         inject_capture(
             app.clone(),
             CaptureResult::Ready {
@@ -1548,7 +1610,7 @@ mod live_selftest {
         }
 
         let metrics = get_metrics(app);
-        if metrics.requests != 1 || metrics.ok != 1 || metrics.schema_invalid != 0 {
+        if metrics.requests != 2 || metrics.ok != 2 || metrics.schema_invalid != 0 {
             return Err(format!("unexpected live metrics: {metrics:?}"));
         }
         println!("LIVE SELFTEST ok: app metrics recorded one schema-valid live result");

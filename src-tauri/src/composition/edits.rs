@@ -78,7 +78,11 @@ pub fn apply_word_edits(draft: &str, edits: &[WordEdit]) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut cursor = 0;
     for edit in edits {
-        out.extend(words[cursor..edit.draft_range.start].iter().map(|w| w.to_string()));
+        out.extend(
+            words[cursor..edit.draft_range.start]
+                .iter()
+                .map(|w| w.to_string()),
+        );
         if !edit.replacement.is_empty() {
             out.push(edit.replacement.clone());
         }
@@ -403,7 +407,10 @@ mod tests {
         assert_eq!(edits[0].draft_range, 0..3);
 
         // Partial alignment: two isolated word fixes.
-        let edits = diff_words("i went to the store instaed", "I went to the store instead.");
+        let edits = diff_words(
+            "i went to the store instaed",
+            "I went to the store instead.",
+        );
         assert_eq!(edits.len(), 2);
         assert_eq!(edits[0].draft_range, 0..1);
         assert_eq!(edits[0].replacement, "I");
@@ -425,11 +432,17 @@ mod tests {
     fn diff_roundtrips_arbitrary_pairs() {
         let pairs = [
             ("cnt cm tmrw", "Can't come tomorrow."),
-            ("i went to the store instaed", "I went to the store instead."),
+            (
+                "i went to the store instaed",
+                "I went to the store instead.",
+            ),
             ("brb 5 min", "Be right back in 5 minutes."),
             ("thx so much 4 the help", "Thanks so much for the help."),
             ("omw", "On my way."),
-            ("meet there tmrw", "Meet at Union Station at 8:30 AM tomorrow."),
+            (
+                "meet there tmrw",
+                "Meet at Union Station at 8:30 AM tomorrow.",
+            ),
         ];
         for (draft, candidate) in pairs {
             let rebuilt = apply_word_edits(draft, &diff_words(draft, candidate));

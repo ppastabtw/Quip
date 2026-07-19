@@ -7,6 +7,11 @@ cd "$repo_root"
 .agents/skills/validate-quip-sidecar/scripts/validate.sh
 
 mistralrs_bin=${MISTRALRS_BIN:-"$HOME/.mistralrs/mistralrs"}
+model_id=${QUIP_BASE_MODEL_ID:-Qwen/Qwen3.5-2B}
+model_quant=${QUIP_BASE_MODEL_QUANT:-4}
+model_label=${model_id#Qwen/}
+export QUIP_BASE_MODEL_ID="$model_id"
+export QUIP_BASE_MODEL_QUANT="$model_quant"
 server_log=$(mktemp "${TMPDIR:-/tmp}/quip-live-model.XXXXXX")
 responses=$(mktemp "${TMPDIR:-/tmp}/quip-live-responses.XXXXXX")
 benchmark_json=$(mktemp "${TMPDIR:-/tmp}/quip-live-benchmark.XXXXXX")
@@ -26,13 +31,18 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if ! curl -fsS http://127.0.0.1:1234/health >/dev/null 2>&1; then
+if curl -fsS http://127.0.0.1:1234/health >/dev/null 2>&1; then
+  if ! curl -fsS http://127.0.0.1:1234/v1/models | grep -Fq "\"$model_id\""; then
+    printf '%s\n' "A different model is already running on port 1234; expected $model_id." >&2
+    exit 1
+  fi
+else
   if [ ! -x "$mistralrs_bin" ]; then
     printf '%s\n' "mistral.rs was not found at $mistralrs_bin" >&2
     exit 1
   fi
   "$mistralrs_bin" serve --host 127.0.0.1 -p 1234 --no-ui --disable-access-log \
-    auto --quant 4 -m Qwen/Qwen3.5-2B --max-seq-len 2048 >"$server_log" 2>&1 &
+    auto --quant "$model_quant" -m "$model_id" --max-seq-len 2048 >"$server_log" 2>&1 &
   server_pid=$!
 
   ready=0
@@ -107,7 +117,7 @@ PY
 
 phrase_output=$("$phrase_tester" --live "cnt cm tmr")
 case "$phrase_output" in
-  *"Live local inference — Qwen3.5-2B (4-bit, Metal)."*"Base: "*"[Live, "*"Global: error (adapter_not_loaded)"*) ;;
+  *"Live local inference — $model_label (4-bit, Metal)."*"Base: "*"[Live, "*"Global: error (adapter_not_loaded)"*) ;;
   *)
     printf '%s\n' "$phrase_output" >&2
     printf '%s\n' 'Live phrase tester output failed' >&2

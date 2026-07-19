@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import httpx
 
 from environment import SYSTEM_PROMPT
-from scoring import OUTPUT_JSON_SCHEMA, model_text, score_completion
+from scoring import model_text, parse_gold_output, score_completion
 
 
 FLASH_ROOT = Path(__file__).resolve().parent
@@ -179,7 +179,7 @@ def validate_dataset(rows: Sequence[Mapping[str, Any]]) -> None:
                 input_text=row["input"],
                 expected_output=response_text,
                 metadata=row["metadata"],
-                response_text=model_text(response_text),
+                response_text=parse_gold_output(response_text).suggestion,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid benchmark row {index}: {error}") from error
@@ -203,10 +203,6 @@ def freesolo_request_payload(
         ],
         "temperature": 0.0,
         "max_tokens": max_tokens,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"schema": OUTPUT_JSON_SCHEMA},
-        },
         "chat_template_kwargs": {"enable_thinking": False},
     }
 

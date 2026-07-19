@@ -53,7 +53,10 @@ fn interactive(backend: &impl InferenceBackend, mode: Mode) -> io::Result<()> {
             }
         }
         Mode::Live => {
-            println!("Quip phrase tester — live Qwen3.5-2B mode; inference stays on this Mac.");
+            println!(
+                "Quip phrase tester — live {} mode; inference stays on this Mac.",
+                live_model_label()
+            );
             println!("The global Freesolo adapter is not loaded yet, so only Base can infer.");
         }
     }
@@ -91,7 +94,10 @@ fn print_comparison(
 ) {
     match mode {
         Mode::Fixture => println!("Fixture mode only — no AI model is loaded."),
-        Mode::Live => println!("Live local inference — Qwen3.5-2B (4-bit, Metal)."),
+        Mode::Live => println!(
+            "Live local inference — {} (4-bit, Metal).",
+            live_model_label()
+        ),
     }
     for (label, variant) in [
         ("Base", ModelVariant::Base),
@@ -107,6 +113,14 @@ fn print_comparison(
         };
         println!("{label}: {}", display_result(backend.predict(&request)));
     }
+}
+
+fn live_model_label() -> String {
+    std::env::var("QUIP_BASE_MODEL_ID")
+        .unwrap_or_else(|_| "Qwen/Qwen3.5-2B".to_owned())
+        .strip_prefix("Qwen/")
+        .unwrap_or("Qwen3.5-2B")
+        .to_owned()
 }
 
 fn display_result(result: PredictionResult) -> String {
