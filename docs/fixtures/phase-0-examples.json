@@ -16,7 +16,12 @@
         "status": "ok",
         "model_variant": "base",
         "backend": "fixture",
-        "candidates": ["I can't come tomorrow."],
+        "candidates": [
+          "I can't come tomorrow."
+        ],
+        "votes": [
+          1
+        ],
         "latency_ms": 620
       }
     },
@@ -42,6 +47,13 @@
           "Can't make it tomorrow.",
           "I cannot come tomorrow."
         ],
+        "votes": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
         "latency_ms": 612
       }
     },
@@ -60,7 +72,12 @@
         "status": "ok",
         "model_variant": "base",
         "backend": "fixture",
-        "candidates": ["Open /usr/bin and q3_final_v2.pdf."],
+        "candidates": [
+          "Open /usr/bin and q3_final_v2.pdf."
+        ],
+        "votes": [
+          1
+        ],
         "latency_ms": 401
       }
     },
@@ -80,6 +97,7 @@
         "model_variant": "global",
         "backend": "fixture",
         "candidates": [],
+        "votes": [],
         "latency_ms": 388
       }
     },
@@ -104,7 +122,12 @@
         "status": "ok",
         "model_variant": "global",
         "backend": "fixture",
-        "candidates": ["Meet at Union Station at 8:30 AM tomorrow."],
+        "candidates": [
+          "Meet at Union Station at 8:30 AM tomorrow."
+        ],
+        "votes": [
+          1
+        ],
         "latency_ms": 731
       }
     },
@@ -128,7 +151,12 @@
         "status": "ok",
         "model_variant": "global_plus_personal",
         "backend": "fixture",
-        "candidates": ["Ship the spec tonight."],
+        "candidates": [
+          "Ship the spec tonight."
+        ],
+        "votes": [
+          1
+        ],
         "latency_ms": 658
       }
     },
@@ -164,7 +192,12 @@
         "profile_id": "profile_default",
         "draft": "cnt cm tmrw",
         "trigger": "idle",
-        "caret": { "x": 512, "y": 384, "width": 2, "height": 18 }
+        "caret": {
+          "x": 512,
+          "y": 384,
+          "width": 2,
+          "height": 18
+        }
       }
     },
     {
@@ -172,6 +205,24 @@
       "result": {
         "status": "unavailable",
         "reason": "secure_field"
+      }
+    },
+    {
+      "case_id": "playground_ready_with_word_offset",
+      "result": {
+        "status": "ready",
+        "burst_id": "burst_playground_offset",
+        "destination_id": "destination_playground",
+        "profile_id": "profile_default",
+        "draft": "ok going now",
+        "trigger": "idle",
+        "caret": {
+          "x": 220.0,
+          "y": 340.0,
+          "width": 2.0,
+          "height": 18.0
+        },
+        "word_offset": 5
       }
     }
   ],

@@ -139,6 +139,12 @@
               "uniqueItems": true,
               "items": { "type": "string", "minLength": 1 }
             },
+            "votes": {
+              "type": "array",
+              "maxItems": 5,
+              "items": { "type": "integer", "minimum": 1 },
+              "description": "Same length as candidates: how many raw samples resolved to each candidate. Optional; omitted by producers that cannot vote."
+            },
             "latency_ms": { "type": "number", "minimum": 0 }
           }
         },
@@ -176,7 +182,12 @@
             "profile_id": { "type": "string" },
             "draft": { "type": "string" },
             "trigger": { "enum": ["idle", "punctuation", "return", "shortcut"] },
-            "caret": { "$ref": "#/$defs/rect" }
+            "caret": { "$ref": "#/$defs/rect" },
+            "word_offset": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Index of the draft's first word within the composition session. Optional; omitted by producers that do not track session word positions."
+            }
           }
         },
         {

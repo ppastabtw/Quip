@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Mapping
 
+from freesolo.utils.core import serialize_value
+
 
 OUTPUT_KEYS = {"suggestion"}
 
@@ -41,8 +43,13 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
-def _input_payload(input_text: str) -> dict[str, Any]:
-    payload = json.loads(input_text)
+def model_text(value: object) -> str:
+    """Render a dataset value exactly as Freesolo presents it to the model."""
+    return serialize_value(value)
+
+
+def _input_payload(input_value: object) -> dict[str, Any]:
+    payload = json.loads(input_value) if isinstance(input_value, str) else input_value
     if (
         not isinstance(payload, dict)
         or set(payload) != {"text"}
@@ -67,9 +74,9 @@ def parse_prediction(response_text: str) -> Prediction:
     return Prediction(suggestion=suggestion)
 
 
-def parse_gold_output(output_text: str) -> Prediction:
-    """Parse a dataset gold output, which stays JSON-encoded on disk."""
-    payload = json.loads(output_text.strip())
+def parse_gold_output(output_value: object) -> Prediction:
+    """Parse dataset gold output from JSONL text or its loaded object form."""
+    payload = json.loads(output_value.strip()) if isinstance(output_value, str) else output_value
     if not isinstance(payload, dict) or set(payload) != OUTPUT_KEYS:
         raise ValueError("gold output must contain exactly suggestion")
     suggestion = payload["suggestion"]
@@ -95,7 +102,7 @@ def _accepted_suggestions(
 
 def score_completion(
     *,
-    input_text: str,
+    input_text: object,
     expected_output: object,
     metadata: Mapping[str, Any],
     response_text: str,

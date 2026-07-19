@@ -18,7 +18,7 @@ The executable shapes live in `docs/phase-0.schema.json`. Examples live in `docs
 
 - Accessibility element handles and burst-range markers
 - UI candidate and transition state
-- raw model responses, completion vote counts, and aggregation implementation
+- raw model responses and aggregation implementation
 - personal-example storage
 - model and adapter paths
 - idle timing, draft limits, and other tuning values
@@ -34,6 +34,8 @@ The Accessibility layer exposes an opaque `destination_id`. The UI returns that 
 - A successful result may have zero candidates. Zero means skip and shows no suggestion bar.
 - A successful result has no action field. Each candidate is a full-input replacement.
 - Ranking uses duplicate vote count first and earliest completion as the tie breaker.
+- A successful result may carry `votes`, parallel to `candidates`: how many raw samples resolved to each candidate (each at least 1). Producers that cannot vote omit it (the fixture backend emits all 1s); consumers treat a missing field as "no confidence signal". Correction hardening in the edit accumulator is gated on this signal.
+- A `ready` capture may carry `word_offset`: the 0-based session word index of the draft's first word, counted from the last composition-session boundary. Producers that do not track session word positions omit it; bursts without it never update per-word correction state.
 - Failures use an explicit error result. They do not invent candidates.
 - The typed burst stays in the destination as typed (IME model). Doing nothing always keeps it; the UI shows model candidates only, and the model never returns the draft as a candidate.
 - A `ready` capture carries the caret rectangle in screen coordinates so the suggestion bar can be placed above it.

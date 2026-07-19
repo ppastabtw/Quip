@@ -178,6 +178,10 @@ th {
   cursor: default;
 }
 
+.error-text {
+  color: var(--bad);
+}
+
 /* ---- playground ---- */
 
 #playground {
@@ -198,6 +202,54 @@ th {
 #playground:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.playground-stack {
+  position: relative;
+}
+
+.playground-stack #playground {
+  position: relative;
+  z-index: 1;
+}
+
+/* Mirrors #playground's text metrics exactly so the underline lands under the
+   same words; its own glyphs are transparent — only the chunk span draws. */
+.playground-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: transparent;
+  pointer-events: none;
+}
+
+.chunk-underline {
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 3px;
+}
+
+/* A hardened correction: quiet dotted underline behind the caret. Never
+   interrupts; ⌘⏎ applies all, Escape reverts. */
+.mark-underline {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--warn, #d29922);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  background: color-mix(in srgb, var(--warn, #d29922) 12%, transparent);
+  border-radius: 3px;
+  pointer-events: auto;
 }
 
 /* ---- demo harness ---- */
@@ -235,4 +287,51 @@ th {
   gap: 14px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.debug-grid {
+  align-items: start;
+}
+
+.debug-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.debug-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.debug-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.debug-time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.debug-summary {
+  overflow-wrap: anywhere;
+}
+
+.inline-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inline-candidate {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }

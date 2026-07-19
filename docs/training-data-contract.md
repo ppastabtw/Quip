@@ -66,6 +66,10 @@ typing-error augmentation to the remaining 90%.
 The clean source window is always the target. Augmentation provenance records
 the deterministic seed and applied operation.
 
+Store `input` and `output` as JSON objects in each JSONL row. Freesolo converts
+those structured values into model-facing text. Do not pre-encode nested JSON
+as escaped strings in the canonical dataset.
+
 ## Required validation
 
 Before publishing a dataset:

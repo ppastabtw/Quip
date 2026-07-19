@@ -1,12 +1,27 @@
 // Candidate bar (Workstream 4). IME model: a small non-focusable window the
 // Rust side anchors above the caret. Renders numbered candidate chips (or an
 // explicit error chip) from engine snapshots. Clicks select; number keys and
-// Escape are handled by whoever owns the keyboard (the playground now, the
-// Workstream 3 event tap later) — this window never has key focus.
+// Escape are handled by whoever owns the keyboard. This window never has key
+// focus.
 
 import { api, byId, el, events, type Snapshot } from "./ipc";
 
 const barEl = byId<HTMLDivElement>("bar");
+
+function renderSelectionError(error: unknown) {
+  barEl.replaceChildren();
+  const chip = el("span", "chip error-chip", "commit failed");
+  chip.title = String(error);
+  barEl.append(chip);
+}
+
+async function selectCandidate(index: number) {
+  try {
+    await api.selectCandidate(index);
+  } catch (error) {
+    renderSelectionError(error);
+  }
+}
 
 function render(snapshot: Snapshot) {
   // IME behavior: while the next prediction computes, keep showing the
@@ -26,7 +41,7 @@ function render(snapshot: Snapshot) {
     const chip = el("span", "chip");
     if (index === snapshot.selected) chip.classList.add("recommended");
     chip.append(el("b", undefined, String(index + 1)), el("span", undefined, candidate));
-    chip.addEventListener("click", () => void api.selectCandidate(index));
+    chip.addEventListener("click", () => void selectCandidate(index));
     barEl.append(chip);
   });
 }

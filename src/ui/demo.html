@@ -11,13 +11,17 @@
 
     <h2>Playground: type like in any textbox</h2>
     <p class="muted" style="margin-bottom: 6px">
-      Simulates a macOS textbox until Workstream 3's Accessibility observer lands. Candidates
-      appear and refresh live above the caret while you type, like the macOS Pinyin IME:
-      1 through 5 or click picks a candidate, Tab accepts the highlighted one, Esc keeps your text,
-      and ending a sentence (or a newline) closes the session. The model window is the trailing
-      five words: older words become final as you keep typing.
+      Simulates a macOS textbox for deterministic testing. For real TextEdit/browser fields, use
+      Manual focused capture or the tray shortcut. Completing a fifth word freezes that chunk and
+      runs inference on it while you keep typing; when candidates arrive, the chunk is underlined
+      to show which words they would replace. 1 through 5 or click picks a candidate, Tab accepts
+      the highlighted one, Esc keeps your text, and ending a sentence (or a newline) closes the
+      session.
     </p>
-    <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+    <div class="playground-stack">
+      <div id="playground_backdrop" class="playground-backdrop" aria-hidden="true"></div>
+      <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
+    </div>
     <div class="statline" style="margin-top: 6px">
       <label class="row" style="padding: 0">
         Inference cadence
@@ -44,11 +48,26 @@
 
     <h2>Composition driver</h2>
     <div class="statline">
+      <button id="capture_focused">Manual focused capture</button>
       <button id="fire_textedit">Send TextEdit capture fixture</button>
       <button id="fire_secure">Send secure-field capture</button>
       <span class="muted" id="last_state"></span>
     </div>
+    <p class="muted" style="margin-top: 6px">
+      The harness button is for debugging and can steal focus. For external fields, prefer the tray
+      shortcut path; a true global shortcut/passive observer remains follow-up work.
+    </p>
     <p class="muted" id="last_commit" style="margin-top: 6px"></p>
+
+    <h2>Debug timeline</h2>
+    <div class="grid2 debug-grid">
+      <div class="card">
+        <div id="debug_timeline" class="debug-timeline"></div>
+      </div>
+      <div class="card">
+        <div id="inline_candidates" class="inline-candidates placeholder">No candidates</div>
+      </div>
+    </div>
 
     <script type="module" src="./demo.ts"></script>
   </body>

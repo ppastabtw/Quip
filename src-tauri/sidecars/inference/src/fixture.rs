@@ -140,6 +140,8 @@ fn rewrite_result(exchange: &PredictionExchange, request: &PredictionRequest) ->
             model_variant: request.model_variant,
             backend: *backend,
             candidates: candidates.clone(),
+            // Fixture replays cannot vote; the contract says emit all 1s.
+            votes: Some(vec![1; candidates.len()]),
             latency_ms: *latency_ms,
         },
         PredictionResult::Error { error, .. } => PredictionResult::Error {

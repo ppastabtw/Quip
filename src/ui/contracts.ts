@@ -40,6 +40,9 @@ export type PredictionResult =
       backend: Backend;
       /** Zero through five unique full-input replacements, best first. */
       candidates: string[];
+      /** Same length as candidates: how many raw samples resolved to each.
+       * Omitted by producers that cannot vote. */
+      votes?: number[];
       latency_ms: number;
     }
   | {
@@ -70,6 +73,9 @@ export type CaptureResult =
       trigger: Trigger;
       /** Caret rectangle; the suggestion bar is anchored above it. */
       caret: Rect;
+      /** Index of the draft's first word within the composition session.
+       * Omitted by producers that do not track session word positions. */
+      word_offset?: number;
     }
   | {
       status: "unavailable";

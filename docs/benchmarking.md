@@ -66,3 +66,7 @@ errors, aggregate success, correction success, unnecessary edit rate, schema
 validity, latency, and category results.
 They are gitignored because model responses and generated logs are local
 evaluation artifacts.
+
+The completed six-model V0 scaling comparison, selected checkpoints, published
+adapter revisions, costs, and interpretation boundary are recorded in
+`docs/model-size-scaling-results.md`.

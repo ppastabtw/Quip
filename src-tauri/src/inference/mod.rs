@@ -31,6 +31,14 @@ struct CorpusEntry {
     latency_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FixtureLookupDebug {
+    pub has_context: bool,
+    pub context_count: usize,
+    pub fallback_used: bool,
+    pub lookup_variant: ModelVariant,
+}
+
 /// One side of a demo comparison.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SideSpec {
@@ -125,13 +133,17 @@ impl FixtureBackend {
             }
         }
 
-        if let Some(result) = self.lookup(request, request.model_variant, has_context) {
+        if let Some((result, _fallback_used)) =
+            self.lookup_with_context_fallback(request, request.model_variant, has_context)
+        {
             return result;
         }
 
         // Personal variant with no applicable patterns: behave like global.
         if request.model_variant == ModelVariant::GlobalPlusPersonal {
-            if let Some(result) = self.lookup(request, ModelVariant::Global, has_context) {
+            if let Some((result, _fallback_used)) =
+                self.lookup_with_context_fallback(request, ModelVariant::Global, has_context)
+            {
                 return result;
             }
         }
@@ -146,6 +158,58 @@ impl FixtureBackend {
         }
 
         ok_result(request, Vec::new(), 356)
+    }
+
+    pub fn lookup_debug(&self, request: &PredictionRequest) -> FixtureLookupDebug {
+        let has_context = !request.context_snippets.is_empty();
+        let mut debug = FixtureLookupDebug {
+            has_context,
+            context_count: request.context_snippets.len(),
+            fallback_used: false,
+            lookup_variant: request.model_variant,
+        };
+
+        if self.simulate_failure {
+            return debug;
+        }
+        if request.model_variant == ModelVariant::GlobalPlusPersonal
+            && personal_substitute(request).is_some()
+        {
+            return debug;
+        }
+        if let Some((_result, fallback_used)) =
+            self.lookup_with_context_fallback(request, request.model_variant, has_context)
+        {
+            debug.fallback_used = fallback_used;
+            return debug;
+        }
+        if request.model_variant == ModelVariant::GlobalPlusPersonal {
+            if let Some((_result, fallback_used)) =
+                self.lookup_with_context_fallback(request, ModelVariant::Global, has_context)
+            {
+                debug.fallback_used = fallback_used;
+                debug.lookup_variant = ModelVariant::Global;
+            }
+        }
+
+        debug
+    }
+
+    fn lookup_with_context_fallback(
+        &self,
+        request: &PredictionRequest,
+        variant: ModelVariant,
+        has_context: bool,
+    ) -> Option<(PredictionResult, bool)> {
+        if let Some(result) = self.lookup(request, variant, has_context) {
+            return Some((result, false));
+        }
+        if has_context {
+            return self
+                .lookup(request, variant, false)
+                .map(|result| (result, true));
+        }
+        None
     }
 
     fn lookup(
@@ -208,6 +272,8 @@ fn ok_result(
         request_id: request.request_id.clone(),
         model_variant: request.model_variant,
         backend: Backend::Fixture,
+        // The fixture backend cannot vote; the contract says emit all 1s.
+        votes: Some(vec![1; candidates.len()]),
         candidates,
         latency_ms,
     }
@@ -274,6 +340,25 @@ fn base_overedit(draft: &str) -> String {
         text.push('.');
     }
     text
+}
+
+/// Health reported when the blocking sidecar worker task itself failed
+/// (never expected; the client already converts transport errors itself).
+pub fn sidecar_worker_unavailable_health() -> SidecarHealth {
+    SidecarHealth {
+        status: HealthStatus::Unavailable,
+        fixture_available: true,
+        loaded: LoadedArtifacts {
+            base: false,
+            global_adapter: false,
+            user_adapter: false,
+        },
+        error: Some(ErrorInfo {
+            code: "sidecar_unavailable".to_string(),
+            message: "The sidecar worker task failed.".to_string(),
+            retryable: true,
+        }),
+    }
 }
 
 /// Demo-visible counters over every prediction the app has run.
@@ -369,6 +454,50 @@ mod tests {
     }
 
     #[test]
+    fn context_request_falls_back_to_no_context_fixture_when_needed() {
+        let backend = FixtureBackend::new();
+        let mut with_context = request("cnt cm tmrw", ModelVariant::Global);
+        with_context.context_snippets.push(ContextSnippet {
+            app_name: "TextEdit".into(),
+            window_title: "Scratch".into(),
+            visible_text: "A visible window context snippet.".into(),
+        });
+
+        let result = backend.predict(&with_context);
+        let debug = backend.lookup_debug(&with_context);
+
+        assert_eq!(candidates(&result)[0], "Can't come tomorrow.");
+        assert_eq!(candidates(&result).len(), 5);
+        assert!(debug.has_context);
+        assert_eq!(debug.context_count, 1);
+        assert!(debug.fallback_used);
+        assert_eq!(debug.lookup_variant, ModelVariant::Global);
+    }
+
+    #[test]
+    fn context_specific_fixture_wins_before_no_context_fallback() {
+        let backend = FixtureBackend::new();
+        let mut with_context = request("meet there tmrw", ModelVariant::Global);
+        with_context.context_snippets.push(ContextSnippet {
+            app_name: "Notes".into(),
+            window_title: "Trip planning".into(),
+            visible_text: "Tomorrow: meet at Union Station at 8:30 AM.".into(),
+        });
+
+        let result = backend.predict(&with_context);
+        let debug = backend.lookup_debug(&with_context);
+
+        assert_eq!(
+            candidates(&result)[0],
+            "Meet at Union Station at 8:30 AM tomorrow."
+        );
+        assert!(debug.has_context);
+        assert_eq!(debug.context_count, 1);
+        assert!(!debug.fallback_used);
+        assert_eq!(debug.lookup_variant, ModelVariant::Global);
+    }
+
+    #[test]
     fn personal_patterns_make_profiles_diverge() {
         let backend = FixtureBackend::new();
         let mut a = request("ship spec tn", ModelVariant::GlobalPlusPersonal);
@@ -442,6 +571,7 @@ mod tests {
             model_variant: ModelVariant::Global,
             backend: Backend::Fixture,
             candidates: vec!["duplicate".into(), "duplicate".into()],
+            votes: None,
             latency_ms: 1,
         };
         assert!(!metrics.record(&invalid));

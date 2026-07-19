@@ -1,8 +1,8 @@
-import json
 import unittest
 
 from dataset_compiler.contract import CONTRACT
 from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment
+from scoring import parse_gold_output
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -31,7 +31,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_gold_output_passes_environment_reward(self):
         environment = QuipEnvironment(split="eval")
         example = environment.dataset[0]
-        gold_suggestion = json.loads(str(example.output))["suggestion"]
+        gold_suggestion = parse_gold_output(example.output).suggestion
         reward = environment.score_response(example, gold_suggestion)
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)

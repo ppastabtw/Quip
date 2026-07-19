@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import httpx
 
 from environment import SYSTEM_PROMPT
-from scoring import score_completion
+from scoring import model_text, parse_gold_output, score_completion
 
 
 FLASH_ROOT = Path(__file__).resolve().parent
@@ -179,7 +179,7 @@ def validate_dataset(rows: Sequence[Mapping[str, Any]]) -> None:
                 input_text=row["input"],
                 expected_output=response_text,
                 metadata=row["metadata"],
-                response_text=response_text,
+                response_text=parse_gold_output(response_text).suggestion,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid benchmark row {index}: {error}") from error
@@ -199,7 +199,7 @@ def freesolo_request_payload(
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": row["input"]},
+            {"role": "user", "content": model_text(row["input"])},
         ],
         "temperature": 0.0,
         "max_tokens": max_tokens,
@@ -211,7 +211,7 @@ def backboard_request_payload(row: Mapping[str, Any], spec: ModelSpec) -> dict[s
     if spec.provider is None:
         raise ValueError("Backboard provider is required")
     return {
-        "content": row["input"],
+        "content": model_text(row["input"]),
         "system_prompt": SYSTEM_PROMPT,
         "llm_provider": spec.provider,
         "model_name": spec.model,
@@ -435,7 +435,19 @@ def validate_freesolo_models(specs: Sequence[ModelSpec]) -> None:
     from flash.catalog import list_models
 
     catalog = {model.id for model in list_models()}
-    missing = sorted(spec.model for spec in specs if spec.model not in catalog)
+    missing = {spec.model for spec in specs if spec.model not in catalog}
+    if missing:
+        from flash.client import client_from_config
+
+        deployments = client_from_config().deployments()
+        ready = {
+            deployment["deployment"].get("openai_model")
+            for deployment in deployments
+            if isinstance(deployment.get("deployment"), dict)
+            and deployment["deployment"].get("state") == "ready"
+        }
+        missing -= ready
+    missing = sorted(missing)
     if missing:
         raise ValueError("Freesolo models not found: " + ", ".join(missing))
 

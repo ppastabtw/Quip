@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "evaluate_predictions.py"
 SPEC = importlib.util.spec_from_file_location("evaluate_predictions", SCRIPT)
@@ -19,7 +18,7 @@ class EvaluationTests(unittest.TestCase):
         predictions = [
             {
                 "example_id": row["metadata"]["example_id"],
-                "response": json.loads(row["output"])["suggestion"],
+                "response": row["output"]["suggestion"],
                 "latency_ms": 100,
             }
             for row in dataset

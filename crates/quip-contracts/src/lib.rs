@@ -79,6 +79,12 @@ pub enum PredictionResult {
         model_variant: ModelVariant,
         backend: Backend,
         candidates: Vec<String>,
+        /// Same length as `candidates` when present: how many of the raw
+        /// samples resolved to each candidate after filtering and dedup.
+        /// Omitted by producers that cannot vote (the fixture backend emits
+        /// all 1s). Consumers treat `None` as "no confidence signal".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        votes: Option<Vec<u32>>,
         // The schema allows any non-negative number; producers emit whole
         // milliseconds so fixtures round-trip as integers.
         latency_ms: u64,
@@ -93,7 +99,10 @@ pub enum PredictionResult {
 impl PredictionResult {
     /// Checks the candidate-count invariants from `docs/phase-0-contracts.md`.
     pub fn validate(&self) -> Result<(), String> {
-        let PredictionResult::Ok { candidates, .. } = self else {
+        let PredictionResult::Ok {
+            candidates, votes, ..
+        } = self
+        else {
             return Ok(());
         };
         if candidates.len() > 5 {
@@ -105,6 +114,18 @@ impl PredictionResult {
         let unique = candidates.iter().collect::<std::collections::HashSet<_>>();
         if unique.len() != candidates.len() {
             return Err("result has duplicate candidates".to_string());
+        }
+        if let Some(votes) = votes {
+            if votes.len() != candidates.len() {
+                return Err(format!(
+                    "result has {} votes for {} candidates",
+                    votes.len(),
+                    candidates.len()
+                ));
+            }
+            if votes.iter().any(|&v| v == 0) {
+                return Err("result has a zero vote".to_string());
+            }
         }
         Ok(())
     }
@@ -152,6 +173,12 @@ pub enum CaptureResult {
         draft: String,
         trigger: Trigger,
         caret: Rect,
+        /// Index of the draft's first word within the composition session
+        /// (0-based, counted from the last session boundary). Lets the edit
+        /// accumulator track corrections per word across overlapping bursts.
+        /// Omitted by producers that do not track session word positions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        word_offset: Option<u32>,
     },
     Unavailable {
         reason: String,

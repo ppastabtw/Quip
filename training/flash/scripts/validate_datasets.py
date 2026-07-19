@@ -41,7 +41,7 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
             row = json.loads(line)
             if not isinstance(row, dict) or set(row) != {"input", "output", "metadata"}:
                 raise ValueError(f"{path}:{line_number}: invalid row shape")
-            input_payload = json.loads(row["input"])
+            input_payload = row["input"]
             if (
                 not isinstance(input_payload, dict)
                 or set(input_payload) != {"text"}
