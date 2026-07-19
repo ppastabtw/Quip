@@ -6,7 +6,7 @@ Source: `docs/SPEC.md`
 
 - **desktop shell**: Tauri 2 for the menu bar app, settings UI, candidate bar, global shortcut, and clipboard integration.
 - **system layer**: Rust for macOS integration, application state, orchestration, sidecar control, and packaging-sensitive code.
-- **macOS Accessibility**: `axuielement` for Accessibility trust, focused elements, text markers, and `AXObserver`; `objc2` ApplicationServices bindings only where `axuielement` lacks coverage.
+- **macOS text input**: InputMethodKit for pass-through live typing, destination ranges, caret geometry, and confirmed replacement; `axuielement` remains for bounded window context and existing-text mode.
 - **composition UI**: HTML and CSS rendered through Tauri for the caret-anchored candidate bar, settings, and demo controls.
 - **local inference**: `mistral.rs` with Metal as the leading runtime for Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and Rust-facing integration.
 - **model family**: start with Qwen3.5-2B at 4-bit; benchmark Qwen3.5-4B only after 2B establishes a working latency and quality baseline.
@@ -16,13 +16,13 @@ Source: `docs/SPEC.md`
 
 ## Key decisions and rejected alternatives
 
-**observe before explicit candidate commit**: Quip passively observes the writing burst in the destination field and changes text only after the user selects a model candidate. The literal input remains in place when no candidate appears or the candidate is dismissed.
+**InputMethodKit pass-through before explicit candidate commit**: Quip is a selectable Latin input source. It observes key-down events but returns them to the destination for normal literal insertion, then validates the resulting UTF-16 range and caret through the active IMK client. It changes text only after the user selects a model candidate.
 
 **local inference with Freesolo training**: The base model and exported adapters run on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or deduplicated confirmed profile examples. This is a hackathon validation target, not a production privacy guarantee.
 
 **managed Windows playground, local Quip inference**: The disposable Windows model playground calls Freesolo managed serving so the training owner can probe base models and deployed checkpoints without building a second local runtime. It is an evaluation tool only. The actual Quip application does not use this remote inference path; it loads the exported model and adapters locally on macOS.
 
-**Accessibility text over screenshots or OCR**: Window context comes from bounded accessible text snippets ranked locally by focus, recency, and relevance. Screenshots and OCR were rejected for the hackathon build because they increase privacy risk, implementation complexity, and demo fragility.
+**InputMethodKit for typing, Accessibility text for context**: Live typing and commits use the destination's macOS text-input client. Window context still comes from bounded accessible text snippets ranked locally by focus, recency, and relevance. Screenshots and OCR were rejected for the hackathon build because they increase privacy risk, implementation complexity, and demo fragility.
 
 **continuous prediction with bounded churn**: Prediction runs as the burst grows, with a short debounce and immediate refresh at punctuation, Return, or the draft-window cap. Stale results are dropped while the current bar remains visible.
 
@@ -40,7 +40,7 @@ Source: `docs/SPEC.md`
 
 ## Architecture overview
 
-Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibility layer detects supported editable destinations and passively observes the writing burst, active app, element, selection, insertion point, and nearby visible text. The orchestration layer waits for punctuation, Return, or an idle trigger, builds a bounded model input from the draft or selection, relevant window snippets, and compact user patterns, then calls the local inference sidecar for the base Qwen and global Freesolo adapter comparison.
+Quip runs as a Tauri menu-bar app with a Rust core and registers the same bundle as a Latin InputMethodKit source. When selected, its input controller observes pass-through key events, validates the destination selection, and obtains the caret rectangle from the active text-input client. Accessibility supplies only bounded open-window context and the secondary existing-text path. The orchestration layer waits for punctuation, Return, or an idle trigger, builds a bounded model input from the draft or selection, relevant window snippets, and compact user patterns, then calls the local inference sidecar for the base Qwen and global Freesolo adapter comparison.
 
 The UI shows up to five ranked, schema-valid changed suggestions and shows nothing when all suggestions equal the input. On candidate selection, the commit layer replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
 
@@ -78,7 +78,7 @@ docs/
 
 **managed per-user training**: Failure looks like a small profile dataset overfits, weakens restraint, or produces an adapter that cannot compose with the global adapter. Roll back to the compact pattern dictionary plus two prepared Freesolo-trained profile adapters for the judged build. De-risk with held-out profile examples and explicit global-plus-user composition tests.
 
-**accessibility destination preservation**: Failure looks like Quip loses the insertion point, commits into the wrong field, modifies text on cancel, or fails across TextEdit and browser inputs. Roll back to the narrowest known-good app/input pair and simulated paste fallback with clipboard restore. De-risk by building the destination capture/restore spike before the full Tauri UI.
+**InputMethodKit destination preservation**: Failure looks like Quip loses the verified UTF-16 range, receives stale caret geometry, commits into a changed input session, or fails across TextEdit and browser clients. Invalidate on any selection/navigation mismatch and roll back to the narrowest known-good client. Accessibility selection replacement and simulated paste remain limited fallbacks for existing-text mode.
 
 **window context quality and privacy**: Failure looks like accessible snippets are empty, irrelevant, too large, or accidentally include secure/excluded fields. Roll back to disabling context by default while keeping the menu-bar toggle and deterministic examples. De-risk by auditing snippets from TextEdit, Notes, Chrome, and Safari with bounded length, source labels, and secure-field checks.
 
@@ -128,16 +128,16 @@ docs/
 6. Load Freesolo-trained per-user adapters from two prepared profiles and verify that each changes only its intended patterns.
 7. Package model and adapter paths as local artifacts with health checks, missing-artifact errors, and no committed model binaries.
 
-### Workstream 3: Accessibility capture, commit, and context
+### Workstream 3: InputMethodKit capture and commit, Accessibility context
 
-1. Implement Accessibility permission detection, focused editable element recognition, secure-field exclusion, and supported-app gating.
-2. Passively observe destination application, element, selection, insertion point, burst markers, and caret geometry without redirecting input.
-3. Emit bounded writing-burst updates from TextEdit and one browser input while leaving focus and text in the destination.
+1. Package Quip as a user-enabled Latin InputMethodKit source and retain one controller per active client session.
+2. Observe key events while passing literal typing through, then validate the destination selection and caret rectangle through the IMK client.
+3. Emit bounded writing-burst updates from TextEdit and one browser input while leaving focus and literal text in the destination.
 4. Implement the initial 150 ms debounce, with immediate punctuation, Return, and 80-character window triggers.
-5. Replace only the tracked burst range after an explicit candidate selection.
-6. Add simulated paste fallback that preserves and restores the previous clipboard.
+5. Replace only the verified tracked UTF-16 range through `insertText:replacementRange:` after an explicit candidate selection.
+6. Keep Accessibility selection replacement and clipboard-preserving simulated paste as fallbacks for existing-text mode.
 7. Collect bounded accessible window text from supported apps, rank snippets locally, and expose only bounded context records to the orchestration layer.
-8. Validate cancellation, unchanged-input behavior, candidate commit, wrong-field prevention, secure-field avoidance, and context toggle behavior across TextEdit, Notes, and the chosen browser.
+8. Validate cancellation, unchanged-input behavior, candidate commit, wrong-session prevention, secure-field avoidance, and context toggle behavior across TextEdit, Notes, and the chosen browser.
 
 ### Workstream 4: Tauri composition UI, learning, and demo harness
 

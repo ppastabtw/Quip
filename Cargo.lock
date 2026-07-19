@@ -2105,6 +2105,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-input-method-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95b00217e13b5d51d9b814707fe429fbdd836cd1b74a61514679085c7a017c6b"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-io-surface"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2448,11 +2459,15 @@ dependencies = [
 
 [[package]]
 name = "quip"
-version = "0.1.0"
+version = "0.1.7"
 dependencies = [
  "arboard",
  "axuielement",
+ "cc",
+ "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-input-method-kit",
  "quip-contracts",
  "serde",
  "serde_json",
@@ -2466,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "quip-contracts"
-version = "0.1.0"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2474,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "quip-inference-sidecar"
-version = "0.1.0"
+version = "0.1.7"
 dependencies = [
  "quip-contracts",
  "serde",

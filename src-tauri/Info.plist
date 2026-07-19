@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>ComponentInputModeDict</key>
+  <dict>
+    <key>tsInputModeListKey</key>
+    <dict>
+      <key>com.hackthe6ix.quip.inputmethod.v3.en</key>
+      <dict>
+        <key>TISInputSourceID</key>
+        <string>com.hackthe6ix.quip.inputmethod.v3.en</string>
+        <key>TISIntendedLanguage</key>
+        <string>en</string>
+        <key>tsInputModeDefaultStateKey</key>
+        <true/>
+        <key>tsInputModeIsVisibleKey</key>
+        <true/>
+        <key>tsInputModeAlternateMenuIconFileKey</key>
+        <string>Quip.icns</string>
+        <key>tsInputModeMenuIconFileKey</key>
+        <string>Quip.icns</string>
+        <key>tsInputModePaletteIconFileKey</key>
+        <string>Quip.icns</string>
+        <key>tsInputModePrimaryInScriptKey</key>
+        <true/>
+        <key>tsInputModeScriptKey</key>
+        <string>smRoman</string>
+      </dict>
+    </dict>
+    <key>tsVisibleInputModeOrderedArrayKey</key>
+    <array>
+      <string>com.hackthe6ix.quip.inputmethod.v3.en</string>
+    </array>
+  </dict>
+  <key>InputMethodConnectionName</key>
+  <string>com.hackthe6ix.quip.inputmethod.v3_Connection</string>
+  <key>InputMethodServerControllerClass</key>
+  <string>QuipInputController</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
+  <key>LSRequiresCarbon</key>
+  <false/>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>TISInputSourceID</key>
+  <string>com.hackthe6ix.quip.inputmethod.v3</string>
+  <key>TISIntendedLanguage</key>
+  <string>en</string>
+  <key>tsInputMethodCharacterRepertoireKey</key>
+  <array>
+    <string>Latn</string>
+  </array>
+  <key>tsInputMethodIconFileKey</key>
+  <string>Quip.icns</string>
+</dict>
+</plist>
