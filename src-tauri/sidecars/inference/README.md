@@ -77,6 +77,9 @@ used by Freesolo training:
 {"suggestion":"send the draft"}
 ```
 
+The sidecar rejects plain text, empty suggestions, commentary, and additional
+fields before candidate ranking.
+
 The Rust inference layer requests exactly five choices in one batched completion,
 removes exact-draft suggestions, deduplicates changed text, ranks duplicate votes with
 earliest-completion tie-breaking, and returns zero to five candidates. Zero

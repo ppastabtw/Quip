@@ -4,6 +4,17 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 cd "$repo_root"
 
+if python -c 'pass' >/dev/null 2>&1; then
+  python_bin=python
+elif python3 -c 'pass' >/dev/null 2>&1; then
+  python_bin=python3
+elif py -3 -c 'pass' >/dev/null 2>&1; then
+  python_bin=$(py -3 -c 'import sys; print(sys.executable)')
+else
+  printf '%s\n' 'Python 3 is required for live sidecar validation.' >&2
+  exit 1
+fi
+
 .agents/skills/validate-quip-sidecar/scripts/validate.sh
 
 mistralrs_bin=${MISTRALRS_BIN:-"$HOME/.mistralrs/mistralrs"}
@@ -76,7 +87,7 @@ latency_tester=target/debug/quip-latency-tester
   printf '%s\n' '{"operation":"predict","request":{"request_id":"live-validation-global","profile_id":"profile_default","model_variant":"global","draft":"cnt cm tmr","context_snippets":[],"personal_patterns":[]}}'
 } | "$sidecar" --live >"$responses"
 
-python3 - "$responses" <<'PY'
+"$python_bin" - "$responses" <<'PY'
 import json
 import pathlib
 import sys
@@ -128,7 +139,7 @@ printf '%s\n' "$phrase_output"
 
 "$latency_tester" --label "validation-qwen" --warmup 1 --runs 2 \
   --phrase "cnt cm tmr" --html "$benchmark_html" --json >"$benchmark_json"
-python3 - "$benchmark_json" "$benchmark_html" <<'PY'
+"$python_bin" - "$benchmark_json" "$benchmark_html" <<'PY'
 import json
 import pathlib
 import sys

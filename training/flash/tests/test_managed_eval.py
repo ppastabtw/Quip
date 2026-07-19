@@ -12,11 +12,13 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ManagedEvalTests(unittest.TestCase):
-    def test_request_disables_thinking_and_uses_plain_text_replies(self):
+    def test_request_disables_thinking_and_requires_json_replies(self):
         row = {"input": '{"text":"cnt cm tmrw"}'}
         payload = MODULE.request_payload(row, "Qwen/Qwen3.5-2B")
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
-        self.assertNotIn("response_format", payload)
+        schema = payload["response_format"]["json_schema"]["schema"]
+        self.assertEqual(schema["required"], ["suggestion"])
+        self.assertFalse(schema["additionalProperties"])
         self.assertEqual(payload["temperature"], 0.7)
 
 

@@ -14,13 +14,17 @@ def input_json(text: str) -> str:
 
 
 class ParsePredictionTests(unittest.TestCase):
-    def test_accepts_plain_text_suggestion(self):
-        prediction = parse_prediction("call me")
+    def test_accepts_json_suggestion(self):
+        prediction = parse_prediction('{"suggestion":"call me"}')
         self.assertEqual(prediction.suggestion, "call me")
 
-    def test_rejects_json_wrapped_suggestion(self):
+    def test_rejects_plain_text_suggestion(self):
         with self.assertRaises(ValueError):
-            parse_prediction('{"suggestion":"call me"}')
+            parse_prediction("call me")
+
+    def test_rejects_extra_property(self):
+        with self.assertRaises(ValueError):
+            parse_prediction('{"suggestion":"call me","why":"safe"}')
 
     def test_rejects_scaffolding_label(self):
         with self.assertRaises(ValueError):
@@ -50,7 +54,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": False,
                 "accepted_suggestions": ["usr/bin"],
             },
-            response_text="usr/bin",
+            response_text='{"suggestion":"usr/bin"}',
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
@@ -62,7 +66,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": False,
                 "accepted_suggestions": ["q3_finl_v2.pdf"],
             },
-            response_text="q3_final_v2.pdf",
+            response_text='{"suggestion":"q3_final_v2.pdf"}',
         )
         self.assertEqual(result.score, 0.15)
         self.assertFalse(result.success)
@@ -75,7 +79,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": True,
                 "accepted_suggestions": ["Can't come tomorrow."],
             },
-            response_text="Can't come tomorrow.",
+            response_text='{"suggestion":"Can\\u0027t come tomorrow."}',
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)

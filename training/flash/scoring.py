@@ -13,6 +13,19 @@ from freesolo.utils.core import serialize_value
 
 
 OUTPUT_KEYS = {"suggestion"}
+OUTPUT_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {"suggestion": {"type": "string", "minLength": 1}},
+    "required": ["suggestion"],
+    "additionalProperties": False,
+}
+OUTPUT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "quip_prediction",
+        "schema": OUTPUT_JSON_SCHEMA,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -59,30 +72,24 @@ def _input_payload(input_value: object) -> dict[str, Any]:
     return payload
 
 
-def parse_prediction(response_text: str) -> Prediction:
-    """Parse a model reply: the reply is the suggestion text itself."""
-    suggestion = response_text.strip()
-    if not suggestion:
-        raise ValueError("suggestion must be a non-empty string")
-    lowered = suggestion.casefold()
-    if (
-        suggestion[0] in "{}[]"
-        or lowered == "suggestion"
-        or lowered.startswith("suggestion:")
-    ):
-        raise ValueError("reply must be plain corrected text")
+def _parse_suggestion_payload(value: object, *, label: str) -> Prediction:
+    payload = json.loads(value.strip()) if isinstance(value, str) else value
+    if not isinstance(payload, dict) or set(payload) != OUTPUT_KEYS:
+        raise ValueError(f"{label} must contain exactly suggestion")
+    suggestion = payload["suggestion"]
+    if not isinstance(suggestion, str) or not suggestion.strip():
+        raise ValueError(f"{label} suggestion must be a non-empty string")
     return Prediction(suggestion=suggestion)
+
+
+def parse_prediction(response_text: str) -> Prediction:
+    """Parse one strict JSON model completion."""
+    return _parse_suggestion_payload(response_text, label="model output")
 
 
 def parse_gold_output(output_value: object) -> Prediction:
-    """Parse dataset gold output from JSONL text or its loaded object form."""
-    payload = json.loads(output_value.strip()) if isinstance(output_value, str) else output_value
-    if not isinstance(payload, dict) or set(payload) != OUTPUT_KEYS:
-        raise ValueError("gold output must contain exactly suggestion")
-    suggestion = payload["suggestion"]
-    if not isinstance(suggestion, str) or not suggestion.strip():
-        raise ValueError("gold suggestion must be a non-empty string")
-    return Prediction(suggestion=suggestion)
+    """Parse the same strict object from JSONL text or its loaded form."""
+    return _parse_suggestion_payload(output_value, label="gold output")
 
 
 def rank_candidate_items(

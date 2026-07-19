@@ -16,7 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import httpx
 
 from environment import SYSTEM_PROMPT
-from scoring import model_text, parse_gold_output, score_completion
+from scoring import OUTPUT_RESPONSE_FORMAT, model_text, score_completion
 
 
 FLASH_ROOT = Path(__file__).resolve().parent
@@ -177,12 +177,12 @@ def validate_dataset(rows: Sequence[Mapping[str, Any]]) -> None:
     for index, row in enumerate(rows, 1):
         try:
             example_id = row["metadata"]["example_id"]
-            response_text = row["output"]
+            response_text = model_text(row["output"])
             result = score_completion(
                 input_text=row["input"],
                 expected_output=response_text,
                 metadata=row["metadata"],
-                response_text=parse_gold_output(response_text).suggestion,
+                response_text=response_text,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid benchmark row {index}: {error}") from error
@@ -206,6 +206,7 @@ def freesolo_request_payload(
         ],
         "temperature": PRODUCT_TEMPERATURE,
         "max_tokens": max_tokens,
+        "response_format": OUTPUT_RESPONSE_FORMAT,
         "chat_template_kwargs": {"enable_thinking": False},
     }
 

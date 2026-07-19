@@ -362,7 +362,7 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
                 input_text=row["input"],
                 expected_output=row["output"],
                 metadata=metadata,
-                response_text=suggestion,
+                response_text=compact_json(row["output"]),
             )
             if result.score != 1.0 or not result.success:
                 raise ValueError(f"{path}:{line_number}: gold output failed reward: {result.reason}")

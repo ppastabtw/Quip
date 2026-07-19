@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from environment import SYSTEM_PROMPT  # noqa: E402
-from scoring import model_text  # noqa: E402
+from scoring import OUTPUT_RESPONSE_FORMAT, model_text  # noqa: E402
 
 
 COMPLETION_COUNT = 5
@@ -39,6 +39,7 @@ def request_payload(row: dict, model: str) -> dict:
         ],
         "temperature": PRODUCT_TEMPERATURE,
         "max_tokens": 128,
+        "response_format": OUTPUT_RESPONSE_FORMAT,
         "chat_template_kwargs": {"enable_thinking": False},
     }
 
