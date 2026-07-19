@@ -125,6 +125,8 @@ export const api = {
   injectCapture: (result: CaptureResult, barless?: boolean) =>
     invoke<void>("inject_capture", { result, barless }),
   runSafeDemo: (caseId?: string) => invoke<void>("run_safe_demo", { caseId }),
+  setDemoAutoCapture: (enabled: boolean) =>
+    invoke<void>("set_demo_auto_capture", { enabled }),
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
   moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),
   dismissSuggestions: () => invoke<void>("dismiss_suggestions"),

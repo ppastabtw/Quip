@@ -45,6 +45,14 @@ pub struct FocusedElementDiagnostic {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct FocusedAppDiagnostic {
+    pub permission: &'static str,
+    pub focused_app_pid: Option<i32>,
+    pub app_bundle_id: Option<String>,
+    pub app_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct RawElementDiagnostic {
     pub source: &'static str,
     pub element_pid: Option<i32>,
@@ -672,6 +680,31 @@ pub fn focused_element_diagnostic() -> FocusedElementDiagnostic {
                 diagnostic.resolution_error = Some(error.reason.unavailable_reason());
                 diagnostic.resolver_candidates = error.diagnostics;
             }
+        }
+    }
+
+    diagnostic
+}
+
+pub fn focused_app_diagnostic() -> FocusedAppDiagnostic {
+    let permission_status = accessibility_permission_status();
+    let mut diagnostic = FocusedAppDiagnostic {
+        permission: match permission_status {
+            AccessibilityPermissionStatus::Trusted => "trusted",
+            AccessibilityPermissionStatus::NotTrusted => "not_trusted",
+        },
+        ..FocusedAppDiagnostic::default()
+    };
+
+    let Some(system) = axuielement::SystemWideElement::new() else {
+        return diagnostic;
+    };
+    let app_element = system.focused_application().ok().flatten();
+    if let Some(app_element) = &app_element {
+        diagnostic.focused_app_pid = app_element.pid().ok();
+        if let Some((bundle_id, app_name)) = focused_app_identity(app_element) {
+            diagnostic.app_bundle_id = Some(bundle_id);
+            diagnostic.app_name = Some(app_name);
         }
     }
 

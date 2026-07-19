@@ -846,6 +846,24 @@ byId<HTMLButtonElement>("run_safe_demo").addEventListener("click", async () => {
   }
 });
 
+let demoAutoCaptureEnabled = false;
+const demoAutoCaptureButton = byId<HTMLButtonElement>("toggle_demo_auto_capture");
+demoAutoCaptureButton.addEventListener("click", async () => {
+  const next = !demoAutoCaptureEnabled;
+  try {
+    await api.setDemoAutoCapture(next);
+    demoAutoCaptureEnabled = next;
+    demoAutoCaptureButton.textContent = next
+      ? "Disable TextEdit auto-capture"
+      : "Enable TextEdit auto-capture";
+    lastStateEl.textContent = next
+      ? "demo auto-capture: enabled"
+      : "demo auto-capture: disabled";
+  } catch (error) {
+    lastStateEl.textContent = `demo auto-capture failed: ${String(error)}`;
+  }
+});
+
 byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {
   void api.injectCapture({
     status: "ready",
