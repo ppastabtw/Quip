@@ -16,6 +16,10 @@ mod commit;
 mod composition;
 mod debug_events;
 mod inference;
+#[cfg(target_os = "macos")]
+mod ime_bridge;
+#[cfg(target_os = "macos")]
+mod input_method;
 mod learning;
 mod settings;
 
@@ -485,7 +489,17 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         }
         ApplyDisposition::Stale => {}
     }
-    let _ = app.emit("composition://settled", SettledEvent { burst_id, offered });
+    let _ = app.emit(
+        "composition://settled",
+        SettledEvent {
+            burst_id: burst_id.clone(),
+            offered,
+        },
+    );
+    #[cfg(target_os = "macos")]
+    input_method::prediction_settled(&app, &burst_id, offered);
+    #[cfg(target_os = "macos")]
+    ime_bridge::prediction_settled(&burst_id, offered);
 }
 
 /// Broadcasts the session's word-slot proposals so the playground can render
@@ -696,6 +710,8 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
             return Err(error);
         }
     };
+    #[cfg(target_os = "macos")]
+    input_method::commit_candidate(&app, &outcome.destination_id, &outcome.text)?;
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
     record_debug(
@@ -741,6 +757,10 @@ fn dismiss_suggestions(app: AppHandle) {
         engine.dismiss()
     };
     emit_snapshot(&app, &snapshot);
+    #[cfg(target_os = "macos")]
+    input_method::dismiss_active(&app);
+    #[cfg(target_os = "macos")]
+    ime_bridge::dismiss_active();
 }
 
 /// Sentence boundary or a destroyed destination: the visible offer counts as
@@ -1228,6 +1248,15 @@ fn main() {
             let profiles = engine.learning.list_profiles();
             app.manage(EngineState(Mutex::new(engine)));
             app.manage(SidecarState(Arc::new(Mutex::new(SidecarClient::auto()))));
+
+            #[cfg(target_os = "macos")]
+            if let Err(error) = input_method::start(app.handle()) {
+                tracing::warn!(%error, "InputMethodKit server unavailable");
+            }
+            #[cfg(target_os = "macos")]
+            if let Err(error) = ime_bridge::start(app.handle()) {
+                tracing::warn!(%error, "native IME bridge unavailable");
+            }
 
             let handles = build_tray(app, &settings, &profiles)?;
             app.manage(TrayState(Mutex::new(Some(handles))));

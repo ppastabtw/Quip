@@ -5,6 +5,7 @@ edition.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
@@ -17,4 +18,9 @@ tracing-subscriber = { version = "0.3", features = ["json"] }
 tracing-appender = "0.2"
 axuielement = "0.9.1"
 arboard = "3.6.1"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSRunningApplication", "libc"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSEvent", "NSRunningApplication", "NSScreen", "libc"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSAttributedString", "NSDictionary", "NSGeometry", "NSObject", "NSRange", "NSString"] }
+objc2-input-method-kit = "0.3.2"

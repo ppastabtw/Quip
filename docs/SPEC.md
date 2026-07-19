@@ -25,7 +25,7 @@ Quip runs as a menu-bar app and, when enabled, augments typing in place the way 
 ### Composition flow
 
 1. Detect a supported editable field. Keystrokes pass through untouched; the destination receives the text as typed.
-2. Observe the writing burst and the caret position passively through Accessibility.
+2. When Quip is the active macOS input source, observe pass-through key events and obtain the destination range and caret position through InputMethodKit. Accessibility remains available for bounded window context and existing-text mode.
 3. Predict continuously while the burst grows, debounced just enough to avoid churn; punctuation and the draft-window cap fire immediately. Stale results are dropped, and the bar refreshes in place rather than flickering.
 4. Add relevant open-window context and learned user patterns.
 5. Show up to five deduplicated and ranked changed suggestions as numbered candidates in a small bar directly above the caret. The bar never takes keyboard focus, and it keeps its current candidates visible while the next predictions compute.
@@ -45,8 +45,8 @@ A global shortcut can run a prediction over selected existing text. The same can
 
 ### Commit path
 
-- Replace the burst range in place: prefer macOS Accessibility selection replacement over the tracked burst range.
-- Fall back to simulated select-and-paste when required, preserving and restoring the previous clipboard.
+- Replace a live-typing burst through the active InputMethodKit client's `insertText:replacementRange:` operation over the verified tracked range.
+- Existing-text mode may use Accessibility selection replacement, with simulated select-and-paste as a fallback that preserves and restores the previous clipboard.
 - Never replace destination text without an explicit candidate selection. Dismissal or an unchanged suggestion changes nothing.
 
 ## Intelligence
@@ -115,14 +115,15 @@ Each user's separate adapter is trained through a private Freesolo run, exported
 
 ### Supported scope
 
-The judged build targets TextEdit, Notes, and standard Chrome or Safari inputs. It does not promise rich browser editors, Google Docs, terminals, PDFs, password fields, canvas editors, unusual Electron controls, or universal macOS compatibility.
+The judged build targets standard macOS text-input clients: TextEdit, Notes, standard Chrome or Safari inputs, and compatible Electron editors. It does not promise password fields, raw-key or canvas editors, games, remote desktops, terminals, PDFs, or universal macOS compatibility.
 
 ### Architecture
 
 - Use Rust for system integration, state, and inference orchestration.
 - Use Tauri 2 for the menu bar, settings, the HTML and CSS caret-anchored candidate bar, global shortcut, and clipboard integration.
+- Package Quip as an InputMethodKit Latin input source. Pass ordinary key events through, track a bounded UTF-16 burst, obtain caret geometry from the active IMK client, and commit only explicit selections through `insertText:replacementRange:`.
 - Use `axuielement` for process trust, focused elements, text markers, and `AXObserver`; use `objc2` ApplicationServices bindings only for missing coverage.
-- Use Accessibility to recognize editable destinations, capture and restore destination state, read selections and bounded window text, observe changes, place the box, and commit confirmed text.
+- Use Accessibility for bounded open-window context and the secondary existing-text shortcut, not as the primary live-typing transport.
 - Use `mistral.rs` with Metal as the leading local inference runtime because it supports Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and a Rust SDK. Start with a bundled loopback sidecar to isolate model lifecycle failures; direct SDK integration is a later optimization.
 - If `mistral.rs` cannot load the exported adapter, use another replaceable local sidecar rather than remote inference.
 - A profile-training client packages compact confirmed examples, submits a private Freesolo run, and downloads the exported per-user adapter. It never provides remote inference.
@@ -147,7 +148,7 @@ The trained model and its evaluation remain the central technical contribution. 
 
 1. Flash environment, global and per-user training, evaluation, and checkpoint comparison.
 2. Local inference, adapter composition, and packaging.
-3. Keyboard capture, Accessibility, destination commits, and window context.
+3. InputMethodKit capture and commits, Accessibility context, and existing-text mode.
 4. Tauri box, personal pattern storage, demo harness, and integration.
 
 Reserve a final phase for compatibility testing, rehearsal, and fallback recording.
