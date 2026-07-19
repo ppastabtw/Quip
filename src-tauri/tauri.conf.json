@@ -39,7 +39,7 @@
       },
       {
         "label": "demo",
-        "title": "Quip Demo Harness",
+        "title": "quip-demo",
         "url": "demo.html",
         "width": 900,
         "height": 640,

@@ -5,8 +5,9 @@
 //! webviews are pure renderers: every mutation goes through a command into
 //! the [`composition::Engine`], and every state change is broadcast as an
 //! event. Dev/validation hooks: `QUIP_DATA_DIR` overrides the data dir,
-//! `QUIP_SHOW=demo,settings` shows windows at startup, `QUIP_SELFTEST=1`
-//! drives the full fixture flow headlessly and exits.
+//! `QUIP_SHOW=demo,settings` shows windows at startup,
+//! `QUIP_DEMO_SAFE_MODE=1` starts the presenter fallback, and
+//! `QUIP_SELFTEST=1` drives the full fixture flow headlessly and exits.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -299,6 +300,18 @@ fn prediction_status_and_count(result: &PredictionResult) -> (&'static str, usiz
     }
 }
 
+fn raw_element_role_is(raw: Option<&accessibility::RawElementDiagnostic>, role: &str) -> bool {
+    raw.and_then(|raw| raw.role.value_summary.as_deref())
+        .is_some_and(|summary| summary == format!("string:{role}"))
+}
+
+fn is_retryable_menu_focus_miss(focused: &accessibility::FocusedElementDiagnostic) -> bool {
+    focused.app_bundle_id.is_none()
+        && focused.resolution_error == Some("not_text_role")
+        && (raw_element_role_is(focused.system_focused.as_ref(), "AXMenuItem")
+            || raw_element_role_is(focused.app_focused.as_ref(), "AXMenuItem"))
+}
+
 #[tauri::command]
 fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
     accessibility::capture_focused_destination(&profile_id, trigger)
@@ -355,7 +368,26 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             "focused": focused,
         }),
     );
-    let result = accessibility::capture_focused_destination(&profile_id, trigger);
+    let result = if is_retryable_menu_focus_miss(&focused) {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let retry_focused = accessibility::focused_element_diagnostic();
+        record_resolver_candidates(&app, "capture_retry", &retry_focused);
+        record_debug(
+            &app,
+            "capture_retry",
+            "retrying manual focused capture after menu focus miss",
+            json!({
+                "source": "manual_focused_capture",
+                "retry_delay_ms": 150,
+                "first_resolution_error": focused.resolution_error,
+                "first_app_bundle_id": focused.app_bundle_id,
+                "focused": retry_focused,
+            }),
+        );
+        accessibility::capture_focused_destination(&profile_id, trigger)
+    } else {
+        accessibility::capture_focused_destination(&profile_id, trigger)
+    };
     run_capture_result(app, result, include_context, "manual_focused_capture", None).await;
 }
 
@@ -477,6 +509,84 @@ fn emit_marks(app: &AppHandle) {
 #[tauri::command]
 async fn inject_capture(app: AppHandle, result: CaptureResult, barless: Option<bool>) {
     run_capture_result(app, result, false, "manual_injection", barless).await;
+}
+
+fn safe_demo_capture(case_id: &str) -> Result<CaptureResult, String> {
+    let draft = match case_id {
+        "primary" => "cnt cm tmrw",
+        "typo" => "i went to the store instaed",
+        "short" => "omw",
+        _ => return Err(format!("unknown safe demo case: {case_id}")),
+    };
+
+    Ok(CaptureResult::Ready {
+        burst_id: format!("safe_demo_{case_id}"),
+        destination_id: "destination_textedit".into(),
+        profile_id: "profile_default".into(),
+        draft: draft.into(),
+        trigger: Trigger::Shortcut,
+        word_offset: None,
+        caret: Rect {
+            x: 512.0,
+            y: 384.0,
+            width: 2.0,
+            height: 18.0,
+        },
+    })
+}
+
+#[tauri::command]
+async fn run_safe_demo(app: AppHandle, case_id: Option<String>) -> Result<(), String> {
+    let case_id = case_id.unwrap_or_else(|| "primary".to_string());
+    let result = match safe_demo_capture(&case_id) {
+        Ok(result) => result,
+        Err(error) => {
+            record_debug(
+                &app,
+                "demo_safe_mode_failed",
+                format!("safe demo failed: {case_id}"),
+                json!({
+                    "case_id": case_id,
+                    "error": error,
+                }),
+            );
+            return Err(error);
+        }
+    };
+
+    record_debug(
+        &app,
+        "demo_safe_mode_started",
+        format!("safe demo started: {case_id}"),
+        json!({
+            "case_id": case_id,
+            "destination_id": "destination_textedit",
+            "draft_chars": match &result {
+                CaptureResult::Ready { draft, .. } => draft.chars().count(),
+                CaptureResult::Unavailable { .. } => 0,
+            },
+            "accessibility_bypassed": true,
+        }),
+    );
+
+    let previous_mode = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        let previous_mode = engine.settings.backend_mode;
+        engine.settings.backend_mode = BackendMode::Fixture;
+        previous_mode
+    };
+    emit_settings(&app);
+
+    run_capture_result(app.clone(), result, false, "safe_demo_mode", None).await;
+
+    {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.settings.backend_mode = previous_mode;
+    }
+    emit_settings(&app);
+    Ok(())
 }
 
 async fn run_capture_result(
@@ -1122,37 +1232,25 @@ fn main() {
             let handles = build_tray(app, &settings, &profiles)?;
             app.manage(TrayState(Mutex::new(Some(handles))));
 
+            let safe_demo_mode = std::env::var("QUIP_DEMO_SAFE_MODE").as_deref() == Ok("1");
+
             if let Ok(show) = std::env::var("QUIP_SHOW") {
                 for label in show.split(',').map(str::trim).filter(|l| !l.is_empty()) {
                     show_window(app.handle(), label);
                 }
             }
+            if safe_demo_mode {
+                show_window(app.handle(), "demo");
+            }
 
-            // Dev/validation hook: fire the TextEdit capture fixture shortly
-            // after startup so the bar can be inspected without a typist.
-            if std::env::var("QUIP_DEMO_CAPTURE").as_deref() == Ok("1") {
+            // Dev/validation hook: run the explicit presenter fallback shortly
+            // after startup so the candidate bar can be inspected without a
+            // fragile Accessibility focus handoff.
+            if safe_demo_mode {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    inject_capture(
-                        handle,
-                        CaptureResult::Ready {
-                            burst_id: "burst_demo_env".into(),
-                            destination_id: "destination_textedit".into(),
-                            profile_id: "profile_default".into(),
-                            draft: "cnt cm tmrw".into(),
-                            trigger: Trigger::Idle,
-                            word_offset: None,
-                            caret: Rect {
-                                x: 512.0,
-                                y: 384.0,
-                                width: 2.0,
-                                height: 18.0,
-                            },
-                        },
-                        None,
-                    )
-                    .await;
+                    let _ = run_safe_demo(handle, Some("primary".into())).await;
                 });
             }
 
@@ -1201,6 +1299,7 @@ fn main() {
             commit_confirmed_text,
             cancel_destination,
             inject_capture,
+            run_safe_demo,
             select_candidate,
             move_selection,
             dismiss_suggestions,

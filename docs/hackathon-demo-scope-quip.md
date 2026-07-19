@@ -7,7 +7,7 @@ Source: `docs/SPEC.md`, `docs/technical-plan.md`, and integration QA through Jul
 - **Remaining time:** short; optimize for demo reliability over product completeness.
 - **Demo format:** assumed live demo plus Devpost/slides; exact rubric and sponsor criteria are unverified.
 - **Runnable state:** local macOS app, not a hosted product.
-- **Working or partly working:** TextEdit Accessibility capture/commit, candidate bar, deterministic fixture candidates, context toggle, local logs, demo harness, local inference path/health work.
+- **Working or partly working:** TextEdit Accessibility capture/commit, candidate bar, deterministic fixture candidates, safe demo mode, context toggle, local logs, demo harness, local inference path/health work.
 - **Fragile:** browser rich editors, Obsidian, Slack/Discord, universal live typing, caret geometry, Accessibility focus resolution, model latency, adapter availability.
 - **Broken as a promise:** "live typing suggestions anywhere on macOS." Accessibility cannot support that reliably in the time left.
 
@@ -43,10 +43,12 @@ This is the only primary demo flow. Selection-transform mode is a backup/proof o
 - Candidate dismissal/unchanged behavior: the user can keep typed text by doing nothing or dismissing.
 - Local logs visible enough for debugging before the demo.
 - Demo harness comparison for base vs trained/global-plus-personal behavior, especially if live model latency or adapters are shaky.
+- Safe demo mode: a clearly labeled `Run safe demo` fallback that bypasses real Accessibility while reusing Quip's candidate and commit flow.
 
 ### Fake Safely
 
 - Use deterministic fixture candidates if live inference is too slow or model artifacts are missing.
+- Use `Run safe demo` if Accessibility focus lands on menu chrome or the TextEdit field cannot be captured during the live slot.
 - Use seeded profile examples to show two users producing different candidates.
 - Use prepared context snippets or a known-good TextEdit context setup for the context example.
 - Use a cached/recorded model comparison if the live adapter path fails during rehearsal.
@@ -76,6 +78,7 @@ This is the only primary demo flow. Selection-transform mode is a backup/proof o
 - Use the primary Mac with Accessibility permission already granted for ChatGPT/Codex, terminal, editor, and the Quip app process as needed.
 - Start from a clean TextEdit document with large enough font to see the before/after.
 - Start Quip in fixture or known-good mode unless live inference has passed rehearsal twice in a row.
+- Keep `QUIP_DEMO_SAFE_MODE=1 QUIP_SHOW=demo npm run tauri -- dev` ready as the explicit presenter fallback.
 - Confirm the tray/menu settings before demo: enabled on, window context set to the mode required for the chosen example, active profile set.
 - Preload exact demo phrases:
   - `cnt cm tmrw`
@@ -84,6 +87,7 @@ This is the only primary demo flow. Selection-transform mode is a backup/proof o
   - one context-specific example
 - Keep `.workspace/quip-debug/events.jsonl` or the demo log tail available off-screen for fast diagnosis, but do not make logs part of the main visible story.
 - Prepare one backup screen recording showing the TextEdit flow and one screenshot/recording of the comparison harness.
+- Before rehearsal freeze, run `.agents/skills/validate-quip-demo/scripts/validate.sh` and confirm it ends with `Quip demo validation passed`.
 - Honest sentence for mocked/seeded parts: "For the live hackathon demo, this path can run from deterministic local fixtures when model artifacts are unavailable; the same request/response contract is used by the local inference worker."
 
 ## Build Order
@@ -99,7 +103,7 @@ This is the only primary demo flow. Selection-transform mode is a backup/proof o
 
 ## Backup Demo
 
-- If TextEdit live capture fails: play the backup recording, then show the deterministic comparison harness live.
+- If TextEdit live capture fails: click `Run safe demo`, then play the backup recording or show the deterministic comparison harness live.
 - If live inference fails: switch to fixture mode and say this uses the same local prediction contract.
 - If context capture fails: use the prepared context fixture in the harness.
 - If candidate commit fails: show candidate generation and use the recording for the in-place commit moment.

@@ -3,71 +3,172 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Quip Demo Harness</title>
+    <title>quip-demo</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <h1>Demo harness</h1>
+    <main class="slack-demo">
+      <header class="slack-topbar" aria-label="Slack top navigation">
+        <button class="history-button" type="button">‹</button>
+        <button class="history-button" type="button">›</button>
+        <div class="slack-search">Search Northstar Ops</div>
+        <button class="help-button" type="button">?</button>
+      </header>
 
-    <h2>Playground: type like in any textbox</h2>
-    <p class="muted" style="margin-bottom: 6px">
-      Simulates a macOS textbox for deterministic testing. For real TextEdit/browser fields, use
-      Manual focused capture or the tray shortcut. Completing a fifth word freezes that chunk and
-      runs inference on it while you keep typing; when candidates arrive, the chunk is underlined
-      to show which words they would replace. 1 through 5 or click picks a candidate, Tab accepts
-      the highlighted one, Esc keeps your text, and ending a sentence (or a newline) closes the
-      session.
-    </p>
-    <div class="playground-stack">
-      <div id="playground_backdrop" class="playground-backdrop" aria-hidden="true"></div>
-      <textarea id="playground" rows="4" spellcheck="false" placeholder="try: cnt cm tmrw"></textarea>
-    </div>
-    <div class="statline" style="margin-top: 6px">
-      <label class="row" style="padding: 0">
-        Inference cadence
-        <select id="strategy"></select>
-      </label>
-      <span class="muted" id="strategy_hint"></span>
-    </div>
-    <p class="muted" id="strategy_stats" style="margin-top: 4px"></p>
+      <aside class="slack-sidebar" aria-label="Slack workspace navigation">
+        <div class="workspace-brand">
+          <span class="slack-mark" aria-label="Slack logo">
+            <i></i><i></i><i></i><i></i>
+          </span>
+          <div>
+            <strong>Northstar Ops</strong>
+            <span>12 online</span>
+          </div>
+        </div>
+        <nav class="channel-list" aria-label="Channels">
+          <span class="channel-muted">Channels</span>
+          <a># daily-standup</a>
+          <a class="channel-active"># customer-escalations</a>
+          <a># eng-support</a>
+          <a># releases</a>
+          <span class="channel-muted">Direct messages</span>
+          <a><span class="status-dot"></span> Priya Shah</a>
+          <a><span class="status-dot away"></span> Jordan Lee</a>
+          <a><span class="status-dot"></span> Sam Chen</a>
+        </nav>
+      </aside>
 
-    <h2>Sidecar health &amp; metrics</h2>
-    <div class="card statline" id="healthline">
-      <span id="health_status" class="pill"></span>
-      <span id="backend_mode" class="pill"></span>
-      <span id="health_loaded" class="muted"></span>
-      <span id="metrics" class="muted"></span>
-      <label class="row" style="padding: 0">
-        <input type="checkbox" id="simulate_failure" /> Simulate adapter failure
-      </label>
-    </div>
+      <section class="slack-main" aria-label="Slack-like Quip demo">
+        <header class="channel-header">
+          <div>
+            <h1># customer-escalations</h1>
+            <p>Acme onboarding export issue · 8 members · last updated 3 min ago</p>
+          </div>
+          <div class="activity-pill" id="inference_status">
+            <span class="activity-dot"></span>
+            Quip active
+          </div>
+        </header>
 
-    <h2>Deterministic corpus comparison</h2>
-    <div class="case-list" id="cases"></div>
-    <div id="comparison"></div>
+        <section class="message-list" aria-label="Channel messages">
+          <div class="date-divider"><span>Today</span></div>
+          <article class="message">
+            <span class="avatar avatar-blue">P</span>
+            <div>
+              <div class="message-meta"><strong>Priya Shah</strong><span>9:17 AM</span></div>
+              <p>Acme says the onboarding export has been timing out since last night. They have a client review at 2 PM and need the CSV before then.</p>
+              <div class="message-actions"><span>✅ 2</span><span>💬 4 replies</span></div>
+            </div>
+          </article>
+          <article class="message">
+            <span class="avatar avatar-orange">J</span>
+            <div>
+              <div class="message-meta"><strong>Jordan Lee</strong><span>9:19 AM</span></div>
+              <p>I checked the queue. The export job starts, pulls about 80% of rows, then dies when it hits the new address normalization step.</p>
+              <div class="attachment-card">
+                <strong>export-worker.log</strong>
+                <span>timeout after 45s · address_normalize_batch</span>
+              </div>
+            </div>
+          </article>
+          <article class="message">
+            <span class="avatar avatar-green">S</span>
+            <div>
+              <div class="message-meta"><strong>Sam Chen</strong><span>9:23 AM</span></div>
+              <p>I can patch the batch size now and backfill the missing exports. Ricky, if this spills over, can you join the customer review tomorrow?</p>
+            </div>
+          </article>
+          <article class="message">
+            <span class="avatar avatar-purple">N</span>
+            <div>
+              <div class="message-meta"><strong>Nina Patel</strong><span>9:24 AM</span></div>
+              <p>Also make sure support has a plain-English status update. No need to mention the internal worker name to the customer.</p>
+              <div class="message-actions"><span>👍 3</span></div>
+            </div>
+          </article>
+        </section>
 
-    <h2>Composition driver</h2>
-    <div class="statline">
-      <button id="capture_focused">Manual focused capture</button>
-      <button id="fire_textedit">Send TextEdit capture fixture</button>
-      <button id="fire_secure">Send secure-field capture</button>
-      <span class="muted" id="last_state"></span>
-    </div>
-    <p class="muted" style="margin-top: 6px">
-      The harness button is for debugging and can steal focus. For external fields, prefer the tray
-      shortcut path; a true global shortcut/passive observer remains follow-up work.
-    </p>
-    <p class="muted" id="last_commit" style="margin-top: 6px"></p>
+        <section class="composer-card" aria-label="Message composer">
+          <div class="composer-head">
+            <div>
+              <span class="composer-label">Message #customer-escalations</span>
+              <span id="last_state" class="composer-state"></span>
+            </div>
+            <span class="model-chip">local inference</span>
+          </div>
+          <div class="playground-stack">
+            <div id="playground_backdrop" class="playground-backdrop" aria-hidden="true"></div>
+            <textarea
+              id="playground"
+              rows="4"
+              spellcheck="false"
+              placeholder="cnt cm tmrw"
+            ></textarea>
+          </div>
+          <div id="inline_candidates" hidden></div>
+          <div class="composer-actions">
+            <div class="prompt-group" aria-label="Demo prompt presets">
+              <button id="preset_primary" type="button">cnt cm tmrw</button>
+              <button id="preset_typo" type="button">typo</button>
+              <button id="preset_short" type="button">omw</button>
+            </div>
+            <button id="run_safe_demo" class="primary" type="button">Type sample reply</button>
+          </div>
+          <span id="last_commit" class="last-commit"></span>
+        </section>
+      </section>
 
-    <h2>Debug timeline</h2>
-    <div class="grid2 debug-grid">
-      <div class="card">
-        <div id="debug_timeline" class="debug-timeline"></div>
-      </div>
-      <div class="card">
-        <div id="inline_candidates" class="inline-candidates placeholder">No candidates</div>
-      </div>
-    </div>
+      <details class="qa-drawer">
+        <summary>QA and model diagnostics</summary>
+
+        <section class="qa-section">
+          <h2>Inference cadence</h2>
+          <div class="statline">
+            <label class="row">
+              Mode
+              <select id="strategy"></select>
+            </label>
+            <span class="muted" id="strategy_hint"></span>
+          </div>
+          <p class="muted" id="strategy_stats"></p>
+        </section>
+
+        <section class="qa-section">
+          <h2>Health &amp; metrics</h2>
+          <div class="card statline" id="healthline">
+            <span id="health_status" class="pill"></span>
+            <span id="backend_mode" class="pill"></span>
+            <span id="health_loaded" class="muted"></span>
+            <span id="metrics" class="muted"></span>
+            <label class="row">
+              <input type="checkbox" id="simulate_failure" /> Simulate adapter failure
+            </label>
+          </div>
+        </section>
+
+        <section class="qa-section">
+          <h2>Corpus comparison</h2>
+          <div class="case-list" id="cases"></div>
+          <div id="comparison"></div>
+        </section>
+
+        <section class="qa-section">
+          <h2>Manual drivers</h2>
+          <div class="statline">
+            <button id="capture_focused" type="button">Manual focused capture</button>
+            <button id="fire_textedit" type="button">Send TextEdit capture fixture</button>
+            <button id="fire_secure" type="button">Send secure-field capture</button>
+          </div>
+        </section>
+
+        <section class="qa-section">
+          <h2>Debug timeline</h2>
+          <div class="card">
+            <div id="debug_timeline" class="debug-timeline"></div>
+          </div>
+        </section>
+      </details>
+    </main>
 
     <script type="module" src="./demo.ts"></script>
   </body>
