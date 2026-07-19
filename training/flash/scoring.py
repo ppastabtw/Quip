@@ -73,18 +73,22 @@ def model_input_payload(input_value: object) -> dict[str, Any]:
 
     if "context_snippets" in payload:
         context_snippets = payload["context_snippets"]
-        if not isinstance(context_snippets, list) or len(context_snippets) != 1:
+        if context_snippets is None or context_snippets == []:
+            payload = dict(payload)
+            del payload["context_snippets"]
+        elif not isinstance(context_snippets, list) or len(context_snippets) != 1:
             raise ValueError("context_snippets must contain exactly one snippet")
-        snippet = context_snippets[0]
-        if (
-            not isinstance(snippet, dict)
-            or set(snippet) != {"app_name", "window_title", "visible_text"}
-            or not all(
-                isinstance(snippet.get(key), str) and snippet[key]
-                for key in ("app_name", "window_title", "visible_text")
-            )
-        ):
-            raise ValueError("context snippet fields are invalid")
+        else:
+            snippet = context_snippets[0]
+            if (
+                not isinstance(snippet, dict)
+                or set(snippet) != {"app_name", "window_title", "visible_text"}
+                or not all(
+                    isinstance(snippet.get(key), str) and snippet[key]
+                    for key in ("app_name", "window_title", "visible_text")
+                )
+            ):
+                raise ValueError("context snippet fields are invalid")
 
     if "lexical_hints" in payload:
         lexical_hints = payload["lexical_hints"]
