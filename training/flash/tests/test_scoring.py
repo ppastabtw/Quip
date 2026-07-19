@@ -156,6 +156,24 @@ class ScoreCompletionTests(unittest.TestCase):
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
 
+    def test_empty_or_none_context_scores_as_absent(self):
+        for context_snippets in ([], None):
+            with self.subTest(context_snippets=context_snippets):
+                result = score_completion(
+                    input_text={
+                        "text": "already correct",
+                        "context_snippets": context_snippets,
+                    },
+                    expected_output={"suggestion": "already correct"},
+                    metadata={
+                        "target_changed": False,
+                        "accepted_suggestions": ["already correct"],
+                    },
+                    response_text='{"suggestion":"already correct"}',
+                )
+                self.assertEqual(result.score, 1.0)
+                self.assertTrue(result.success)
+
 
 class CandidateRankingTests(unittest.TestCase):
     def test_ranks_by_votes_then_first_completion_and_hides_unchanged(self):

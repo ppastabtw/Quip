@@ -1,5 +1,8 @@
 import json
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 from dataset_compiler.contract import CONTRACT
 from environment import (
@@ -58,6 +61,41 @@ class EnvironmentTests(unittest.TestCase):
             '{"context_snippets":[{"app_name":"Notes","window_title":"Trip planning","visible_text":"Tomorrow: meet at Union Station."}],"text":"meet there tmrw"}',
         )
         self.assertNotIn("personal_patterns", value)
+
+    def test_model_input_omits_empty_or_none_context(self):
+        for context_snippets in ([], None):
+            with self.subTest(context_snippets=context_snippets):
+                self.assertEqual(
+                    model_input_json(
+                        {
+                            "text": "already correct",
+                            "context_snippets": context_snippets,
+                        }
+                    ),
+                    '{"text":"already correct"}',
+                )
+
+    def test_nonlexical_environment_import_does_not_require_wordfreq(self):
+        root = Path(__file__).resolve().parents[1]
+        code = """
+import builtins
+real_import = builtins.__import__
+def blocked(name, *args, **kwargs):
+    if name == 'wordfreq' or name.startswith('wordfreq.'):
+        raise ModuleNotFoundError('wordfreq deliberately blocked')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = blocked
+import environment
+assert environment.load_environment(split='eval').dataset
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_prompt_has_policy_without_answer_shaped_text(self):
         self.assertIn("actual complete text", SYSTEM_PROMPT)
