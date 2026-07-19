@@ -1,5 +1,6 @@
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -50,6 +51,33 @@ class JudgeEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)
+
+    def test_default_load_uses_mixed_dataset_without_lexical_hints(self):
+        environment = GRPO_ENVIRONMENT.QuipJudgeEnvironment()
+
+        self.assertEqual(len(environment.dataset), 5240)
+        self.assertEqual(environment.dataset_path.name, "train.jsonl")
+        self.assertEqual(environment.dataset_path.parent.name, "mixed")
+        self.assertFalse(environment.lexical_hints)
+
+    def test_mixed_grpo_config_targets_full_corpus_without_lexical_hints(self):
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "grpo-v2-context-judge.toml"
+        )
+        with config_path.open("rb") as handle:
+            config = tomllib.load(handle)
+
+        self.assertEqual(
+            config["environment"]["id"],
+            "ariobarin/quip-v2-context-mega-grpo-judge-20260719",
+        )
+        self.assertFalse(config["environment"]["params"]["lexical_hints"])
+        self.assertEqual(config["train"]["max_examples"], 5240)
+        self.assertTrue(
+            config["train"]["init_from_adapter"].startswith("REPLACE_WITH_")
+        )
 
     def test_judge_can_reward_a_valid_non_exact_alternative(self):
         environment = GRPO_ENVIRONMENT.QuipJudgeEnvironment(

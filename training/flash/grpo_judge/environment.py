@@ -9,7 +9,7 @@ from freesolo.datasets import TaskExample
 from freesolo.datasets.records import load_task_examples
 from freesolo.environments import EnvironmentSingleTurn, RewardMetric, RewardResult
 
-from environment import HYBRID_SYSTEM_PROMPT, SYSTEM_PROMPT, model_input_json
+from model_input import model_input_json
 from scoring import parse_gold_output, score_completion
 
 try:
@@ -19,6 +19,18 @@ except ImportError:
 
 
 ROOT = Path(__file__).parent
+SOURCE_ROOT = ROOT if (ROOT / "system_prompt.txt").is_file() else ROOT.parent
+SYSTEM_PROMPT = (SOURCE_ROOT / "system_prompt.txt").read_text(encoding="utf-8")
+HYBRID_SYSTEM_PROMPT = (SOURCE_ROOT / "system_prompt_hybrid.txt").read_text(
+    encoding="utf-8"
+)
+
+
+def _default_dataset_path(split: str) -> Path:
+    packaged = ROOT / "dataset" / f"{split}.jsonl"
+    if packaged.is_file():
+        return packaged
+    return ROOT.parent / "context_data" / "mixed" / f"{split}.jsonl"
 
 
 def _accepted_suggestions(example: TaskExample) -> tuple[str, ...]:
@@ -44,9 +56,10 @@ class QuipJudgeEnvironment(EnvironmentSingleTurn):
         judge_model: str = "Qwen/Qwen3.6-35B-A3B",
         lexical_hints: bool = False,
     ) -> None:
-        path = Path(dataset_path) if dataset_path else ROOT / "dataset" / f"{split}.jsonl"
+        path = Path(dataset_path) if dataset_path else _default_dataset_path(split)
         if not path.is_file():
             raise FileNotFoundError(f"Quip dataset split not found: {path}")
+        self.dataset_path = path
         self.dataset = load_task_examples(path)
         self.judge_model = judge_model
         self.lexical_hints = lexical_hints
