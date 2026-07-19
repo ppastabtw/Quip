@@ -125,10 +125,10 @@ fn print_comparison(
 fn live_model_label() -> String {
     std::env::var("QUIP_GLOBAL_MODEL_ID")
         .or_else(|_| std::env::var("QUIP_BASE_MODEL_ID"))
-        .unwrap_or_else(|_| "mlx-community/Qwen3.5-4B-MLX-8bit".to_owned())
+        .unwrap_or_else(|_| "mlx-community/Qwen3.5-2B-MLX-4bit".to_owned())
         .rsplit('/')
         .next()
-        .unwrap_or("Qwen3.5-4B-MLX-8bit")
+        .unwrap_or("Qwen3.5-2B-MLX-4bit")
         .to_owned()
 }
 

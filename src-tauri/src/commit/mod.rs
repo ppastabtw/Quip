@@ -172,7 +172,7 @@ fn is_virtual_destination(destination_id: &str) -> bool {
             | "destination_selftest"
             | "destination_textedit"
             | "destination_test"
-    )
+    ) || destination_id.starts_with("native_ime_")
 }
 
 struct LiveCommitSession;
@@ -303,6 +303,19 @@ fn commit_confirmed_text_with_clipboard_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_ime_commit_is_deferred_to_the_input_method_bridge() {
+        let outcome = replace_burst(
+            "native_ime_session_7",
+            "native_burst_session_7",
+            "cannot come tomorrow",
+        )
+        .expect("native IME destinations must bypass Accessibility");
+
+        assert_eq!(outcome.destination_id, "native_ime_session_7");
+        assert_eq!(outcome.text, "cannot come tomorrow");
+    }
 
     #[test]
     fn commit_confirmed_text_rejects_unknown_live_destination() {

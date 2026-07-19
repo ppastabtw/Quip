@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   Backend,
   CaptureResult,
+  ContextSnippet,
   ErrorInfo,
   ModelVariant,
   PredictionRequest,
@@ -124,11 +125,17 @@ export const api = {
     invoke<void>("capture_active_destination", { trigger }),
   injectCapture: (result: CaptureResult, barless?: boolean) =>
     invoke<void>("inject_capture", { result, barless }),
+  injectCaptureWithContext: (
+    result: CaptureResult,
+    contextSnippets: ContextSnippet[],
+    barless?: boolean,
+  ) => invoke<void>("inject_capture_with_context", { result, barless, contextSnippets }),
   runSafeDemo: (caseId?: string) => invoke<void>("run_safe_demo", { caseId }),
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
   moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),
   dismissSuggestions: () => invoke<void>("dismiss_suggestions"),
   endSession: () => invoke<void>("end_composition_session"),
+  cancelSession: () => invoke<void>("cancel_composition_session"),
   retractOffer: (burstId: string) => invoke<void>("retract_offer", { burstId }),
   getMarks: () => invoke<Mark[]>("get_marks"),
   applyMarks: () => invoke<Mark[]>("apply_marks"),

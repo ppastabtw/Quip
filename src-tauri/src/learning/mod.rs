@@ -7,7 +7,7 @@
 //! committed to git. Plain JSON on purpose: "inspect stored patterns" is a
 //! product feature.
 
-use quip_contracts::{ModelVariant, PersonalPattern};
+use quip_contracts::{ContextSnippet, ModelVariant, PersonalPattern};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -37,6 +37,14 @@ pub struct LabeledExample {
     /// Interaction source such as `confirmed_candidate` or `dismissal`.
     pub source: String,
     pub model_variant: ModelVariant,
+    /// Bounded visible context captured with the edit, retained even when
+    /// context was disabled for model inference.
+    #[serde(default)]
+    pub context_snippets: Vec<ContextSnippet>,
+    /// Distinguishes captured training context from context actually sent in
+    /// the prediction request that produced this interaction.
+    #[serde(default)]
+    pub context_used_for_model: bool,
 }
 
 pub struct LearningStore {
@@ -314,6 +322,8 @@ mod tests {
             committed: "x".into(),
             source: "exact_draft".into(),
             model_variant: quip_contracts::ModelVariant::Global,
+            context_snippets: Vec::new(),
+            context_used_for_model: false,
         });
         store.reset_profile("profile_a");
         assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());

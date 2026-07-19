@@ -200,7 +200,8 @@ require_app_output() {
 
 require_app_output 'LIVE SELFTEST ok: sidecar health is ready with global model artifacts loaded'
 require_app_output 'LIVE SELFTEST ok: app rendered live candidates'
-require_app_output 'LIVE SELFTEST ok: app metrics recorded one schema-valid live result'
+require_app_output 'LIVE SELFTEST ok: native InputMethodKit bridge returned model-backed commit: controversy'
+require_app_output 'LIVE SELFTEST ok: app metrics recorded schema-valid live results'
 require_app_output 'LIVE SELFTEST PASS'
 
 case "$app_output" in

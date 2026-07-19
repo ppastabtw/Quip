@@ -49,31 +49,28 @@ trap cleanup EXIT HUP INT TERM
 printf '%s\n' 'Building the inference tools once...' >&2
 cargo build --quiet -p quip-inference-sidecar
 
-for preset in 0.8b 2b 4b; do
+for preset in 2b; do
   (
     export QUIP_GLOBAL_MODEL_PRESET=$preset
     export QUIP_GLOBAL_MODEL_ADDR=127.0.0.1:1235
-    export QUIP_APC_ENABLED=1
-    export QUIP_STREAMING=true
-    export QUIP_EARLY_EXIT_AGREEMENT=3
+    export QUIP_CACHE_FORK=true
 
     . "$repo_root/src-tauri/sidecars/inference/scripts/live-model-runtime.sh"
     quip_live_runtime_init
     trap quip_live_runtime_cleanup EXIT HUP INT TERM
 
-    printf '%s\n' "Testing $preset with APC, streaming, and 3-vote early exit..." >&2
+    printf '%s\n' "Testing the current 2B v2 adapter with layered KV caching..." >&2
     quip_start_global_server >&2
 
     "$repo_root/target/debug/quip-latency-tester" \
       --address "$global_model_addr" \
       --model-id "$global_model_id" \
       --output-contract "$global_output_contract" \
-      --label "$preset" \
+      --label "2B v2 step 80" \
       --runs "$runs" \
       --warmup "$warmups" \
       --completions 5 \
-      --streaming \
-      --early-exit-agreement 3 \
+      --cache-fork \
       --phrase 'cancel next meetihng' \
       --phrase 'is the commute ttime to' \
       --phrase 'contropversy' \
@@ -97,12 +94,12 @@ from pathlib import Path
 directory = Path(sys.argv[1])
 runs, warmups, eval_sample = sys.argv[2:]
 
-print("Quip tuned-model comparison")
-print(f"Settings: APC on; streaming on; early exit at 3/5 votes; {warmups} warmups; {runs} measured latency runs; {eval_sample} eval rows plus smoke cases.")
+print("Quip current 2B tuned-model benchmark")
+print(f"Settings: layered KV cache and five-way cache-fork decode; {warmups} warmups; {runs} measured latency runs; {eval_sample} eval rows plus smoke cases.")
 print()
 print("| Model | Contract | Median | p95 | Eval success | Changed top-1 | Unchanged kept |")
 print("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
-for preset in ("0.8b", "2b", "4b"):
+for preset in ("2b",):
     latency = json.loads((directory / f"{preset}-latency.json").read_text())
     evaluation = json.loads((directory / f"{preset}-eval.json").read_text())
     round_trip = next(
@@ -111,7 +108,7 @@ for preset in ("0.8b", "2b", "4b"):
     )
     percent = lambda value: "n/a" if value is None else f"{value * 100:.1f}%"
     print(
-        f"| {preset} | {latency['output_contract']} | "
+        f"| 2B v2 step 80 | {latency['output_contract']} | "
         f"{round_trip['median_ms']:.0f} ms | {round_trip['p95_ms']:.0f} ms | "
         f"{percent(evaluation['overall_success'])} | "
         f"{percent(evaluation['changed_top1_success'])} | "

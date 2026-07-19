@@ -6,25 +6,15 @@ cd "$repo_root"
 
 runtime_dir=${QUIP_MLX_RUNTIME_DIR:-"$repo_root/artifacts/runtime/mlx-vlm"}
 runtime_python="$runtime_dir/bin/python"
-global_model_preset=${QUIP_GLOBAL_MODEL_PRESET:-4b}
+global_model_preset=${QUIP_GLOBAL_MODEL_PRESET:-2b}
 case "$global_model_preset" in
-  4b)
-    preset_source_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-4b-step70"
-    preset_mlx_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-4b-step70-mlx"
-    preset_global_model_id=mlx-community/Qwen3.5-4B-MLX-8bit
-    ;;
-  0.8b)
-    preset_source_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-0.8b-step80"
-    preset_mlx_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-0.8b-step80-mlx"
-    preset_global_model_id=mlx-community/Qwen3.5-0.8B-MLX-8bit
-    ;;
   2b)
-    preset_source_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-2b-step80"
-    preset_mlx_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-2b-step80-mlx"
-    preset_global_model_id=mlx-community/Qwen3.5-2B-MLX-8bit
+    preset_source_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-2b-v2-step80"
+    preset_mlx_adapter="$repo_root/artifacts/adapters/quip-qwen3.5-2b-v2-step80-mlx"
+    preset_global_model_id=mlx-community/Qwen3.5-2B-MLX-4bit
     ;;
   *)
-    printf '%s\n' 'QUIP_GLOBAL_MODEL_PRESET must be 0.8b, 2b, or 4b.' >&2
+    printf '%s\n' 'Quip is locked to QUIP_GLOBAL_MODEL_PRESET=2b.' >&2
     exit 1
     ;;
 esac

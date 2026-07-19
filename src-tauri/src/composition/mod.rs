@@ -82,6 +82,10 @@ pub struct Burst {
     pub trigger: Trigger,
     pub caret: Rect,
     pub model_variant: ModelVariant,
+    /// Context visible when this burst was captured. Stored for learning even
+    /// when the request-side context toggle is off.
+    pub context_snippets: Vec<ContextSnippet>,
+    pub context_used_for_model: bool,
     /// Session word index of the draft's first word, when the capture side
     /// tracks it. Required for the edit accumulator; without it a burst's
     /// results still make offers but never update word slots.
@@ -146,6 +150,10 @@ pub struct Engine {
     offers: VecDeque<Offer>,
     /// Word-level correction evidence for the current composition session.
     session: edits::SessionEdits,
+    /// Latest captured session context, used by hardened per-word edits whose
+    /// evidence may span several overlapping bursts.
+    session_context_snippets: Vec<ContextSnippet>,
+    session_context_used_for_model: bool,
     /// The most recent burst that entered the pipeline: the consolidation
     /// offer inherits its destination, profile, and caret.
     last_burst: Option<Burst>,
@@ -163,6 +171,8 @@ impl Engine {
             in_flight: None,
             offers: VecDeque::new(),
             session: edits::SessionEdits::default(),
+            session_context_snippets: Vec::new(),
+            session_context_used_for_model: false,
             last_burst: None,
             burst_seq: 0,
             data_dir: data_dir.to_path_buf(),
@@ -191,6 +201,8 @@ impl Engine {
             return Err(self.current_snapshot());
         }
         self.burst_seq += 1;
+        let context_used_for_model = self.settings.window_context;
+        let captured_context = input.context_snippets;
         let burst = Burst {
             burst_id: input
                 .burst_id
@@ -205,6 +217,8 @@ impl Engine {
             trigger: input.trigger,
             caret: input.caret,
             model_variant: self.settings.model_variant,
+            context_snippets: captured_context.clone(),
+            context_used_for_model,
             word_offset: input.word_offset,
             barless: input.barless,
         };
@@ -213,8 +227,8 @@ impl Engine {
             profile_id: burst.profile_id.clone(),
             model_variant: burst.model_variant,
             draft: burst.draft.clone(),
-            context_snippets: if self.settings.window_context {
-                input.context_snippets
+            context_snippets: if context_used_for_model {
+                captured_context.clone()
             } else {
                 Vec::new()
             },
@@ -233,6 +247,8 @@ impl Engine {
             model_variant: burst.model_variant,
         };
         self.last_burst = Some(burst.clone());
+        self.session_context_snippets = captured_context;
+        self.session_context_used_for_model = context_used_for_model;
         self.in_flight = Some(burst);
         Ok((snapshot, request, self.settings.backend_mode))
     }
@@ -401,6 +417,8 @@ impl Engine {
                 committed: text.clone(),
                 source: source.to_string(),
                 model_variant: burst.model_variant,
+                context_snippets: burst.context_snippets.clone(),
+                context_used_for_model: burst.context_used_for_model,
             });
             for (shorthand, expansion) in learning::extract_patterns(&burst.draft, &text) {
                 self.learning
@@ -462,6 +480,8 @@ impl Engine {
                 trigger: Trigger::Punctuation,
                 caret: last.caret,
                 model_variant: last.model_variant,
+                context_snippets: last.context_snippets,
+                context_used_for_model: last.context_used_for_model,
                 // The session that produced it is already reset; accepting
                 // this offer must not shift fresh-session indices.
                 word_offset: None,
@@ -478,6 +498,20 @@ impl Engine {
             });
             return self.current_snapshot();
         }
+        self.last_burst = None;
+        Snapshot::Idle
+    }
+
+    /// Abandons a composition whose destination text was destructively
+    /// edited (for example, Select All + Delete). Unlike `end_session`, this
+    /// is not a user decision about a visible candidate: it records no keep
+    /// label and never synthesizes a consolidation offer from invalid text.
+    pub fn cancel_session(&mut self) -> Snapshot {
+        self.offers.clear();
+        self.in_flight = None;
+        self.session = edits::SessionEdits::default();
+        self.session_context_snippets.clear();
+        self.session_context_used_for_model = false;
         self.last_burst = None;
         Snapshot::Idle
     }
@@ -521,6 +555,8 @@ impl Engine {
                     committed: mark.replacement.clone(),
                     source: "hardened_edit".to_string(),
                     model_variant: self.settings.model_variant,
+                    context_snippets: self.session_context_snippets.clone(),
+                    context_used_for_model: self.session_context_used_for_model,
                 });
                 for (shorthand, expansion) in
                     learning::extract_patterns(&mark.original, &mark.replacement)
@@ -553,6 +589,8 @@ impl Engine {
                     committed: String::new(),
                     source: "revert".to_string(),
                     model_variant: self.settings.model_variant,
+                    context_snippets: self.session_context_snippets.clone(),
+                    context_used_for_model: self.session_context_used_for_model,
                 });
             }
         }
@@ -570,6 +608,8 @@ impl Engine {
                 committed: String::new(),
                 source: "dismissal".to_string(),
                 model_variant: offer.burst.model_variant,
+                context_snippets: offer.burst.context_snippets.clone(),
+                context_used_for_model: offer.burst.context_used_for_model,
             });
         }
     }
@@ -789,13 +829,22 @@ mod tests {
     #[test]
     fn selecting_a_candidate_replaces_and_learns() {
         let (mut engine, dir) = test_engine();
-        run_burst(&mut engine, "ship spec tn");
+        engine.settings.window_context = false;
+        let (_, request, _) = engine
+            .begin_burst(typed_with_context("ship spec tn"))
+            .unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        let result = engine.predict_fixture(&request);
+        settled(engine.apply_result(&burst_id, result));
         let (snapshot, outcome) = engine.select(0).unwrap();
         assert!(matches!(snapshot, Snapshot::Applied { .. }));
         assert_eq!(outcome.destination_id, "destination_test");
         assert_eq!(outcome.text, "Ship spec tonight.");
         let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
         assert!(raw.contains("\"confirmed_candidate\""));
+        let saved: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(saved["context_snippets"][0]["app_name"], "Notes");
+        assert_eq!(saved["context_used_for_model"], false);
         // Selecting twice is impossible: the offer was consumed.
         assert!(engine.select(0).is_err());
         let _ = std::fs::remove_dir_all(dir);
@@ -855,6 +904,22 @@ mod tests {
         let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
         assert!(raw.contains("\"dismissal\""));
         assert!(raw.contains("\"keep\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn destructive_reset_cancels_without_learning_or_consolidating() {
+        let (mut engine, dir) = test_engine();
+        run_burst(&mut engine, "cnt cm tmrw");
+
+        assert_eq!(engine.cancel_session(), Snapshot::Idle);
+        assert_eq!(engine.current_snapshot(), Snapshot::Idle);
+        assert!(engine.marks().is_empty());
+        assert!(!dir.join("profiles/profile_a/examples.jsonl").exists());
+
+        // A new composer session can begin immediately after the reset.
+        let snapshot = run_burst(&mut engine, "ship spec tn");
+        assert!(matches!(snapshot, Snapshot::Suggesting { .. }));
         let _ = std::fs::remove_dir_all(dir);
     }
 

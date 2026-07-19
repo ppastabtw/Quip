@@ -1,0 +1,67 @@
+[run]
+target_count = 100
+batch_size = 12
+judge_batch_size = 12
+concurrency = 4
+requests_per_minute = 30
+seed = 20260719
+oversample_factor = 2.0
+max_generation_rounds = 1
+contrast_share = 0.48
+min_words = 1
+max_words = 5
+max_draft_chars = 160
+max_context_snippets = 4
+max_context_chars = 1200
+near_duplicate_threshold = 0.90
+timeout_seconds = 180
+max_attempts = 3
+
+# The checked-in mock identifiers make offline smoke runs explicit. Override both
+# with provider/model slugs from Backboard for paid generation.
+[generator]
+provider = "mock"
+model = "deterministic-v1"
+temperature = 0.9
+max_tokens = 8000
+
+[judge]
+provider = "mock"
+model = "deterministic-v1"
+temperature = 0.0
+max_tokens = 8000
+
+[thresholds]
+minimum_score = 4
+minimum_dataset_value = 4
+require_pass_flag = true
+
+[behaviors]
+useful = 0.45
+irrelevant = 0.175
+ambiguous = 0.125
+conflicting = 0.125
+none = 0.125
+
+[categories]
+vague_reference = 0.05625
+entity_spelling = 0.05625
+phonetic_resolution = 0.05625
+abbreviation_acronym = 0.05625
+valid_but_wrong_word = 0.05625
+omitted_specific = 0.05625
+ordered_context = 0.05625
+number_date_identifier = 0.05625
+canonical_naming = 0.05625
+domain_terminology = 0.05625
+multiple_clues = 0.05625
+multiple_entities = 0.05625
+context_fields = 0.05625
+same_draft_different_context = 0.05625
+context_no_context_pair = 0.05625
+irrelevant_misleading_context = 0.02
+explicit_draft_override = 0.02
+ambiguous_context = 0.02
+stale_erroneous_context = 0.02
+already_correct = 0.02
+tone_preservation = 0.05625

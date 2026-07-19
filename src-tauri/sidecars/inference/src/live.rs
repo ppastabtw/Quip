@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use crate::InferenceBackend;
 
 const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:1234";
-const DEFAULT_GLOBAL_MODEL_ID: &str = "mlx-community/Qwen3.5-4B-MLX-8bit";
+const DEFAULT_GLOBAL_MODEL_ID: &str = "mlx-community/Qwen3.5-2B-MLX-4bit";
 const COMPLETION_ATTEMPTS: usize = 3;
 const DEFAULT_MODEL_ID: &str = "default";
 const DEFAULT_COMPLETION_COUNT: usize = 5;
@@ -30,6 +30,7 @@ const DEFAULT_MAX_TOKENS: u64 = 64;
 const SYSTEM_PROMPT: &str = include_str!("../../../../training/flash/system_prompt.txt");
 const SYSTEM_PROMPT_V0_JSON: &str =
     include_str!("../../../../training/flash/system_prompt_v0_json.txt");
+const COMPLETION_SEEDS: [u64; DEFAULT_COMPLETION_COUNT] = [101, 202, 303, 404, 505];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputContract {
@@ -188,6 +189,34 @@ pub struct PipelineTiming {
     pub normalization_us: u64,
     pub backend_total_us: u64,
     pub completions: Vec<CompletionTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_server: Option<ModelServerTiming>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelServerTiming {
+    pub system_cache_hit: bool,
+    pub context_cache_hit: bool,
+    #[serde(default)]
+    pub schema_token_elision: bool,
+    pub prepare_us: u64,
+    pub prefill_us: u64,
+    pub system_prefill_us: u64,
+    pub context_prefill_us: u64,
+    pub draft_prefill_us: u64,
+    #[serde(default)]
+    pub fixed_prefix_prefill_us: u64,
+    pub batching_us: u64,
+    pub decode_us: u64,
+    #[serde(default)]
+    pub dynamic_decode_us: u64,
+    #[serde(default)]
+    pub generated_tokens: u64,
+    #[serde(default)]
+    pub avoided_schema_tokens: u64,
+    pub postprocess_us: u64,
+    pub overhead_us: u64,
+    pub total_us: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +235,13 @@ struct TimedHttpResponse {
 struct TimedModelOutput {
     output: String,
     timing: CompletionTiming,
+}
+
+#[derive(Debug)]
+struct TimedBatchOutputs {
+    outputs: Vec<String>,
+    timing: CompletionTiming,
+    model_server: ModelServerTiming,
 }
 
 /// Lets the coordinator thread abort one streaming completion's socket from
@@ -278,6 +314,25 @@ impl From<serde_json::Error> for LiveBackendError {
     }
 }
 
+fn retryable_completion_error(error: &LiveBackendError) -> bool {
+    match error {
+        // Local generation servers can occasionally close a stream between
+        // JSON/SSE fragments. A fresh completion is safe: no user-visible
+        // state has been committed yet, and the request is idempotent.
+        LiveBackendError::Io(_)
+        | LiveBackendError::InvalidHttpResponse(_)
+        | LiveBackendError::InvalidJson(_)
+        | LiveBackendError::MissingModelContent => true,
+        LiveBackendError::HttpStatus { status, .. } => {
+            *status == 408 || *status == 429 || (500..600).contains(status)
+        }
+        LiveBackendError::InvalidAddress(_)
+        | LiveBackendError::InvalidConfig(_)
+        | LiveBackendError::WorkerPanicked
+        | LiveBackendError::Cancelled => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LiveBackend {
     address: SocketAddr,
@@ -285,6 +340,8 @@ pub struct LiveBackend {
     config: LiveConfig,
     output_contract: OutputContract,
     global_endpoint: Option<ModelEndpoint>,
+    cache_fork: bool,
+    schema_token_elision: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +389,18 @@ impl LiveBackend {
             })?;
         }
         let mut backend = Self::with_config(&address, config)?;
+        if let Ok(value) = std::env::var("QUIP_CACHE_FORK") {
+            backend.cache_fork = value.parse().map_err(|_| {
+                LiveBackendError::InvalidConfig("QUIP_CACHE_FORK must be true or false".to_owned())
+            })?;
+        }
+        if let Ok(value) = std::env::var("QUIP_SCHEMA_TOKEN_ELISION") {
+            backend.schema_token_elision = value.parse().map_err(|_| {
+                LiveBackendError::InvalidConfig(
+                    "QUIP_SCHEMA_TOKEN_ELISION must be true or false".to_owned(),
+                )
+            })?;
+        }
         if let Ok(value) = std::env::var("QUIP_MODEL_OUTPUT_CONTRACT") {
             backend.output_contract = OutputContract::parse(&value, "QUIP_MODEL_OUTPUT_CONTRACT")?;
         }
@@ -370,6 +439,8 @@ impl LiveBackend {
             config,
             output_contract: OutputContract::PlainText,
             global_endpoint: None,
+            cache_fork: false,
+            schema_token_elision: false,
         })
     }
 
@@ -511,12 +582,22 @@ impl LiveBackend {
     ) -> Result<LiveBenchmark, LiveBackendError> {
         let backend_started = Instant::now();
         let batch_started = Instant::now();
-        let (model_outputs, cancelled_count, completion_timings) = if self.config.streaming {
-            self.run_streaming_batch(request)?
+        let (model_outputs, cancelled_count, completion_timings, model_server) = if self.cache_fork
+        {
+            let batch = self.complete_cache_fork_batch(request)?;
+            (
+                batch.outputs,
+                0,
+                vec![batch.timing],
+                Some(batch.model_server),
+            )
+        } else if self.config.streaming {
+            let (outputs, cancelled, timings) = self.run_streaming_batch(request)?;
+            (outputs, cancelled, timings, None)
         } else {
             let timed_outputs = std::thread::scope(|scope| {
                 let workers = (0..self.config.completion_count)
-                    .map(|_| scope.spawn(|| self.complete_base(request)))
+                    .map(|index| scope.spawn(move || self.complete_base(request, index)))
                     .collect::<Vec<_>>();
                 workers
                     .into_iter()
@@ -530,7 +611,7 @@ impl LiveBackend {
                 .into_iter()
                 .map(|timed| (timed.output, timed.timing))
                 .unzip();
-            (outputs, 0, timings)
+            (outputs, 0, timings, None)
         };
         let completion_batch_us = elapsed_us(batch_started);
 
@@ -556,6 +637,93 @@ impl LiveBackend {
                 normalization_us,
                 backend_total_us,
                 completions: completion_timings,
+                model_server,
+            },
+        })
+    }
+
+    fn complete_cache_fork_batch(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<TimedBatchOutputs, LiveBackendError> {
+        let mut last_error = None;
+        for _ in 0..COMPLETION_ATTEMPTS {
+            match self.complete_cache_fork_batch_once(request) {
+                Ok(output) => return Ok(output),
+                Err(error) if retryable_completion_error(&error) => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(LiveBackendError::MissingModelContent))
+    }
+
+    fn complete_cache_fork_batch_once(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<TimedBatchOutputs, LiveBackendError> {
+        let total_started = Instant::now();
+        let build_started = Instant::now();
+        let user_content = model_input(request).to_string();
+        let mut body = json!({
+            "model": &self.config.model_id,
+            "messages": [
+                {"role": "system", "content": self.output_contract.system_prompt()},
+                {"role": "user", "content": user_content}
+            ],
+            "enable_thinking": false,
+            "temperature": self.config.temperature,
+            "seed": completion_seed(0),
+            "max_tokens": self.config.max_tokens,
+            "stop": ["<|endoftext|>"],
+            "quip_completion_count": self.config.completion_count,
+            "quip_schema_token_elision": self.schema_token_elision
+        });
+        if self.output_contract == OutputContract::JsonSuggestion {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            });
+        }
+        let body = serde_json::to_vec(&body)?;
+        let request_build_us = elapsed_us(build_started);
+        let response = self.request_timed("POST", "/v1/quip/completions", Some(&body))?;
+        let response_decode_started = Instant::now();
+        let mut completion: ChatCompletion = serde_json::from_slice(&response.body)?;
+        let response_decode_us = elapsed_us(response_decode_started);
+        let model_server = completion
+            .quip_timings
+            .take()
+            .ok_or(LiveBackendError::MissingModelContent)?;
+        completion.choices.sort_by_key(|choice| choice.index);
+
+        let output_decode_started = Instant::now();
+        let outputs = completion
+            .choices
+            .into_iter()
+            .map(|choice| {
+                let content = choice
+                    .message
+                    .content
+                    .as_deref()
+                    .ok_or(LiveBackendError::MissingModelContent)?;
+                decode_model_output(content, self.output_contract)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let output_decode_us = elapsed_us(output_decode_started);
+
+        Ok(TimedBatchOutputs {
+            outputs,
+            model_server,
+            timing: CompletionTiming {
+                request_build_us,
+                http: response.timing,
+                response_decode_us,
+                output_decode_us,
+                total_us: elapsed_us(total_started),
+                tokens: None,
             },
         })
     }
@@ -563,12 +731,13 @@ impl LiveBackend {
     fn complete_base(
         &self,
         request: &PredictionRequest,
+        completion_index: usize,
     ) -> Result<TimedModelOutput, LiveBackendError> {
         let mut last_error = None;
         for _ in 0..COMPLETION_ATTEMPTS {
-            match self.complete_base_once(request) {
+            match self.complete_base_once(request, completion_index) {
                 Ok(output) => return Ok(output),
-                Err(error @ LiveBackendError::MissingModelContent) => last_error = Some(error),
+                Err(error) if retryable_completion_error(&error) => last_error = Some(error),
                 Err(error) => return Err(error),
             }
         }
@@ -578,6 +747,7 @@ impl LiveBackend {
     fn complete_base_once(
         &self,
         request: &PredictionRequest,
+        completion_index: usize,
     ) -> Result<TimedModelOutput, LiveBackendError> {
         let total_started = Instant::now();
         let build_started = Instant::now();
@@ -590,6 +760,7 @@ impl LiveBackend {
             ],
             "enable_thinking": false,
             "temperature": self.config.temperature,
+            "seed": completion_seed(completion_index),
             "max_tokens": self.config.max_tokens,
             "stop": ["<|endoftext|>"]
         });
@@ -610,6 +781,7 @@ impl LiveBackend {
             choices,
             usage,
             timings,
+            quip_timings: _,
         } = serde_json::from_slice(&response.body)?;
         let response_decode_us = elapsed_us(response_decode_started);
         let output_decode_started = Instant::now();
@@ -676,7 +848,7 @@ impl LiveBackend {
                     // the same failure mode `.join()` already guards against
                     // on the non-streaming path.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.complete_base_streaming(request, &handle)
+                        self.complete_base_streaming_indexed(request, &handle, index)
                     }))
                     .unwrap_or(Err(LiveBackendError::WorkerPanicked));
                     let _ = tx.send((index, result));
@@ -730,10 +902,40 @@ impl LiveBackend {
         Ok((outputs, cancelled_count, timings))
     }
 
+    #[cfg(test)]
     fn complete_base_streaming(
         &self,
         request: &PredictionRequest,
         cancel: &CancelHandle,
+    ) -> Result<TimedModelOutput, LiveBackendError> {
+        self.complete_base_streaming_indexed(request, cancel, 0)
+    }
+
+    fn complete_base_streaming_indexed(
+        &self,
+        request: &PredictionRequest,
+        cancel: &CancelHandle,
+        completion_index: usize,
+    ) -> Result<TimedModelOutput, LiveBackendError> {
+        let mut last_error = None;
+        for _ in 0..COMPLETION_ATTEMPTS {
+            if cancel.is_cancelled() {
+                return Err(LiveBackendError::Cancelled);
+            }
+            match self.complete_base_streaming_once(request, cancel, completion_index) {
+                Ok(output) => return Ok(output),
+                Err(error) if retryable_completion_error(&error) => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(LiveBackendError::MissingModelContent))
+    }
+
+    fn complete_base_streaming_once(
+        &self,
+        request: &PredictionRequest,
+        cancel: &CancelHandle,
+        completion_index: usize,
     ) -> Result<TimedModelOutput, LiveBackendError> {
         let total_started = Instant::now();
         let build_started = Instant::now();
@@ -746,6 +948,7 @@ impl LiveBackend {
             ],
             "enable_thinking": false,
             "temperature": self.config.temperature,
+            "seed": completion_seed(completion_index),
             "max_tokens": self.config.max_tokens,
             "stop": ["<|endoftext|>"],
             "stream": true
@@ -1115,6 +1318,10 @@ fn validate_config(config: &LiveConfig) -> Result<(), LiveBackendError> {
     Ok(())
 }
 
+fn completion_seed(index: usize) -> u64 {
+    COMPLETION_SEEDS[index % COMPLETION_SEEDS.len()]
+}
+
 fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
@@ -1155,10 +1362,8 @@ fn decode_model_output(
 /// window's draft) changes on every burst. Serializing the stable fields
 /// first — and `text` last — means consecutive sliding-window requests
 /// within a session share the longest possible literal byte prefix up to
-/// where the draft actually diverges, which is what a server-side prefix
-/// cache keys on. Whether this actually reduces measured latency (vs. the
-/// server's own batching behavior) needs the 5/10/15-word matrix from
-/// `run-latency-benchmark.sh` on real hardware — unverified here.
+/// where the draft actually diverges. The repository MLX server uses this to
+/// cache the stable system/context layers and prefill only the draft suffix.
 fn model_input(request: &PredictionRequest) -> Value {
     if request.context_snippets.is_empty() && request.personal_patterns.is_empty() {
         json!({"text": request.draft})
@@ -1177,12 +1382,13 @@ struct ChatCompletion {
     usage: Option<ChatUsage>,
     #[serde(default)]
     timings: Option<ChatTimings>,
+    #[serde(default)]
+    quip_timings: Option<ModelServerTiming>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
-    #[serde(rename = "index")]
-    _index: usize,
+    index: usize,
     message: ChatMessage,
     finish_reason: Option<String>,
 }
@@ -1539,13 +1745,14 @@ mod tests {
         time::Duration,
     };
 
-    use quip_contracts::{ModelVariant, PredictionRequest};
+    use quip_contracts::{ContextSnippet, ModelVariant, PersonalPattern, PredictionRequest};
     use serde_json::json;
 
     use super::{
-        decode_model_output, healthy_response, is_implausibly_truncated, is_model_scaffolding,
-        normalize_model_outputs, token_profile, CancelHandle, ChatTimings, ChatUsage, LiveBackend,
-        LiveConfig, OutputContract, SYSTEM_PROMPT,
+        completion_seed, decode_model_output, healthy_response, is_implausibly_truncated,
+        is_model_scaffolding, model_input, normalize_model_outputs, token_profile, CancelHandle,
+        ChatTimings, ChatUsage, LiveBackend, LiveConfig, OutputContract, DEFAULT_COMPLETION_COUNT,
+        SYSTEM_PROMPT,
     };
     use crate::InferenceBackend;
 
@@ -1652,6 +1859,49 @@ mod tests {
             OutputContract::JsonSuggestion
         )
         .is_err());
+    }
+
+    #[test]
+    fn five_completion_slots_use_distinct_stable_seeds() {
+        let seeds = (0..DEFAULT_COMPLETION_COUNT)
+            .map(completion_seed)
+            .collect::<Vec<_>>();
+        assert_eq!(seeds, vec![101, 202, 303, 404, 505]);
+        assert_eq!(
+            seeds.iter().collect::<std::collections::HashSet<_>>().len(),
+            5
+        );
+    }
+
+    #[test]
+    fn model_input_extends_the_prototype_shape_only_with_real_context() {
+        let mut input_request = request();
+        assert_eq!(model_input(&input_request), json!({"text": "cnt cm tmr"}));
+
+        input_request.context_snippets = vec![ContextSnippet {
+            app_name: "Slack".to_owned(),
+            window_title: "#launch".to_owned(),
+            visible_text: "Mira asked for the report tomorrow".to_owned(),
+        }];
+        input_request.personal_patterns = vec![PersonalPattern {
+            shorthand: "tmr".to_owned(),
+            expansion: "tomorrow".to_owned(),
+        }];
+        assert_eq!(
+            model_input(&input_request),
+            json!({
+                "context_snippets": [{
+                    "app_name": "Slack",
+                    "window_title": "#launch",
+                    "visible_text": "Mira asked for the report tomorrow",
+                }],
+                "personal_patterns": [{
+                    "shorthand": "tmr",
+                    "expansion": "tomorrow",
+                }],
+                "text": "cnt cm tmr",
+            })
+        );
     }
 
     #[test]
@@ -1904,10 +2154,10 @@ mod tests {
     /// Drains one HTTP request off `stream` (headers plus its
     /// Content-Length body) so the mock server behaves like a real one
     /// instead of racing the client's write.
-    fn drain_one_request(stream: &mut TcpStream) {
+    fn read_one_request(stream: &mut TcpStream) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut chunk = [0_u8; 4096];
-        let content_length = loop {
+        loop {
             let read = stream.read(&mut chunk).unwrap();
             assert!(read > 0, "client closed before sending a full request");
             buf.extend_from_slice(&chunk[..read]);
@@ -1926,10 +2176,74 @@ mod tests {
                 })
                 .unwrap_or(0);
             if buf.len() >= head_end + 4 + content_length {
-                break content_length;
+                return buf;
             }
-        };
-        let _ = content_length;
+        }
+    }
+
+    fn drain_one_request(stream: &mut TcpStream) {
+        let _ = read_one_request(stream);
+    }
+
+    #[test]
+    fn cache_fork_sends_one_prototype_prompt_and_decodes_five_choices() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request_bytes = read_one_request(&mut stream);
+            let request_text = String::from_utf8(request_bytes).unwrap();
+            let (_, body) = request_text.split_once("\r\n\r\n").unwrap();
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert!(request_text.starts_with("POST /v1/quip/completions HTTP/1.1"));
+            assert_eq!(body["quip_completion_count"], 5);
+            assert_eq!(body["messages"][0]["content"], SYSTEM_PROMPT);
+            assert_eq!(body["messages"][1]["content"], r#"{"text":"cnt cm tmr"}"#);
+
+            let choices = (0..5)
+                .map(|index| {
+                    json!({
+                        "index": index,
+                        "message": {"content": format!("candidate {index}")},
+                        "finish_reason": "stop"
+                    })
+                })
+                .collect::<Vec<_>>();
+            let response_body = serde_json::to_vec(&json!({
+                "choices": choices,
+                "quip_timings": {
+                    "system_cache_hit": true,
+                    "context_cache_hit": true,
+                    "prepare_us": 1,
+                    "prefill_us": 2,
+                    "system_prefill_us": 0,
+                    "context_prefill_us": 0,
+                    "draft_prefill_us": 2,
+                    "batching_us": 3,
+                    "decode_us": 4,
+                    "postprocess_us": 5,
+                    "overhead_us": 6,
+                    "total_us": 20
+                }
+            }))
+            .unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            )
+            .unwrap();
+            stream.write_all(&response_body).unwrap();
+        });
+
+        let backend = LiveBackend::new(&addr.to_string()).unwrap();
+        let batch = backend
+            .complete_cache_fork_batch_once(&request())
+            .expect("the cache-fork batch should decode");
+        assert_eq!(batch.outputs.len(), 5);
+        assert!(batch.model_server.system_cache_hit);
+        assert!(batch.model_server.context_cache_hit);
+        server.join().unwrap();
     }
 
     #[test]
@@ -1972,6 +2286,36 @@ mod tests {
         let timed = backend
             .complete_base_streaming(&request(), &cancel)
             .expect("chunked streaming completion should decode");
+        assert_eq!(timed.output, "Can't come tomorrow.");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn retries_a_malformed_stream_fragment() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            drain_one_request(&mut first);
+            let malformed = b"data: {\"choices\":[{\"delta\":{\"content\":\"cut off\"}\n\n";
+            let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+            response.extend_from_slice(malformed);
+            first.write_all(&response).unwrap();
+            drop(first);
+
+            let (mut second, _) = listener.accept().unwrap();
+            drain_one_request(&mut second);
+            let body = sse_body_for("Can't come tomorrow.");
+            let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+            response.extend_from_slice(&body);
+            second.write_all(&response).unwrap();
+        });
+
+        let backend = LiveBackend::new(&addr.to_string()).unwrap();
+        let cancel = CancelHandle::default();
+        let timed = backend
+            .complete_base_streaming(&request(), &cancel)
+            .expect("the malformed first stream should be retried");
         assert_eq!(timed.output, "Can't come tomorrow.");
         server.join().unwrap();
     }

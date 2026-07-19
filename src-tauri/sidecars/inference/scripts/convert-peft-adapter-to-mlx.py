@@ -12,6 +12,7 @@ import mlx.core as mx
 
 PEFT_PREFIX = "base_model.model.model."
 LANGUAGE_PREFIX = "language_model."
+TEXT_LANGUAGE_PREFIX = "layers."
 MLX_LANGUAGE_PREFIX = "language_model.model."
 LORA_SUFFIXES = {
     ".lora_A.weight": ".lora_a",
@@ -23,9 +24,14 @@ def convert_key(key: str) -> tuple[str, str]:
     if not key.startswith(PEFT_PREFIX):
         raise ValueError(f"unsupported PEFT tensor prefix: {key}")
     body = key.removeprefix(PEFT_PREFIX)
-    if not body.startswith(LANGUAGE_PREFIX):
+    if body.startswith(LANGUAGE_PREFIX):
+        body = MLX_LANGUAGE_PREFIX + body.removeprefix(LANGUAGE_PREFIX)
+    elif body.startswith(TEXT_LANGUAGE_PREFIX):
+        # Text-only Qwen exports omit the multimodal `language_model` wrapper,
+        # while MLX-VLM exposes the same decoder layers beneath it.
+        body = MLX_LANGUAGE_PREFIX + body
+    else:
         raise ValueError(f"adapter tensor is outside the language model: {key}")
-    body = MLX_LANGUAGE_PREFIX + body.removeprefix(LANGUAGE_PREFIX)
     for peft_suffix, mlx_suffix in LORA_SUFFIXES.items():
         if body.endswith(peft_suffix):
             module = body.removesuffix(peft_suffix)

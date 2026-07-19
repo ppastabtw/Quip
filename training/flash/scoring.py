@@ -52,10 +52,18 @@ def _input_payload(input_value: object) -> dict[str, Any]:
     payload = json.loads(input_value) if isinstance(input_value, str) else input_value
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"text"}
+        or not {"text"} <= set(payload) <= {"text", "context_snippets"}
         or not isinstance(payload.get("text"), str)
     ):
-        raise ValueError("input must contain only string field text")
+        raise ValueError("input must contain string text and optional context_snippets")
+    snippets = payload.get("context_snippets", [])
+    if not isinstance(snippets, list) or any(
+        not isinstance(snippet, dict)
+        or set(snippet) != {"app_name", "window_title", "visible_text"}
+        or any(not isinstance(snippet[field], str) for field in snippet)
+        for snippet in snippets
+    ):
+        raise ValueError("context_snippets must match the runtime context shape")
     return payload
 
 

@@ -56,6 +56,7 @@ class CaseResult:
     draft: str
     accepted: list[str]
     candidates: list[str]
+    votes: list[int]
     latency_ms: int | None
     error: str | None
 
@@ -134,11 +135,25 @@ def run_cases(sidecar: Path, cases: list[tuple[str, list[str]]]) -> list[CaseRes
     for (draft, accepted), response in zip(cases, responses):
         if response.get("status") == "ok":
             results.append(
-                CaseResult(draft, accepted, response["candidates"], response["latency_ms"], None)
+                CaseResult(
+                    draft,
+                    accepted,
+                    response["candidates"],
+                    response["votes"],
+                    response["latency_ms"],
+                    None,
+                )
             )
         else:
             results.append(
-                CaseResult(draft, accepted, [], None, response.get("error", {}).get("code"))
+                CaseResult(
+                    draft,
+                    accepted,
+                    [],
+                    [],
+                    None,
+                    response.get("error", {}).get("code"),
+                )
             )
     return results
 
@@ -201,6 +216,7 @@ def main() -> int:
                     "draft": r.draft,
                     "accepted": r.accepted,
                     "candidates": r.candidates,
+                    "votes": r.votes,
                     "latency_ms": r.latency_ms,
                     "error": r.error,
                     "success": r.success,

@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:input-method": "scripts/build-native-input-method.sh",
+    "install:input-method": "scripts/install-input-method.sh",
     "tauri": "tauri"
   },
   "dependencies": {

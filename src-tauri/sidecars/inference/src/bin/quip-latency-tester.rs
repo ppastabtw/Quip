@@ -42,6 +42,8 @@ struct Options {
     max_tokens: u64,
     streaming: bool,
     early_exit_agreement: usize,
+    cache_fork: bool,
+    schema_token_elision: bool,
     phrases: Vec<String>,
     json: bool,
     html: Option<PathBuf>,
@@ -54,7 +56,13 @@ struct BenchmarkSidecar {
 }
 
 impl BenchmarkSidecar {
-    fn spawn(address: &str, config: &LiveConfig, output_contract: &str) -> Result<Self, String> {
+    fn spawn(
+        address: &str,
+        config: &LiveConfig,
+        output_contract: &str,
+        cache_fork: bool,
+        schema_token_elision: bool,
+    ) -> Result<Self, String> {
         let executable = resolve_sidecar()?;
         let mut child = Command::new(&executable)
             .arg("--live")
@@ -68,6 +76,11 @@ impl BenchmarkSidecar {
             .env(
                 "QUIP_EARLY_EXIT_AGREEMENT",
                 config.early_exit_agreement.to_string(),
+            )
+            .env("QUIP_CACHE_FORK", cache_fork.to_string())
+            .env(
+                "QUIP_SCHEMA_TOKEN_ELISION",
+                schema_token_elision.to_string(),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -146,6 +159,8 @@ impl Options {
             max_tokens: env_value("QUIP_MAX_TOKENS", 64)?,
             streaming: env_value("QUIP_STREAMING", false)?,
             early_exit_agreement: env_value("QUIP_EARLY_EXIT_AGREEMENT", 3)?,
+            cache_fork: env_value("QUIP_CACHE_FORK", false)?,
+            schema_token_elision: env_value("QUIP_SCHEMA_TOKEN_ELISION", false)?,
             phrases: Vec::new(),
             json: false,
             html: None,
@@ -190,6 +205,10 @@ impl Options {
                         "--early-exit-agreement",
                     )?
                 }
+                "--cache-fork" => options.cache_fork = true,
+                "--concurrent-http" => options.cache_fork = false,
+                "--schema-token-elision" => options.schema_token_elision = true,
+                "--full-schema-decode" => options.schema_token_elision = false,
                 "--phrase" => options
                     .phrases
                     .push(next_value(&mut arguments, "--phrase")?),
@@ -237,7 +256,13 @@ fn run(options: Options) -> Result<(), String> {
         LiveBackend::with_config(&options.address, config).map_err(|error| error.to_string())?;
     let address = backend.address().to_string();
     let config = backend.config().clone();
-    let mut sidecar = BenchmarkSidecar::spawn(&address, &config, &options.output_contract)?;
+    let mut sidecar = BenchmarkSidecar::spawn(
+        &address,
+        &config,
+        &options.output_contract,
+        options.cache_fork,
+        options.schema_token_elision,
+    )?;
 
     let health_started = Instant::now();
     let health = sidecar.health()?;
@@ -293,6 +318,8 @@ fn run(options: Options) -> Result<(), String> {
         model_label: options.label.unwrap_or_else(|| options.model_id.clone()),
         address,
         output_contract: options.output_contract,
+        cache_fork: options.cache_fork,
+        schema_token_elision: options.schema_token_elision,
         warmup_runs: options.warmup,
         measured_runs: options.runs,
         phrase_count: options.phrases.len(),
@@ -349,6 +376,8 @@ struct BenchmarkOutput {
     model_label: String,
     address: String,
     output_contract: String,
+    cache_fork: bool,
+    schema_token_elision: bool,
     warmup_runs: usize,
     measured_runs: usize,
     phrase_count: usize,
@@ -400,6 +429,107 @@ fn build_summary(samples: &[RunSample]) -> Vec<StageSummary> {
             .map(|sample| sample.sidecar_round_trip_us)
             .collect(),
     ));
+
+    let model_server = samples
+        .iter()
+        .filter_map(|sample| sample.timing.model_server.as_ref())
+        .collect::<Vec<_>>();
+    let server_stage = |name, values: Vec<u64>| summarize("model_server", name, values);
+    if !model_server.is_empty() {
+        summary.push(server_stage(
+            "prepare",
+            model_server
+                .iter()
+                .map(|timing| timing.prepare_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "prefill",
+            model_server
+                .iter()
+                .map(|timing| timing.prefill_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "system_prefill",
+            model_server
+                .iter()
+                .map(|timing| timing.system_prefill_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "context_prefill",
+            model_server
+                .iter()
+                .map(|timing| timing.context_prefill_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "draft_prefill",
+            model_server
+                .iter()
+                .map(|timing| timing.draft_prefill_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "fixed_prefix_prefill",
+            model_server
+                .iter()
+                .map(|timing| timing.fixed_prefix_prefill_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "cache_fork_batching",
+            model_server
+                .iter()
+                .map(|timing| timing.batching_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "decode",
+            model_server.iter().map(|timing| timing.decode_us).collect(),
+        ));
+        summary.push(server_stage(
+            "dynamic_value_decode",
+            model_server
+                .iter()
+                .map(|timing| timing.dynamic_decode_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "postprocess",
+            model_server
+                .iter()
+                .map(|timing| timing.postprocess_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "overhead",
+            model_server
+                .iter()
+                .map(|timing| timing.overhead_us)
+                .collect(),
+        ));
+        summary.push(server_stage(
+            "total",
+            model_server.iter().map(|timing| timing.total_us).collect(),
+        ));
+
+        let cache_hits = model_server
+            .iter()
+            .filter(|timing| timing.system_cache_hit && timing.context_cache_hit)
+            .collect::<Vec<_>>();
+        if !cache_hits.is_empty() {
+            summary.push(server_stage(
+                "cache_hit_prefill",
+                cache_hits.iter().map(|timing| timing.prefill_us).collect(),
+            ));
+            summary.push(server_stage(
+                "cache_hit_total",
+                cache_hits.iter().map(|timing| timing.total_us).collect(),
+            ));
+        }
+    }
     summary.push(inference_stage(
         "backend_total",
         samples
@@ -433,67 +563,69 @@ fn build_summary(samples: &[RunSample]) -> Vec<StageSummary> {
         .iter()
         .flat_map(|sample| sample.timing.completions.iter())
         .collect::<Vec<_>>();
-    let completion_stage = |name, values: Vec<u64>| summarize("completion", name, values);
-    summary.push(completion_stage(
-        "total",
-        completions.iter().map(|timing| timing.total_us).collect(),
-    ));
-    summary.push(completion_stage(
-        "request_build",
-        completions
-            .iter()
-            .map(|timing| timing.request_build_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "connect",
-        completions
-            .iter()
-            .map(|timing| timing.http.connect_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "request_write",
-        completions
-            .iter()
-            .map(|timing| timing.http.request_write_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "server_wait_ttfb",
-        completions
-            .iter()
-            .map(|timing| timing.http.time_to_first_byte_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "response_read",
-        completions
-            .iter()
-            .map(|timing| timing.http.response_read_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "http_parse",
-        completions
-            .iter()
-            .map(|timing| timing.http.http_parse_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "response_decode",
-        completions
-            .iter()
-            .map(|timing| timing.response_decode_us)
-            .collect(),
-    ));
-    summary.push(completion_stage(
-        "output_decode",
-        completions
-            .iter()
-            .map(|timing| timing.output_decode_us)
-            .collect(),
-    ));
+    if !completions.is_empty() {
+        let completion_stage = |name, values: Vec<u64>| summarize("completion", name, values);
+        summary.push(completion_stage(
+            "total",
+            completions.iter().map(|timing| timing.total_us).collect(),
+        ));
+        summary.push(completion_stage(
+            "request_build",
+            completions
+                .iter()
+                .map(|timing| timing.request_build_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "connect",
+            completions
+                .iter()
+                .map(|timing| timing.http.connect_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "request_write",
+            completions
+                .iter()
+                .map(|timing| timing.http.request_write_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "server_wait_ttfb",
+            completions
+                .iter()
+                .map(|timing| timing.http.time_to_first_byte_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "response_read",
+            completions
+                .iter()
+                .map(|timing| timing.http.response_read_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "http_parse",
+            completions
+                .iter()
+                .map(|timing| timing.http.http_parse_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "response_decode",
+            completions
+                .iter()
+                .map(|timing| timing.response_decode_us)
+                .collect(),
+        ));
+        summary.push(completion_stage(
+            "output_decode",
+            completions
+                .iter()
+                .map(|timing| timing.output_decode_us)
+                .collect(),
+        ));
+    }
 
     let token_profiles = completions
         .iter()
@@ -664,10 +796,16 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
 fn print_human(output: &BenchmarkOutput) {
     println!("Quip model latency benchmark — {}", output.model_label);
     println!(
-        "Endpoint {} · model id {} · {} · {} completions · temp {} · max {} tokens",
+        "Endpoint {} · model id {} · {} · {} · schema elision {} · {} completions · temp {} · max {} tokens",
         output.address,
         output.config.model_id,
         output.output_contract,
+        if output.cache_fork {
+            "layered KV cache fork"
+        } else {
+            "concurrent HTTP"
+        },
+        output.schema_token_elision,
         output.config.completion_count,
         output.config.temperature,
         output.config.max_tokens,
@@ -695,14 +833,22 @@ fn print_human(output: &BenchmarkOutput) {
         &output.summary,
         "inference",
     );
-    print_table(
-        "Completion request stages (completions run concurrently)",
-        &output.summary,
-        "completion",
-    );
-    println!(
-        "server_wait_ttfb contains queueing plus generation for this non-streaming endpoint; completion stages do not add to inference total because requests overlap."
-    );
+    if output.cache_fork {
+        print_table(
+            "Model server (one prefill, forked five-way decode)",
+            &output.summary,
+            "model_server",
+        );
+    } else {
+        print_table(
+            "Completion request stages (completions run concurrently)",
+            &output.summary,
+            "completion",
+        );
+        println!(
+            "server_wait_ttfb contains queueing plus generation for this non-streaming endpoint; completion stages do not add to inference total because requests overlap."
+        );
+    }
     if let Some(tokens) = &output.token_summary {
         println!("\nToken profile (mean per completion)");
         println!(
@@ -821,30 +967,33 @@ fn print_help() {
     println!(
         "Quip latency tester\n\n\
 Usage: quip-latency-tester [options]\n\n\
-  --address HOST:PORT     OpenAI-compatible loopback endpoint (default 127.0.0.1:1234)\n\
+  --address HOST:PORT     Loopback model endpoint (default 127.0.0.1:1234)\n\
   --model-id ID           Model field sent to the endpoint (default: default)\n\
   --output-contract NAME  plain_text or json_suggestion (default: plain_text)\n\
   --label NAME            Human-readable model/config label\n\
   --runs N                Measured inference count (default: 10)\n\
   --warmup N              Warmup inference count (default: 2)\n\
-  --completions N         Concurrent completions per inference, 1-5 (default: 5)\n\
+  --completions N         Completions per inference, 1-5 (default: 5)\n\
   --temperature N         Sampling temperature, 0-2 (default: 0.1)\n\
   --max-tokens N          Maximum completion tokens, 1-512 (default: 64)\n\
   --streaming             Stream each completion and cancel the rest of the\n\
-                          batch once --early-exit-agreement of them agree\n\
-                          (default: batched, waits for the full n:5)\n\
+                          legacy HTTP batch once enough of them agree\n\
   --early-exit-agreement N  Agreeing streamed completions needed to cancel\n\
                           the rest, 1..completions (default: 3)\n\
+  --cache-fork            Layered prefill, then fork the completed KV cache and\n\
+                          decode all candidates as one model batch\n\
+  --schema-token-elision  Prefill fixed suggestion JSON and decode its value only\n\
+  --full-schema-decode    Decode the complete guided suggestion JSON\n\
+  --concurrent-http       Legacy path: one HTTP request per completion\n\
   --phrase TEXT           Phrase to benchmark; repeat for a phrase set\n\
   --json                  Emit machine-readable samples and summaries\n\
   --html PATH             Write a self-contained interactive latency profile\n\
 Environment equivalents: QUIP_MODEL_ADDR, QUIP_MODEL_ID, QUIP_MODEL_LABEL,\n\
 QUIP_MODEL_OUTPUT_CONTRACT,\n\
 QUIP_COMPLETION_COUNT, QUIP_TEMPERATURE, QUIP_MAX_TOKENS, QUIP_STREAMING,\n\
-QUIP_EARLY_EXIT_AGREEMENT.\n\n\
-Benchmark streaming against the current batched n:5 default:\n\
-  quip-latency-tester --runs 20 --streaming --json > streaming.json\n\
-  quip-latency-tester --runs 20 --json > batched.json"
+QUIP_EARLY_EXIT_AGREEMENT, QUIP_CACHE_FORK, QUIP_SCHEMA_TOKEN_ELISION.\n\n\
+Benchmark the layered cache-fork path:\n\
+  quip-latency-tester --runs 20 --cache-fork --json > cache-fork.json"
     );
 }
 

@@ -13,6 +13,7 @@
 .vscode/
 agent-hooks/
 .env
+.DS_Store
 
 # Build and Python outputs
 target/
@@ -31,5 +32,6 @@ artifacts/models/*
 artifacts/adapters/
 artifacts/logs/
 artifacts/eval/
+artifacts/synthetic/
 tmp/eval-*.jsonl
 *.log

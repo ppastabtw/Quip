@@ -5,34 +5,20 @@
 quip_live_runtime_init() {
   : "${repo_root:?repo_root must be set before sourcing live-model-runtime.sh}"
 
-  base_model_id=${QUIP_BASE_MODEL_ID:-mlx-community/Qwen3.5-4B-MLX-8bit}
+  base_model_id=${QUIP_BASE_MODEL_ID:-mlx-community/Qwen3.5-2B-MLX-4bit}
   base_model_addr=${QUIP_MODEL_ADDR:-127.0.0.1:1234}
 
-  global_model_preset=${QUIP_GLOBAL_MODEL_PRESET:-4b}
+  global_model_preset=${QUIP_GLOBAL_MODEL_PRESET:-2b}
   case "$global_model_preset" in
-    4b)
-      preset_global_model_id=mlx-community/Qwen3.5-4B-MLX-8bit
-      preset_global_adapter_dir="$repo_root/artifacts/adapters/quip-qwen3.5-4b-step70-mlx"
-      preset_global_output_contract=plain_text
+    2b)
+      preset_global_model_id=mlx-community/Qwen3.5-2B-MLX-4bit
+      preset_global_adapter_dir="$repo_root/artifacts/adapters/quip-qwen3.5-2b-v2-step80-mlx"
+      preset_global_output_contract=json_suggestion
       global_validation_draft=contropversy
       global_validation_expected=controversy
       ;;
-    0.8b)
-      preset_global_model_id=mlx-community/Qwen3.5-0.8B-MLX-8bit
-      preset_global_adapter_dir="$repo_root/artifacts/adapters/quip-qwen3.5-0.8b-step80-mlx"
-      preset_global_output_contract=json_suggestion
-      global_validation_draft='cancel next meetihng'
-      global_validation_expected='cancel next meeting'
-      ;;
-    2b)
-      preset_global_model_id=mlx-community/Qwen3.5-2B-MLX-8bit
-      preset_global_adapter_dir="$repo_root/artifacts/adapters/quip-qwen3.5-2b-step80-mlx"
-      preset_global_output_contract=json_suggestion
-      global_validation_draft='is the commute ttime to'
-      global_validation_expected='is the commute time to'
-      ;;
     *)
-      printf '%s\n' 'QUIP_GLOBAL_MODEL_PRESET must be 0.8b, 2b, or 4b.' >&2
+      printf '%s\n' 'Quip is locked to QUIP_GLOBAL_MODEL_PRESET=2b.' >&2
       return 1
       ;;
   esac
@@ -41,10 +27,13 @@ quip_live_runtime_init() {
   global_model_addr=${QUIP_GLOBAL_MODEL_ADDR:-127.0.0.1:1235}
   global_adapter_dir=${QUIP_GLOBAL_ADAPTER_DIR:-$preset_global_adapter_dir}
   global_output_contract=${QUIP_GLOBAL_OUTPUT_CONTRACT:-$preset_global_output_contract}
+  base_output_contract=${QUIP_MODEL_OUTPUT_CONTRACT:-json_suggestion}
   mlx_python=${QUIP_MLX_PYTHON:-"$repo_root/artifacts/runtime/mlx-vlm/bin/python"}
   apc_enabled=${QUIP_APC_ENABLED:-1}
   live_streaming=${QUIP_STREAMING:-true}
   early_exit_agreement=${QUIP_EARLY_EXIT_AGREEMENT:-3}
+  cache_fork=${QUIP_CACHE_FORK:-true}
+  schema_token_elision=${QUIP_SCHEMA_TOKEN_ELISION:-true}
 
   base_server_log=$(mktemp "${TMPDIR:-/tmp}/quip-base-model.XXXXXX")
   global_server_log=$(mktemp "${TMPDIR:-/tmp}/quip-global-model.XXXXXX")
@@ -54,6 +43,7 @@ quip_live_runtime_init() {
   export QUIP_BASE_MODEL_ID="$base_model_id"
   export QUIP_MODEL_ADDR="$base_model_addr"
   export QUIP_MODEL_ID="$base_model_id"
+  export QUIP_MODEL_OUTPUT_CONTRACT="$base_output_contract"
   export QUIP_GLOBAL_MODEL_ADDR="$global_model_addr"
   export QUIP_GLOBAL_MODEL_ID="$global_model_id"
   export QUIP_GLOBAL_ADAPTER_DIR="$global_adapter_dir"
@@ -61,6 +51,8 @@ quip_live_runtime_init() {
   export APC_ENABLED="$apc_enabled"
   export QUIP_STREAMING="$live_streaming"
   export QUIP_EARLY_EXIT_AGREEMENT="$early_exit_agreement"
+  export QUIP_CACHE_FORK="$cache_fork"
+  export QUIP_SCHEMA_TOKEN_ELISION="$schema_token_elision"
 }
 
 quip_live_runtime_cleanup() {
@@ -125,7 +117,7 @@ quip_start_base_server() {
   base_host=${base_model_addr%:*}
   base_port=${base_model_addr##*:}
   printf '%s\n' "Starting local Base $base_model_id on Metal..."
-  "$mlx_python" -m mlx_vlm.server \
+  "$mlx_python" "$repo_root/src-tauri/sidecars/inference/scripts/run-mlx-server.py" \
     --model "$base_model_id" \
     --host "$base_host" \
     --port "$base_port" \
@@ -153,7 +145,7 @@ quip_start_global_server() {
   global_host=${global_model_addr%:*}
   global_port=${global_model_addr##*:}
   printf '%s\n' "Starting local Global $global_model_id with the $global_model_preset Quip adapter..."
-  "$mlx_python" -m mlx_vlm.server \
+  "$mlx_python" "$repo_root/src-tauri/sidecars/inference/scripts/run-mlx-server.py" \
     --model "$global_model_id" \
     --adapter-path "$global_adapter_dir" \
     --host "$global_host" \
