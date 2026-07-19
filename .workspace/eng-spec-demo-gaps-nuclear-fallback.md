@@ -232,7 +232,7 @@ Required `capture_retry` payload:
 - [x] Add `QUIP_DEMO_SAFE_MODE=1` startup path: `src-tauri/src/main.rs`
 - [x] Add one-shot focused-capture retry: `src-tauri/src/main.rs`
 - [x] Emit safe-demo and retry debug events: `src-tauri/src/main.rs`
-- [ ] Add `runSafeDemo`: `src/ui/ipc.ts`
+- [x] Add `runSafeDemo`: `src/ui/ipc.ts`
 - [ ] Add `Run safe demo` button: `src/ui/demo.html`
 - [ ] Wire button behavior and UI state: `src/ui/demo.ts`
 - [ ] Ensure demo phrases exist in fixture corpus: `src-tauri/fixtures/demo_corpus.json`

@@ -124,6 +124,7 @@ export const api = {
     invoke<void>("capture_active_destination", { trigger }),
   injectCapture: (result: CaptureResult, barless?: boolean) =>
     invoke<void>("inject_capture", { result, barless }),
+  runSafeDemo: (caseId?: string) => invoke<void>("run_safe_demo", { caseId }),
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
   moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),
   dismissSuggestions: () => invoke<void>("dismiss_suggestions"),
