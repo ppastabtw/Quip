@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate Quip Context"
+  short_description: "Exercise native context in TextEdit and Chrome"
+  default_prompt: "Use $validate-quip-context to verify native keyboard context ingestion."

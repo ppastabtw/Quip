@@ -12,6 +12,15 @@ navigation, dismissal, and commit messages. A commit is applied with the
 active text client's `insertText:replacementRange:` operation after the client
 range is revalidated.
 
+When Window Context is enabled, the Tauri app also traverses the focused
+supported window's Accessibility tree, collects up to 240 characters of
+visible static text, excludes editable controls, and includes the bounded
+snippet in the prediction request. TextEdit falls back to its active document
+text because the document is itself the editor. Debug events record the
+context source and character counts by default; launching with
+`QUIP_DEBUG_TEXT=1` additionally records snippet text for explicit local
+diagnostics.
+
 ```text
 TextEdit / Notes / browser text field
   -> Quip Native (InputMethodKit)
@@ -58,6 +67,12 @@ The input method reconnects automatically to the app's loopback bridge. If the
 app is installed in `/Applications`, the input method can launch it when the
 bridge is unavailable; a development run should normally be started explicitly
 so its live backend and model-variant environment are unambiguous.
+
+Validate the real Accessibility/native-bridge boundary in TextEdit and Chrome:
+
+```sh
+.agents/skills/validate-quip-context/scripts/validate.sh
+```
 
 ## Compatibility boundary
 

@@ -43,6 +43,13 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Context can be needed either for the current model request or for a
+    /// later confirmed learning label. The composition engine still enforces
+    /// `window_context` before any captured snippet reaches inference.
+    pub fn should_capture_context(&self) -> bool {
+        self.window_context || !self.learning_paused
+    }
+
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join("settings.json");
         let mut settings: Self = std::fs::read_to_string(&path)
@@ -77,5 +84,26 @@ impl AppSettings {
             Ok("global_plus_personal") => self.model_variant = ModelVariant::GlobalPlusPersonal,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSettings;
+
+    #[test]
+    fn context_capture_policy_covers_model_and_learning_uses() {
+        let mut settings = AppSettings::default();
+        settings.window_context = true;
+        settings.learning_paused = true;
+        assert!(settings.should_capture_context());
+
+        settings.window_context = false;
+        settings.learning_paused = false;
+        assert!(settings.should_capture_context());
+
+        settings.window_context = false;
+        settings.learning_paused = true;
+        assert!(!settings.should_capture_context());
     }
 }

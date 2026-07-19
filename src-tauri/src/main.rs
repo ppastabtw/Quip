@@ -353,7 +353,7 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
         let engine = engine.0.lock().unwrap();
         (
             engine.settings.active_profile.clone(),
-            !engine.settings.learning_paused || engine.settings.window_context,
+            engine.settings.should_capture_context(),
             engine.settings.window_context,
         )
     };
@@ -655,6 +655,18 @@ async fn run_capture_result(
             } else {
                 Vec::new()
             };
+            let context_debug = context_snippets
+                .iter()
+                .map(|snippet| {
+                    json!({
+                        "app_name": &snippet.app_name,
+                        "window_title_text": &snippet.window_title,
+                        "window_title_chars": snippet.window_title.chars().count(),
+                        "visible_text": &snippet.visible_text,
+                        "visible_text_chars": snippet.visible_text.chars().count(),
+                    })
+                })
+                .collect::<Vec<_>>();
             record_debug(
                 &app,
                 "capture_ready",
@@ -668,6 +680,7 @@ async fn run_capture_result(
                     "draft_chars": draft.chars().count(),
                     "draft_text": draft,
                     "context_count": context_snippets.len(),
+                    "context_snippets": context_debug,
                     "caret": caret,
                 }),
             );

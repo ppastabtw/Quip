@@ -229,14 +229,14 @@ fn handle_message(
                     destination_id: &destination_id,
                 },
             );
-            let profile_id = app
-                .state::<crate::EngineState>()
-                .0
-                .lock()
-                .unwrap()
-                .settings
-                .active_profile
-                .clone();
+            let (profile_id, capture_context) = {
+                let engine = app.state::<crate::EngineState>();
+                let engine = engine.0.lock().unwrap();
+                (
+                    engine.settings.active_profile.clone(),
+                    engine.settings.should_capture_context(),
+                )
+            };
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
                 crate::run_capture_result(
@@ -250,7 +250,7 @@ fn handle_message(
                         caret,
                         word_offset: None,
                     },
-                    false,
+                    capture_context,
                     "native_ime_bridge",
                     None,
                     None,

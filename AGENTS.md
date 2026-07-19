@@ -64,10 +64,10 @@ Do not infer completion from file names or from the product specification.
 | Live inference | Persistent Rust child sidecar, loopback-only `mistral.rs` HTTP client, local Qwen3.5 Base inference, five-completion aggregation, guided JSON, health and latency | Global adapter, user adapter, adapter composition, packaged sidecar restart supervision |
 | Accessibility | Permission check, supported-app gating, secure-field rejection, focused editable capture, opaque destination registry | `AXObserver`, live burst markers, real caret geometry, continuous key handling, selected existing-text mode |
 | Commit | AX selected-text write, focus/range restore, paste fallback with plain-text clipboard restore | Reliable replacement of the preceding typed burst; capture currently stores the selection range, not a continuously tracked burst range |
-| Window context | Bounded contract type and deterministic context demo | Real accessible open-window collection and ranking; the live request builder currently sends an empty list |
+| Window context | Bounded contract type, deterministic context demo, and one 240-character Accessibility snippet from the focused supported window for manual and native IME captures; editable controls are excluded, with a TextEdit document fallback | Multi-window collection, recency/relevance ranking, and broader client validation |
 | Learning | Per-profile JSON patterns, append-only JSONL labels, seeded demo profiles, thresholded pattern injection, reset/inspect UI | Profile dataset packaging, Freesolo profile submission, adapter download/load, post-commit correction labels |
 | Training | Reproducible MASSIVE compiler, deterministic QWERTY augmentation, checked-in train/eval/test splits, reward/scoring code, Flash environment, SFT/OPD/GRPO configs, managed benchmark tools | A checked-in claim that a selected trained adapter wins and loads locally |
-| Validation | Rust tests, Python tests, deterministic process validator, live Qwen/sidecar/Tauri validator | Real TextEdit/browser observation and commit are not covered by the headless self-tests |
+| Validation | Rust tests, Python tests, deterministic process validator, live Qwen/sidecar/Tauri validator, and real TextEdit/Chrome native-context validator | Broader browser/client compatibility and real external commit are not fully automated |
 
 Important consequences:
 
@@ -76,8 +76,10 @@ Important consequences:
   InputMethodKit source and its loopback bridge to the Tauri engine.
 - Captured caret coordinates use a fallback rectangle at `(0, 0)`; real AX
   caret geometry is not wired.
-- `collect_context_snippets` deliberately returns an empty list. The settings
-  toggle exists before the collector does.
+- `collect_context_snippets` traverses the focused supported window for visible
+  static Accessibility text, excluding editors and secure fields. It returns
+  at most one 240-character snippet and is not yet a multi-window relevance
+  ranker.
 - `replace_burst` logs a failed real commit but still returns the selected text
   so the demo textarea can update. A passing fixture self-test therefore does
   not prove an external TextEdit commit.
@@ -313,6 +315,8 @@ sidecar itself then speaks NDJSON to the app.
 
 - `.agents/skills/validate-quip-sidecar/`: deterministic and live process-level
   sidecar validators.
+- `.agents/skills/validate-quip-context/`: real TextEdit/Chrome Accessibility
+  context capture through the native IME bridge.
 - `.agents/skills/run-freesolo-flash-wsl/`: exact Windows/WSL setup,
   authentication, dry-run, training, evaluation, and export workflow.
 
@@ -449,6 +453,12 @@ the repository skill:
 .agents/skills/validate-quip-sidecar/scripts/validate-live.sh
 ```
 
+After changing native keyboard or Accessibility context ingestion, run:
+
+```bash
+.agents/skills/validate-quip-context/scripts/validate.sh
+```
+
 With the Python environment installed, check training code from
 `training/flash`:
 
@@ -477,7 +487,7 @@ crosses a real process, application, model, or OS boundary.
 | Shared prediction contract, fixture backend, sidecar protocol/client, health, phrase tester | Use `$validate-quip-sidecar`; success ends with `Quip sidecar integration passed` |
 | Live backend, model prompt, normalization, sidecar lifecycle, live app conversion | Use both deterministic and live sidecar validation; live success ends with `Quip live inference integration passed` |
 | Native InputMethodKit capture/commit | Build the standalone bundle, run the live sidecar validator's native-bridge round trip, then test the installed source in at least TextEdit and the selected browser before claiming OS-client compatibility |
-| Accessibility existing-text/context | Add or use a repository validation skill that drives the real supported app boundary; test at least TextEdit and the selected browser as applicable |
+| Accessibility existing-text/context | Use `$validate-quip-context`; success ends with `Quip native context integration passed` after real TextEdit and Chrome captures |
 | Training augmentation/scoring/environment | Run the targeted Python tests and the full Python suite |
 | Dataset policy/compiler/source | Rebuild deterministically when intended, validate exact quotas/provenance/hashes, and inspect the diff in all split/report files |
 | Freesolo environment/config/training/evaluation/export | Use `$run-freesolo-flash-wsl`; report versions, identity without secrets, dry-run/cost, run/checkpoint IDs, held-out metrics, inspected failures, and export state |

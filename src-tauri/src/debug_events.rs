@@ -146,7 +146,11 @@ mod tests {
                 "draft_text": "cnt cm tmrw",
                 "draft_chars": 11,
                 "candidates": ["Can't come tomorrow."],
-                "nested": { "visible_text": "secret" }
+                "nested": {
+                    "window_title_text": "private window",
+                    "visible_text": "secret",
+                    "visible_text_chars": 6
+                }
             }),
         );
 
@@ -155,6 +159,8 @@ mod tests {
         assert!(event.payload.get("draft_text").is_none());
         assert!(event.payload.get("candidates").is_none());
         assert!(event.payload["nested"].get("visible_text").is_none());
+        assert!(event.payload["nested"].get("window_title_text").is_none());
+        assert_eq!(event.payload["nested"]["visible_text_chars"], 6);
         let _ = std::fs::remove_dir_all(dir);
     }
 

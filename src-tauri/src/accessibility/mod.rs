@@ -25,6 +25,8 @@ use serde::Serialize;
 
 const DRAFT_MAX_CHARS: usize = 80;
 const DESCENDANT_SEARCH_LIMIT: usize = 64;
+const CONTEXT_DESCENDANT_SEARCH_LIMIT: usize = 512;
+const CONTEXT_CHILD_LIMIT: usize = 96;
 pub(crate) const DEFAULT_CONTEXT_LIMIT: ContextSnippetLimit = ContextSnippetLimit {
     max_snippets: 1,
     max_chars_per_snippet: 240,
@@ -326,6 +328,9 @@ const SAFARI_APP_NAME: &str = "Safari";
 const AX_TEXT_AREA_ROLE: &str = "AXTextArea";
 #[allow(dead_code)]
 const AX_TEXT_FIELD_ROLE: &str = "AXTextField";
+const AX_STATIC_TEXT_ROLE: &str = "AXStaticText";
+const AX_HEADING_ROLE: &str = "AXHeading";
+const AX_LINK_ROLE: &str = "AXLink";
 #[allow(dead_code)]
 const SUPPORTED_APP_BUNDLE_IDS: [&str; 5] = [
     TEXTEDIT_BUNDLE_ID,
@@ -598,6 +603,108 @@ fn bound_context_snippets(
 #[allow(dead_code)]
 pub fn collect_context_snippets(limit: ContextSnippetLimit) -> Vec<ContextSnippet> {
     focused_context_snippet(limit).into_iter().collect()
+}
+
+fn normalize_context_segment(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn collect_context_text<T: Clone>(
+    roots: Vec<T>,
+    max_chars: usize,
+    role: impl Fn(&T) -> Option<String>,
+    editable: impl Fn(&T) -> bool,
+    text: impl Fn(&T) -> Option<String>,
+    children: impl Fn(&T) -> Vec<T>,
+) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut queue = VecDeque::from(roots);
+    let mut visited = 0;
+    let mut segments = Vec::new();
+    let mut chars = 0;
+
+    while let Some(element) = queue.pop_front() {
+        visited += 1;
+        if visited > CONTEXT_DESCENDANT_SEARCH_LIMIT || chars >= max_chars {
+            break;
+        }
+
+        let element_role = role(&element).unwrap_or_default();
+        let is_text_container = matches!(
+            element_role.as_str(),
+            AX_TEXT_AREA_ROLE | AX_TEXT_FIELD_ROLE
+        );
+        let is_editable = editable(&element);
+        if !is_editable
+            && !is_text_container
+            && matches!(
+                element_role.as_str(),
+                AX_STATIC_TEXT_ROLE | AX_HEADING_ROLE | AX_LINK_ROLE
+            )
+        {
+            if let Some(value) = text(&element) {
+                let value = normalize_context_segment(&value);
+                if !value.is_empty() && !segments.iter().any(|seen| seen == &value) {
+                    let separator_chars = usize::from(!segments.is_empty());
+                    let remaining = max_chars.saturating_sub(chars + separator_chars);
+                    if remaining == 0 {
+                        break;
+                    }
+                    let bounded = value.chars().take(remaining).collect::<String>();
+                    chars += separator_chars + bounded.chars().count();
+                    segments.push(bounded);
+                }
+            }
+        }
+
+        if !is_editable && !is_text_container {
+            queue.extend(children(&element));
+        }
+    }
+
+    segments.join("\n")
+}
+
+fn ax_context_children(element: &AXUIElement) -> Vec<AXUIElement> {
+    let count = element
+        .attribute_value_count(AX_CHILDREN_ATTRIBUTE)
+        .unwrap_or(0)
+        .min(CONTEXT_CHILD_LIMIT);
+    if count == 0 {
+        return Vec::new();
+    }
+    element
+        .element_array_attribute_range(AX_CHILDREN_ATTRIBUTE, 0, count)
+        .unwrap_or_default()
+}
+
+fn ax_context_text(element: &AXUIElement) -> Option<String> {
+    element
+        .string_attribute(AX_VISIBLE_TEXT_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())
+        .or_else(|| element.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten())
+}
+
+fn collect_ax_window_text(window: &AXUIElement, max_chars: usize) -> String {
+    collect_context_text(
+        vec![window.clone()],
+        max_chars,
+        |element| element.string_attribute(AX_ROLE_ATTRIBUTE).ok().flatten(),
+        |element| {
+            element
+                .bool_attribute(AX_IS_EDITABLE_ATTRIBUTE)
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+        },
+        ax_context_text,
+        ax_context_children,
+    )
 }
 
 #[allow(dead_code)]
@@ -1214,32 +1321,27 @@ fn focused_context_snippet(limit: ContextSnippetLimit) -> Option<ContextSnippet>
         .ok()?
         .element;
 
-    let window_title = system
-        .focused_window()
-        .ok()
-        .flatten()
+    let focused_window = system.focused_window().ok().flatten().or_else(|| {
+        element
+            .element_attribute(AX_WINDOW_ATTRIBUTE)
+            .ok()
+            .flatten()
+    });
+    let window_title = focused_window
+        .as_ref()
         .and_then(|window| window.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten())
-        .or_else(|| {
-            system
-                .focused_ui_element()
-                .ok()
-                .flatten()
-                .and_then(|element| {
-                    element
-                        .element_attribute(AX_WINDOW_ATTRIBUTE)
-                        .ok()
-                        .flatten()
-                        .and_then(|window| {
-                            window.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten()
-                        })
-                })
-        })
         .unwrap_or_default();
-    let visible_text = element
-        .string_attribute(AX_VISIBLE_TEXT_ATTRIBUTE)
-        .ok()
-        .flatten()
-        .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())?;
+    let editor_fallback = || ax_context_text(&element).map(|text| normalize_context_segment(&text));
+    let visible_text = if app_bundle_id == TEXTEDIT_BUNDLE_ID {
+        editor_fallback()
+    } else {
+        focused_window
+            .as_ref()
+            .map(|window| collect_ax_window_text(window, limit.max_chars_per_snippet))
+            .filter(|text| !text.is_empty())
+            .or_else(editor_fallback)
+    }
+    .filter(|text| !text.is_empty())?;
     let snippets = bound_context_snippets(
         vec![ContextSnippet {
             app_name,
@@ -1404,12 +1506,13 @@ fn captured_draft_from_element(
 mod tests {
     use super::{
         bound_context_snippets, bound_draft, bounded_suffix_with_range, build_ready_capture_result,
-        capture_preflight, collect_context_snippets, editability_from_fallback, is_supported_app,
-        resolve_contract, validate_element_contract, validate_focused_editable_element,
-        AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
-        ContextSnippetLimit, ContractError, DestinationRegistry, DestinationSnapshot,
-        ElementContract, FocusResolutionError, FocusSource, FocusedElementSnapshot, ProbeElement,
-        AX_TEXT_AREA_ROLE, AX_TEXT_FIELD_ROLE,
+        capture_preflight, collect_context_snippets, collect_context_text,
+        editability_from_fallback, is_supported_app, resolve_contract, validate_element_contract,
+        validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
+        CaptureResult, ContextSnippet, ContextSnippetLimit, ContractError, DestinationRegistry,
+        DestinationSnapshot, ElementContract, FocusResolutionError, FocusSource,
+        FocusedElementSnapshot, ProbeElement, AX_STATIC_TEXT_ROLE, AX_TEXT_AREA_ROLE,
+        AX_TEXT_FIELD_ROLE,
     };
     use quip_contracts::{Rect, Trigger};
 
@@ -1778,6 +1881,83 @@ mod tests {
                     .iter()
                     .all(|snippet| snippet.visible_text.chars().count() <= 4)
         );
+    }
+
+    #[derive(Clone)]
+    struct ContextProbe {
+        role: &'static str,
+        editable: bool,
+        text: Option<&'static str>,
+        children: Vec<ContextProbe>,
+    }
+
+    #[test]
+    fn window_context_collects_visible_messages_and_excludes_the_editor() {
+        let tree = ContextProbe {
+            role: "AXWindow",
+            editable: false,
+            text: None,
+            children: vec![
+                ContextProbe {
+                    role: AX_STATIC_TEXT_ROLE,
+                    editable: false,
+                    text: Some("Mira: The launch is tomorrow."),
+                    children: Vec::new(),
+                },
+                ContextProbe {
+                    role: AX_STATIC_TEXT_ROLE,
+                    editable: false,
+                    text: Some("Dev: Meet at Union Station."),
+                    children: Vec::new(),
+                },
+                ContextProbe {
+                    role: AX_TEXT_AREA_ROLE,
+                    editable: true,
+                    text: Some("cnt cm tmrw"),
+                    children: vec![ContextProbe {
+                        role: AX_STATIC_TEXT_ROLE,
+                        editable: false,
+                        text: Some("cnt cm tmrw"),
+                        children: Vec::new(),
+                    }],
+                },
+            ],
+        };
+
+        let text = collect_context_text(
+            vec![tree],
+            240,
+            |element| Some(element.role.to_string()),
+            |element| element.editable,
+            |element| element.text.map(str::to_string),
+            |element| element.children.clone(),
+        );
+
+        assert_eq!(
+            text,
+            "Mira: The launch is tomorrow.\nDev: Meet at Union Station."
+        );
+        assert!(!text.contains("cnt cm tmrw"));
+    }
+
+    #[test]
+    fn window_context_deduplicates_and_bounds_accessible_text() {
+        let repeated = ContextProbe {
+            role: AX_STATIC_TEXT_ROLE,
+            editable: false,
+            text: Some("same message"),
+            children: Vec::new(),
+        };
+        let text = collect_context_text(
+            vec![repeated.clone(), repeated],
+            8,
+            |element| Some(element.role.to_string()),
+            |element| element.editable,
+            |element| element.text.map(str::to_string),
+            |element| element.children.clone(),
+        );
+
+        assert_eq!(text, "same mes");
     }
 
     #[test]
