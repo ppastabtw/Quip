@@ -131,3 +131,129 @@ the runtime-weighted 5K dataset, the strongest measured SFT warm start, exact
 and change-decision gates, and the 35B semantic judge into one training lane.
 Checkpoint selection must still use held-out evaluation. Training reward alone
 will not be used to promote the final adapter.
+
+## Mixed context mega run
+
+The consolidated mixed lane combines the unchanged 5,000-row runtime V2
+training corpus with the 240-row training partition compiled from the approved
+300-row context source. Context families remain isolated across the 240/30/30
+train, evaluation, and test split.
+
+The mixed SFT run completed before the judge continuation:
+
+| Field | Value |
+| --- | --- |
+| Run | `flash-1784455014-8274f695` |
+| Base model | `Qwen/Qwen3.5-2B` |
+| Environment | `ariobarin/quip-v2-context-mega-20260719` |
+| Training rows | 5,240 |
+| Saved checkpoints | 50, 100, 150, 200, and 250 |
+| Cost | $0.1490014924 |
+
+SFT steps 150 and 250 tied at 80.00% overall success with zero unnecessary
+edits on the same 60-row V2 evaluation screen. Step 250 won the complete
+30-row context evaluation, 56.67% versus 40.00%, and became the GRPO warm
+start.
+
+The judge continuation used the published mixed judge environment and the
+selected SFT adapter:
+
+| Field | Value |
+| --- | --- |
+| Run | `flash-1784456232-84f668fe` |
+| Warm start | `flash-1784455014-8274f695/step-250` |
+| Environment | `ariobarin/quip-v2-context-mega-grpo-judge-20260719` |
+| Judge | `Qwen/Qwen3.6-35B-A3B` |
+| Training horizon | 655 steps |
+| Samples per prompt | 8 |
+| Saved checkpoints | 50, 100, 250, 400, and 655 |
+| Estimated cost | $1.0652440171 |
+| Billing state at handoff | Pending reconciliation |
+
+The Vast worker reached 655 updates, published every required checkpoint, and
+emitted a final `done` heartbeat. The provider disappeared before Flash
+received its strict terminal marker, which queued a redundant retry. That
+retry was cancelled after the checkpoints were verified. The run record is
+therefore `cancelled`, but all five deployable checkpoint artifacts survived.
+
+## Final selection across lanes
+
+Checkpoint selection used the same five-completion ranked-candidate protocol
+for every candidate. The compact screen contained the same 60 current V2
+evaluation rows and all 30 context evaluation rows for each checkpoint.
+
+| GRPO checkpoint | V2 overall | V2 recall at five | Context overall | Context recall at five | Context change accuracy | Unnecessary edits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Step 50 | 81.67% | 90.00% | 60.00% | 60.00% | 56.67% | 0.00% |
+| Step 250 | 81.67% | 85.00% | 60.00% | 66.67% | 64.67% | 0.00% |
+| Step 655 | 81.67% | 83.33% | 56.67% | 60.00% | 78.67% | 0.00% |
+
+Step 250 is selected. It ties step 50 on top-line global and context success,
+then wins on context recall at five and context change accuracy. Step 655
+regresses context top-line success and is not promoted.
+
+The selected checkpoint was evaluated once on held-out test rows after the
+selection decision:
+
+| Test split | Examples | Overall success | Recall at five | Mean completion success | Change accuracy | Schema validity | Unnecessary edits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| V2 global | 60 | 88.33% | 91.67% | 87.67% | 100.00% | 100.00% | 0.00% |
+| Context | 30 | 43.33% | 60.00% | 46.00% | 70.67% | 100.00% | 25.00% |
+
+The context test regression is a known limitation. The locked test result was
+not used to reopen checkpoint selection.
+
+Representative final-test failures show two remaining mechanisms:
+
+- `ctx_reviewed_d872cc249359df3546c4` should keep
+  `Pay the $650 deposit now`, but two of five completions copied a stale $500
+  value from an old lease draft. Unchanged completions are hidden, so the
+  minority changed candidate caused an unnecessary edit despite three correct
+  keeps.
+- `ctx_reviewed_c3d01a585483eb2b3ef7` should only correct `tomorow`, but the
+  top candidate injected two doctor names from ambiguous window context. One
+  exact correction was present but lost the completion vote.
+- `quip_f9f4fe044ca93aac93a2` produced `new news` in a compressed-typing
+  repair. The correct candidate appeared twice but lost three votes to the
+  redundant repair.
+
+These failures point to context-copy restraint and changed-versus-keep
+aggregation as the next quality boundary. They do not indicate schema or
+serving failures.
+
+## Adapter handoff
+
+| Field | Value |
+| --- | --- |
+| Selected adapter | `flash-1784456232-84f668fe/step-250` |
+| Base model | `Qwen/Qwen3.5-2B` |
+| Deployment state | `ready` |
+| Deployment model | `flash-1784456232-84f668fe` |
+| Immutable deployment revision | `flash-1784456232-84f668fe@step-250.5cc176c37a71ba862b5d0bb8912f3428dfb1f4a3` |
+| Canonical export | `ppasta/quip-v2-context-mega` |
+| Canonical export revision | `297ac9b68fce60ff34a9d415dea7d0376441e9a0` |
+| Checkpoint export | `ppasta/quip-v2-context-mega-grpo-step250` |
+| Checkpoint export revision | `03d4de4fb48992a1a23c3465fd2f63c62c5a0d5b` |
+| Export state | `exported`, private repositories |
+| Evaluation protocol | `five_completion_ranked_candidates_v1` |
+
+Identity hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Training prompt package | `8569bbf9932a222ee45e4a9350c187057e51b5cf525d18407049c9ed6d34fd64` |
+| Shared prompt Git blob | `d293856e6a38f9179e2e719c4b015f697d82de64` |
+| Mixed 5,240-row train | `e67d1aadb9ce11177d287bfb02c367ca71f1a7bf995a72342bae6cf12c3ea211` |
+| Approved 300-row context source | `db399c3ec92d7b17f587c64bf9e1de0bddc536ac2edbf08c6582fe03d315f225` |
+| Full V2 evaluation split | `2284458cc91e59700ad1b64636562bda3df26e657db8e90791594d519a264178` |
+| 60-row V2 evaluation screen | `8f724b85cedd153640e1a83d7a72ed380b7033a4b95fc626b2b21f638a865c30` |
+| Full context evaluation split | `721a58404122389b558fb5b6422bd2a2f0f1a59d8bfe485c12d914ffda32abf8` |
+| 30-row context evaluation screen | `8d4b4e284969abc8216837abf22e71c0c459980dcc9c159da1482e873b71064a` |
+| Full V2 test split | `df750f68b809aef2a14e5dba2d327ee3419995be388fb6e42540b41c2971db88` |
+| 60-row V2 final test | `7417cba71f315c834fa1179b8103543bb4af10b0b73734be84d9882003e731b0` |
+| Full context test split | `0ffd58ce11b034ef83be8f572258ebcc6fb7f5445e9820c56a9bf16c05718d1f` |
+| 30-row context final test | `8b97bdce494795d401759292a2aa43e4b243c212cf0550e3826a952c66e745b0` |
+
+Generated predictions, model binaries, adapters, logs, caches, and secrets are
+excluded from Git. The two Hugging Face exports are the durable model
+artifacts.
