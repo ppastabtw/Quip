@@ -479,6 +479,30 @@ async fn inject_capture(app: AppHandle, result: CaptureResult, barless: Option<b
     run_capture_result(app, result, false, "manual_injection", barless).await;
 }
 
+fn safe_demo_capture(case_id: &str) -> Result<CaptureResult, String> {
+    let draft = match case_id {
+        "primary" => "cnt cm tmrw",
+        "typo" => "i went to the store instaed",
+        "short" => "omw",
+        _ => return Err(format!("unknown safe demo case: {case_id}")),
+    };
+
+    Ok(CaptureResult::Ready {
+        burst_id: format!("safe_demo_{case_id}"),
+        destination_id: "destination_textedit".into(),
+        profile_id: "profile_default".into(),
+        draft: draft.into(),
+        trigger: Trigger::Shortcut,
+        word_offset: None,
+        caret: Rect {
+            x: 512.0,
+            y: 384.0,
+            width: 2.0,
+            height: 18.0,
+        },
+    })
+}
+
 async fn run_capture_result(
     app: AppHandle,
     result: CaptureResult,
@@ -1256,7 +1280,12 @@ mod selftest {
 
     /// A sliding-window burst at a session word offset, for the barless /
     /// edit-accumulator path (marks, not bars).
-    fn capture_at(burst_id: &str, profile_id: &str, draft: &str, word_offset: u32) -> CaptureResult {
+    fn capture_at(
+        burst_id: &str,
+        profile_id: &str,
+        draft: &str,
+        word_offset: u32,
+    ) -> CaptureResult {
         CaptureResult::Ready {
             burst_id: burst_id.to_string(),
             destination_id: "destination_selftest".to_string(),
@@ -1443,9 +1472,9 @@ mod selftest {
         let marks = get_marks(app.clone());
         check(
             "an unhardened mark records the proposed correction",
-            marks
-                .iter()
-                .any(|m| m.start_word == 0 && !m.stable && m.replacement == "I can't come tomorrow."),
+            marks.iter().any(|m| {
+                m.start_word == 0 && !m.stable && m.replacement == "I can't come tomorrow."
+            }),
             format!("{marks:?}"),
         )?;
 

@@ -310,7 +310,8 @@ impl Engine {
                     .unzip();
                 if changed.is_empty() {
                     if let Some(offset) = burst.word_offset {
-                        self.session.observe_no_change(offset as usize, &burst.draft);
+                        self.session
+                            .observe_no_change(offset as usize, &burst.draft);
                     }
                     // The typed text stands; the user is never interrupted.
                     return ApplyDisposition::Skipped(self.current_snapshot());
