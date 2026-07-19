@@ -27,8 +27,12 @@ def load_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def evaluate(dataset_path: Path, predictions_path: Path) -> dict:
+def evaluate(
+    dataset_path: Path, predictions_path: Path, limit: int | None = None
+) -> dict:
     rows = load_jsonl(dataset_path)
+    if limit is not None:
+        rows = rows[:limit]
     predictions = {
         item["example_id"]: item
         for item in load_jsonl(predictions_path)
@@ -180,8 +184,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("predictions", type=Path)
     parser.add_argument("--dataset", type=Path, default=ROOT / "dataset" / "eval.jsonl")
+    parser.add_argument("--limit", type=int)
     args = parser.parse_args()
-    print(json.dumps(evaluate(args.dataset, args.predictions), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            evaluate(args.dataset, args.predictions, args.limit),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

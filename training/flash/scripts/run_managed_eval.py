@@ -17,8 +17,12 @@ from flash.serve.deploy import serving_openai_base_url
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from environment import SYSTEM_PROMPT  # noqa: E402
-from scoring import OUTPUT_RESPONSE_FORMAT, model_text  # noqa: E402
+from environment import (  # noqa: E402
+    HYBRID_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    model_input_json,
+)
+from scoring import OUTPUT_RESPONSE_FORMAT  # noqa: E402
 
 
 COMPLETION_COUNT = 5
@@ -30,12 +34,29 @@ def load_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def request_payload(row: dict, model: str) -> dict:
+def rows_to_run(rows: list[dict], output: Path, *, resume: bool) -> list[dict]:
+    if not resume or not output.is_file():
+        return rows
+    completed = {
+        row.get("example_id")
+        for row in load_jsonl(output)
+        if isinstance(row.get("example_id"), str)
+    }
+    return [row for row in rows if row["metadata"]["example_id"] not in completed]
+
+
+def request_payload(row: dict, model: str, *, lexical_hints: bool = False) -> dict:
+    system_prompt = HYBRID_SYSTEM_PROMPT if lexical_hints else SYSTEM_PROMPT
     return {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": model_text(row["input"])},
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": model_input_json(
+                    row["input"], lexical_hints=lexical_hints
+                ),
+            },
         ],
         "temperature": PRODUCT_TEMPERATURE,
         "max_tokens": 128,
@@ -44,7 +65,15 @@ def request_payload(row: dict, model: str) -> dict:
     }
 
 
-def run(dataset: Path, output: Path, model: str, limit: int | None = None) -> int:
+def run(
+    dataset: Path,
+    output: Path,
+    model: str,
+    limit: int | None = None,
+    *,
+    lexical_hints: bool = False,
+    resume: bool = False,
+) -> int:
     _, api_key = load_credentials()
     if not api_key:
         raise RuntimeError("Flash login is required before managed evaluation")
@@ -53,13 +82,15 @@ def run(dataset: Path, output: Path, model: str, limit: int | None = None) -> in
     if limit is not None:
         rows = rows[:limit]
     output.parent.mkdir(parents=True, exist_ok=True)
+    rows = rows_to_run(rows, output, resume=resume)
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     with httpx.Client(base_url=serving_openai_base_url(), headers=headers, timeout=180.0) as client:
-        with output.open("w", encoding="utf-8", newline="\n") as handle:
+        mode = "a" if resume and output.is_file() else "w"
+        with output.open(mode, encoding="utf-8", newline="\n") as handle:
             for index, row in enumerate(rows, 1):
                 started = time.perf_counter()
-                payload = request_payload(row, model)
+                payload = request_payload(row, model, lexical_hints=lexical_hints)
 
                 def complete() -> str:
                     response = client.post("/chat/completions", json=payload)
@@ -93,8 +124,17 @@ def main() -> int:
         default=ROOT.parents[1] / "artifacts" / "eval" / "base-qwen-2b.jsonl",
     )
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--lexical-hints", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    return run(args.dataset, args.output, args.model, args.limit)
+    return run(
+        args.dataset,
+        args.output,
+        args.model,
+        args.limit,
+        lexical_hints=args.lexical_hints,
+        resume=args.resume,
+    )
 
 
 if __name__ == "__main__":

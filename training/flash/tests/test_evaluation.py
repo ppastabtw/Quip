@@ -51,6 +51,23 @@ class EvaluationTests(unittest.TestCase):
         self.assertGreater(report["unnecessary_edit_rate"], 0.0)
         self.assertEqual(report["missing_predictions"], len(dataset) - 1)
 
+    def test_limit_scores_only_the_requested_prefix(self):
+        dataset = MODULE.load_jsonl(ROOT / "dataset" / "eval.jsonl")
+        row = dataset[0]
+        prediction = {
+            "example_id": row["metadata"]["example_id"],
+            "responses": [model_text(row["output"])] * 5,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "predictions.jsonl"
+            path.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+            report = MODULE.evaluate(
+                ROOT / "dataset" / "eval.jsonl", path, limit=1
+            )
+        self.assertEqual(report["examples"], 1)
+        self.assertEqual(report["missing_predictions"], 0)
+        self.assertEqual(report["overall_success"], 1.0)
+
     def test_majority_rank_and_pass_at_five_are_reported_separately(self):
         dataset = MODULE.load_jsonl(ROOT / "dataset" / "eval.jsonl")
         changed = next(
