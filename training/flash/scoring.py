@@ -61,15 +61,50 @@ def model_text(value: object) -> str:
     return serialize_value(value)
 
 
-def _input_payload(input_value: object) -> dict[str, Any]:
+def model_input_payload(input_value: object) -> dict[str, Any]:
+    """Validate the model-facing optional-field input contract."""
     payload = json.loads(input_value) if isinstance(input_value, str) else input_value
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"text"}
-        or not isinstance(payload.get("text"), str)
-    ):
-        raise ValueError("input must contain only string field text")
-    return payload
+    if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+        raise ValueError("input must contain string field text")
+    allowed_fields = {"text", "context_snippets", "lexical_hints"}
+    unknown_fields = set(payload).difference(allowed_fields)
+    if unknown_fields:
+        raise ValueError("input contains unsupported model fields")
+
+    if "context_snippets" in payload:
+        context_snippets = payload["context_snippets"]
+        if not isinstance(context_snippets, list) or len(context_snippets) != 1:
+            raise ValueError("context_snippets must contain exactly one snippet")
+        snippet = context_snippets[0]
+        if (
+            not isinstance(snippet, dict)
+            or set(snippet) != {"app_name", "window_title", "visible_text"}
+            or not all(
+                isinstance(snippet.get(key), str) and snippet[key]
+                for key in ("app_name", "window_title", "visible_text")
+            )
+        ):
+            raise ValueError("context snippet fields are invalid")
+
+    if "lexical_hints" in payload:
+        lexical_hints = payload["lexical_hints"]
+        if not isinstance(lexical_hints, list):
+            raise ValueError("lexical_hints must be a list")
+        for hint in lexical_hints:
+            if (
+                not isinstance(hint, dict)
+                or set(hint) != {"token", "candidates"}
+                or not isinstance(hint.get("token"), str)
+                or not hint["token"]
+                or not isinstance(hint.get("candidates"), list)
+                or not hint["candidates"]
+                or not all(
+                    isinstance(candidate, str) and candidate
+                    for candidate in hint["candidates"]
+                )
+            ):
+                raise ValueError("lexical hint fields are invalid")
+    return dict(payload)
 
 
 def _parse_suggestion_payload(value: object, *, label: str) -> Prediction:
@@ -147,7 +182,7 @@ def score_completion(
 ) -> ScoreResult:
     try:
         prediction = parse_prediction(response_text)
-        input_payload = _input_payload(input_text)
+        input_payload = model_input_payload(input_text)
         accepted = _accepted_suggestions(expected_output, metadata)
         target_changed = metadata.get("target_changed")
         if not isinstance(target_changed, bool):

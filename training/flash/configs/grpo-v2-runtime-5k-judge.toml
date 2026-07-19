@@ -1,0 +1,23 @@
+model = "Qwen/Qwen3.5-2B"
+algorithm = "grpo"
+seed = 42
+
+[environment]
+id = "ariobarin/quip-v2-runtime-10w-5k-grpo-judge-20260719"
+
+[environment.params]
+split = "train"
+judge_model = "Qwen/Qwen3.6-35B-A3B"
+
+[train]
+max_examples = 500
+max_steps = 25
+save_at_steps = [5, 10, 25]
+# Step 50 already has a complete 1,000-example SFT evaluation for comparison.
+init_from_adapter = "flash-1784446044-7bc2f567/step-50"
+group_size = 8
+batch_size = 8
+temperature = 1.0
+max_completion_tokens = 64
+max_context_tokens = 1024
+structured_outputs = { json = { type = "object", properties = { suggestion = { type = "string", minLength = 1 } }, required = ["suggestion"], additionalProperties = false }, disable_additional_properties = true }

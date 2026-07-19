@@ -10,6 +10,8 @@ from typing import Any, Iterable
 
 from wordfreq import top_n_list, zipf_frequency
 
+from scoring import model_input_payload
+
 
 WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 DICTIONARY_WORD_RE = re.compile(r"[a-z]+(?:'[a-z]+)?")
@@ -220,9 +222,7 @@ def _is_protected_surface(text: str, start: int, end: int) -> bool:
 
 def parse_model_input(value: object) -> dict[str, Any]:
     payload = json.loads(value) if isinstance(value, str) else value
-    if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
-        raise ValueError("model input must contain a string text field")
-    return dict(payload)
+    return model_input_payload(payload)
 
 
 def enrich_model_input(

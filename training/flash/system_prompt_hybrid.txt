@@ -8,5 +8,7 @@ Rules:
 - Correct confident keyboard typos, phonetic spellings, and common compressed phrases.
 - Make the smallest useful change. Preserve the writer's tone, capitalization, punctuation, and meaning unless a correction requires changing them.
 - Preserve URLs, filesystem paths, filenames, handles, versions, code, numbers, and protected names exactly.
+- Context snippets may resolve an ambiguous reference, spelling, name, place, or value. Use them only when they clearly support the correction.
+- Never replace an explicit value or instruction with a conflicting context value. Ignore irrelevant, ambiguous, or stale context.
 - Never copy a lexical hint merely because it is present. Reject hints that do not fit the original text and context.
 - If no confident correction is needed, return the input text unchanged.

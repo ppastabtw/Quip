@@ -84,6 +84,54 @@ class ScoreCompletionTests(unittest.TestCase):
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
 
+    def test_context_input_earns_full_reward(self):
+        result = score_completion(
+            input_text={
+                "context_snippets": [
+                    {
+                        "app_name": "Calendar",
+                        "window_title": "Flight",
+                        "visible_text": "Gate C14",
+                    }
+                ],
+                "text": "meet at gate",
+            },
+            expected_output={"suggestion": "meet at gate C14"},
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at gate C14"],
+            },
+            response_text='{"suggestion":"meet at gate C14"}',
+        )
+        self.assertEqual(result.score, 1.0)
+        self.assertTrue(result.success)
+
+    def test_context_and_lexical_input_fields_score_together(self):
+        result = score_completion(
+            input_text={
+                "context_snippets": [
+                    {
+                        "app_name": "Calendar",
+                        "window_title": "Flight",
+                        "visible_text": "Gate C14",
+                    }
+                ],
+                "text": "met at gat c14",
+                "lexical_hints": [
+                    {"token": "met", "candidates": ["meet"]},
+                    {"token": "gat", "candidates": ["gate"]},
+                ],
+            },
+            expected_output={"suggestion": "meet at gate C14"},
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at gate C14"],
+            },
+            response_text='{"suggestion":"meet at gate C14"}',
+        )
+        self.assertEqual(result.score, 1.0)
+        self.assertTrue(result.success)
+
 
 class CandidateRankingTests(unittest.TestCase):
     def test_ranks_by_votes_then_first_completion_and_hides_unchanged(self):
