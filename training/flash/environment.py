@@ -13,17 +13,7 @@ from scoring import score_completion
 
 ROOT = Path(__file__).parent
 
-SYSTEM_PROMPT = """You are an English text corrector.
-
-Given a JSON object containing text, predict one full-text suggestion.
-
-Return exactly one JSON object with no commentary:
-{"suggestion":"best full text"}
-
-Rules:
-- Return one conservative correction of a confident typo, phonetic spelling, or compressed phrase.
-- Make the smallest useful change. Do not add facts or change tone.
-"""
+SYSTEM_PROMPT = (ROOT / "system_prompt.txt").read_text(encoding="utf-8")
 
 
 class QuipEnvironment(EnvironmentSingleTurn):

@@ -21,21 +21,12 @@ use serde_json::{json, Value};
 use crate::InferenceBackend;
 
 const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:1234";
+const COMPLETION_ATTEMPTS: usize = 3;
 const DEFAULT_MODEL_ID: &str = "default";
 const DEFAULT_COMPLETION_COUNT: usize = 5;
 const DEFAULT_TEMPERATURE: f64 = 0.1;
 const DEFAULT_MAX_TOKENS: u64 = 64;
-const SYSTEM_PROMPT: &str = r#"You are an English text corrector.
-
-Given a JSON object containing text, predict one full-text suggestion.
-
-Return exactly one JSON object with no commentary:
-{"suggestion":"best full text"}
-
-Rules:
-- Return one conservative correction of a confident typo, phonetic spelling, or compressed phrase.
-- Make the smallest useful change. Do not add facts or change tone.
-"#;
+const SYSTEM_PROMPT: &str = include_str!("../../../../training/flash/system_prompt.txt");
 
 #[derive(Debug)]
 pub enum LiveBackendError {
@@ -43,7 +34,10 @@ pub enum LiveBackendError {
     InvalidConfig(String),
     Io(std::io::Error),
     InvalidHttpResponse(&'static str),
-    HttpStatus { status: u16, body: String },
+    HttpStatus {
+        status: u16,
+        body: String,
+    },
     InvalidJson(serde_json::Error),
     MissingModelContent,
     WorkerPanicked,
@@ -182,7 +176,7 @@ struct TimedHttpResponse {
 
 #[derive(Debug)]
 struct TimedModelOutput {
-    output: ModelOutput,
+    output: String,
     timing: CompletionTiming,
 }
 
@@ -202,7 +196,9 @@ impl CancelHandle {
     /// coordinator thread and must still be able to reach in and shut a
     /// worker's socket down even if something else already went wrong.
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<TcpStream>> {
-        self.stream.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn arm(&self, stream: &TcpStream) -> std::io::Result<()> {
@@ -462,6 +458,21 @@ impl LiveBackend {
         &self,
         request: &PredictionRequest,
     ) -> Result<TimedModelOutput, LiveBackendError> {
+        let mut last_error = None;
+        for _ in 0..COMPLETION_ATTEMPTS {
+            match self.complete_base_once(request) {
+                Ok(output) => return Ok(output),
+                Err(error @ LiveBackendError::MissingModelContent) => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(LiveBackendError::MissingModelContent))
+    }
+
+    fn complete_base_once(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<TimedModelOutput, LiveBackendError> {
         let total_started = Instant::now();
         let build_started = Instant::now();
         let user_content = model_input(request).to_string();
@@ -474,14 +485,7 @@ impl LiveBackend {
             "enable_thinking": false,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "stop": ["<|endoftext|>"],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "quip_prediction",
-                    "schema": prediction_schema()
-                }
-            }
+            "stop": ["<|endoftext|>"]
         });
         let body = serde_json::to_vec(&body)?;
         let request_build_us = elapsed_us(build_started);
@@ -500,11 +504,14 @@ impl LiveBackend {
             .content
             .as_deref()
             .ok_or(LiveBackendError::MissingModelContent)?;
-        let output: ModelOutput = serde_json::from_str(content)?;
+        let output = content.trim().to_owned();
+        if output.is_empty() {
+            return Err(LiveBackendError::MissingModelContent);
+        }
         let tokens = response_body.usage.map(|usage| {
             token_profile(
                 content,
-                &output.suggestion,
+                &output,
                 usage,
                 choice.finish_reason,
                 response.timing.time_to_first_byte_us,
@@ -535,7 +542,7 @@ impl LiveBackend {
     fn run_streaming_batch(
         &self,
         request: &PredictionRequest,
-    ) -> Result<(Vec<ModelOutput>, usize, Vec<CompletionTiming>), LiveBackendError> {
+    ) -> Result<(Vec<String>, usize, Vec<CompletionTiming>), LiveBackendError> {
         let handles: Vec<Arc<CancelHandle>> = (0..self.config.completion_count)
             .map(|_| Arc::new(CancelHandle::default()))
             .collect();
@@ -567,7 +574,7 @@ impl LiveBackend {
             let mut settled = 0;
             for (index, result) in rx {
                 if let Ok(timed) = &result {
-                    let suggestion = timed.output.suggestion.trim().to_owned();
+                    let suggestion = timed.output.trim().to_owned();
                     if !suggestion.is_empty() && suggestion != request.draft {
                         let count = votes.entry(suggestion).or_insert(0);
                         *count += 1;
@@ -625,21 +632,17 @@ impl LiveBackend {
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
             "stop": ["<|endoftext|>"],
-            "stream": true,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "quip_prediction",
-                    "schema": prediction_schema()
-                }
-            }
+            "stream": true
         });
         let body = serde_json::to_vec(&body)?;
         let request_build_us = elapsed_us(build_started);
         let (content, http_timing) =
             self.request_streaming("POST", "/v1/chat/completions", &body, cancel)?;
         let response_decode_started = Instant::now();
-        let output: ModelOutput = serde_json::from_str(content.trim())?;
+        let output = content.trim().to_owned();
+        if output.is_empty() {
+            return Err(LiveBackendError::MissingModelContent);
+        }
         let response_decode_us = elapsed_us(response_decode_started);
 
         Ok(TimedModelOutput {
@@ -651,8 +654,7 @@ impl LiveBackend {
                 output_decode_us: 0,
                 total_us: elapsed_us(total_started),
                 // Streaming doesn't request `usage`; token accounting stays
-                // a non-streaming-only measurement for now (see the
-                // person-2 task list — not required for the cadence gate).
+                // a non-streaming-only measurement for now.
                 tokens: None,
             },
         })
@@ -662,7 +664,7 @@ impl LiveBackend {
     /// response — either `Transfer-Encoding: chunked` or a bare
     /// `Connection: close` / `Content-Length` body, whichever the server
     /// uses — accumulating the streamed `delta.content` fragments into the
-    /// final JSON text. Registers the connection into `cancel` right after
+    /// final text. Registers the connection into `cancel` right after
     /// connecting so the coordinator can abort a blocked read from another
     /// thread.
     fn request_streaming(
@@ -773,7 +775,8 @@ impl LiveBackend {
 
             while let Some(offset) = decoded[line_scan_start..].iter().position(|&b| b == b'\n') {
                 let line_end = line_scan_start + offset;
-                let line = String::from_utf8_lossy(&decoded[line_scan_start..line_end]).into_owned();
+                let line =
+                    String::from_utf8_lossy(&decoded[line_scan_start..line_end]).into_owned();
                 let line = line.trim_end_matches('\r');
                 line_scan_start = line_end + 1;
                 let Some(data) = line.strip_prefix("data:") else {
@@ -918,20 +921,6 @@ fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
-fn prediction_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "suggestion": {
-                "type": "string",
-                "minLength": 1
-            }
-        },
-        "required": ["suggestion"],
-        "additionalProperties": false
-    })
-}
-
 /// Stable-first field order: `context_snippets` and `personal_patterns` stay
 /// constant for an entire composition session, while `text` (the sliding
 /// window's draft) changes on every burst. Serializing the stable fields
@@ -961,6 +950,8 @@ struct ChatCompletion {
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
+    #[serde(rename = "index")]
+    _index: usize,
     message: ChatMessage,
     finish_reason: Option<String>,
 }
@@ -985,12 +976,6 @@ struct ChatUsage {
     total_prompt_time_sec: Option<f64>,
     #[serde(default)]
     total_completion_time_sec: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelOutput {
-    suggestion: String,
 }
 
 fn token_profile(
@@ -1075,7 +1060,7 @@ fn token_profile(
 /// genuinely incomplete sample would corrupt the vote count.
 fn normalize_model_outputs(
     request: &PredictionRequest,
-    outputs: Vec<ModelOutput>,
+    outputs: Vec<String>,
     expected_output_count: usize,
     cancelled: usize,
     latency_ms: u64,
@@ -1091,7 +1076,7 @@ fn normalize_model_outputs(
 
     let suggestions = outputs
         .into_iter()
-        .map(|output| output.suggestion.trim().to_owned())
+        .map(|output| output.trim().to_owned())
         .collect::<Vec<_>>();
 
     if suggestions.iter().any(String::is_empty) {
@@ -1105,7 +1090,10 @@ fn normalize_model_outputs(
 
     let mut votes = HashMap::<String, (usize, usize)>::new();
     for (index, suggestion) in suggestions.into_iter().enumerate() {
-        if suggestion == request.draft {
+        if suggestion == request.draft
+            || is_model_scaffolding(&suggestion)
+            || is_implausibly_truncated(&request.draft, &suggestion)
+        {
             continue;
         }
         let (vote_count, _) = votes.entry(suggestion).or_insert((0, index));
@@ -1138,6 +1126,38 @@ fn normalize_model_outputs(
         Ok(()) => result,
         Err(reason) => prediction_error(request, "invalid_model_output", &reason, false),
     }
+}
+
+/// Suppress literal schema/example text if a small model echoes prompt
+/// scaffolding instead of producing a correction. Returning no candidate is
+/// safer than offering text that was never derived from the user's draft.
+fn is_model_scaffolding(suggestion: &str) -> bool {
+    let normalized = suggestion.trim().to_ascii_lowercase();
+    let repeats_prompt_policy = SYSTEM_PROMPT.lines().any(|line| {
+        let line = line.trim().strip_prefix("- ").unwrap_or(line.trim());
+        line.len() >= 12 && normalized.starts_with(&line.to_ascii_lowercase())
+    });
+    repeats_prompt_policy
+        || normalized.starts_with("best full text")
+        || normalized == "text"
+        || normalized == "suggestion"
+        || normalized.starts_with("suggestion:")
+        || normalized.starts_with("suggestion suggestion:")
+        || normalized.starts_with("uggestionuggestion:")
+        || normalized.starts_with("text_")
+        || normalized.starts_with("i'm quip")
+        || normalized.starts_with("i am quip")
+        || normalized.starts_with("you are quip")
+        || matches!(normalized.chars().next(), Some('{' | '}' | '[' | ']'))
+}
+
+/// A full-text correction may expand shorthand, but conservatively reject a
+/// candidate that drops one or more words from a multi-word draft. This catches
+/// generic fragments without blocking same-length corrections or expansions.
+fn is_implausibly_truncated(draft: &str, suggestion: &str) -> bool {
+    let draft_words = draft.split_whitespace().count();
+    let suggestion_words = suggestion.split_whitespace().count();
+    draft_words >= 3 && suggestion_words < draft_words
 }
 
 fn prediction_error(
@@ -1262,8 +1282,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        normalize_model_outputs, prediction_schema, token_profile, CancelHandle, ChatUsage,
-        LiveBackend, LiveConfig, ModelOutput,
+        is_implausibly_truncated, is_model_scaffolding, normalize_model_outputs, token_profile,
+        CancelHandle, ChatUsage, LiveBackend, LiveConfig, SYSTEM_PROMPT,
     };
 
     fn request() -> PredictionRequest {
@@ -1299,22 +1319,54 @@ mod tests {
     }
 
     #[test]
-    fn model_schema_matches_the_freesolo_training_contract() {
-        assert_eq!(
-            prediction_schema(),
-            json!({
-                "type": "object",
-                "properties": {"suggestion": {"type": "string", "minLength": 1}},
-                "required": ["suggestion"],
-                "additionalProperties": false,
-            })
-        );
+    fn prompt_contains_policy_without_answer_shaped_text() {
+        assert!(SYSTEM_PROMPT.contains("actual complete text"));
+        assert!(SYSTEM_PROMPT.contains("If no confident correction is needed"));
+        assert!(!SYSTEM_PROMPT.contains("Suggestion text:"));
+        assert!(!SYSTEM_PROMPT
+            .to_ascii_lowercase()
+            .contains("best full text"));
     }
 
     #[test]
-    fn token_profile_exposes_deterministic_schema_tax_without_output_text() {
+    fn recognizes_model_scaffolding_without_rejecting_normal_text() {
+        for leaked in [
+            "best full text",
+            "best full text \"full text\"",
+            "text",
+            "text_1,",
+            "suggestion",
+            "} tomorrow",
+            "Correct confident keyboard typos, phonetic spellings, and common compressed phrases.",
+            "I'm Quip, a conservative English text corrector. I can help with that.",
+            "uggestionuggestion:see you tomorrow",
+        ] {
+            assert!(is_model_scaffolding(leaked), "{leaked}");
+        }
+        assert!(!is_model_scaffolding("this is a sentence"));
+    }
+
+    #[test]
+    fn rejects_truncated_fragments_but_keeps_corrections_and_expansions() {
+        assert!(is_implausibly_truncated(
+            "went to the store instaed",
+            "the text"
+        ));
+        assert!(!is_implausibly_truncated(
+            "went to the store instaed",
+            "went to the store instead"
+        ));
+        assert!(!is_implausibly_truncated(
+            "cnt cm tmrw",
+            "can't come tomorrow"
+        ));
+        assert!(is_implausibly_truncated("this sa sntece", "This sentence"));
+    }
+
+    #[test]
+    fn token_profile_reports_zero_schema_tax_for_plain_text() {
         let profile = token_profile(
-            r#"{"suggestion":"can't meet tomorrow"}"#,
+            "can't meet tomorrow",
             "can't meet tomorrow",
             ChatUsage {
                 prompt_tokens: 80,
@@ -1333,8 +1385,8 @@ mod tests {
 
         assert_eq!(profile.prompt_tokens, 80);
         assert_eq!(profile.completion_tokens, 10);
-        assert!(profile.deterministic_schema_chars > 0);
-        assert!(profile.estimated_schema_tokens > 0.0);
+        assert_eq!(profile.deterministic_schema_chars, 0);
+        assert_eq!(profile.estimated_schema_tokens, 0.0);
         assert_eq!(profile.server_ms_per_output_token, 50.0);
         assert_eq!(profile.completion_ms_per_token, Some(25.0));
         assert_eq!(profile.prompt_prefill_ms, Some(250.0));
@@ -1346,21 +1398,11 @@ mod tests {
         let result = normalize_model_outputs(
             &request(),
             vec![
-                ModelOutput {
-                    suggestion: "candidate b".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate a".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate b".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate c".to_owned(),
-                },
-                ModelOutput {
-                    suggestion: "candidate a".to_owned(),
-                },
+                "candidate b result".to_owned(),
+                "candidate a result".to_owned(),
+                "candidate b result".to_owned(),
+                "candidate c result".to_owned(),
+                "candidate a result".to_owned(),
             ],
             5,
             0,
@@ -1374,9 +1416,9 @@ mod tests {
                 votes,
                 ..
             } if candidates == vec![
-                "candidate b",
-                "candidate a",
-                "candidate c",
+                "candidate b result",
+                "candidate a result",
+                "candidate c result",
             ] && votes == Some(vec![2, 2, 1])
         ));
     }
@@ -1385,11 +1427,32 @@ mod tests {
     fn exact_draft_suggestion_becomes_zero_candidates() {
         let result = normalize_model_outputs(
             &request(),
-            (0..5)
-                .map(|_| ModelOutput {
-                    suggestion: "cnt cm tmr".to_owned(),
-                })
-                .collect(),
+            (0..5).map(|_| "cnt cm tmr".to_owned()).collect(),
+            5,
+            0,
+            12,
+        );
+
+        assert!(matches!(
+            result,
+            quip_contracts::PredictionResult::Ok {
+                candidates,
+                ..
+            } if candidates.is_empty()
+        ));
+    }
+
+    #[test]
+    fn prompt_placeholder_leakage_is_never_a_candidate() {
+        let result = normalize_model_outputs(
+            &request(),
+            vec![
+                "best full text".to_owned(),
+                "best full text \"full text\"".to_owned(),
+                "Best Full Text".to_owned(),
+                "text_1,".to_owned(),
+                "} tomorrow".to_owned(),
+            ],
             5,
             0,
             12,
@@ -1409,9 +1472,7 @@ mod tests {
         let result = normalize_model_outputs(
             &request(),
             (0..4)
-                .map(|index| ModelOutput {
-                    suggestion: format!("candidate {index}"),
-                })
+                .map(|index| format!("candidate result {index}"))
                 .collect(),
             5,
             0,
@@ -1434,9 +1495,7 @@ mod tests {
         let result = normalize_model_outputs(
             &request(),
             (0..4)
-                .map(|index| ModelOutput {
-                    suggestion: format!("candidate {index}"),
-                })
+                .map(|index| format!("candidate result {index}"))
                 .collect(),
             5,
             1,
@@ -1460,10 +1519,9 @@ mod tests {
     // trusting this in production.
 
     fn sse_body_for(suggestion: &str) -> Vec<u8> {
-        let inner = serde_json::to_string(&json!({"suggestion": suggestion})).unwrap();
         let chunk1 = format!(
             "data: {}\n\n",
-            json!({"choices": [{"delta": {"content": inner}}]})
+            json!({"choices": [{"delta": {"content": suggestion}}]})
         );
         let chunk2 = format!(
             "data: {}\n\n",
@@ -1532,7 +1590,7 @@ mod tests {
         let timed = backend
             .complete_base_streaming(&request(), &cancel)
             .expect("streaming completion should decode");
-        assert_eq!(timed.output.suggestion, "Can't come tomorrow.");
+        assert_eq!(timed.output, "Can't come tomorrow.");
         server.join().unwrap();
     }
 
@@ -1544,8 +1602,7 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             drain_one_request(&mut stream);
             let body = to_chunked_encoding(&sse_body_for("Can't come tomorrow."));
-            let mut response =
-                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            let mut response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
             response.extend_from_slice(&body);
             stream.write_all(&response).unwrap();
         });
@@ -1555,7 +1612,7 @@ mod tests {
         let timed = backend
             .complete_base_streaming(&request(), &cancel)
             .expect("chunked streaming completion should decode");
-        assert_eq!(timed.output.suggestion, "Can't come tomorrow.");
+        assert_eq!(timed.output, "Can't come tomorrow.");
         server.join().unwrap();
     }
 
@@ -1575,7 +1632,8 @@ mod tests {
         let backend = LiveBackend::new(&addr.to_string()).unwrap();
         let cancel = Arc::new(CancelHandle::default());
         let worker_cancel = Arc::clone(&cancel);
-        let worker = thread::spawn(move || backend.complete_base_streaming(&request(), &worker_cancel));
+        let worker =
+            thread::spawn(move || backend.complete_base_streaming(&request(), &worker_cancel));
 
         // Give the worker time to connect and register its stream before
         // cancelling, without depending on exact timing for correctness —
@@ -1605,8 +1663,7 @@ mod tests {
                 if served_fast < early_exit_agreement {
                     served_fast += 1;
                     let body = sse_body_for("Can't come tomorrow.");
-                    let mut response =
-                        b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+                    let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
                     response.extend_from_slice(&body);
                     let _ = stream.write_all(&response);
                 } else {
@@ -1634,7 +1691,7 @@ mod tests {
         assert_eq!(timings.len(), early_exit_agreement);
         assert!(outputs
             .iter()
-            .all(|output| output.suggestion == "Can't come tomorrow."));
+            .all(|output| output == "Can't come tomorrow."));
 
         server.join().unwrap();
     }

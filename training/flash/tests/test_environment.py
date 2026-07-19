@@ -1,8 +1,8 @@
 import unittest
 
 from dataset_compiler.contract import CONTRACT
-from environment import QuipEnvironment, load_environment
-from scoring import model_text
+from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment
+from scoring import parse_gold_output
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -22,10 +22,17 @@ class EnvironmentTests(unittest.TestCase):
         self.assertIn("one full-text suggestion", messages[0]["content"])
         self.assertEqual(messages[1]["content"], example.input)
 
+    def test_prompt_has_policy_without_answer_shaped_text(self):
+        self.assertIn("actual complete text", SYSTEM_PROMPT)
+        self.assertIn("If no confident correction is needed", SYSTEM_PROMPT)
+        self.assertNotIn("Suggestion text:", SYSTEM_PROMPT)
+        self.assertNotIn("best full text", SYSTEM_PROMPT.lower())
+
     def test_gold_output_passes_environment_reward(self):
         environment = QuipEnvironment(split="eval")
         example = environment.dataset[0]
-        reward = environment.score_response(example, model_text(example.output))
+        gold_suggestion = parse_gold_output(example.output).suggestion
+        reward = environment.score_response(example, gold_suggestion)
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)
 

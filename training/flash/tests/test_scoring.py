@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from scoring import parse_prediction, score_completion
+from scoring import parse_gold_output, parse_prediction, score_completion
 
 
 def input_json(text: str) -> str:
@@ -9,21 +9,31 @@ def input_json(text: str) -> str:
 
 
 class ParsePredictionTests(unittest.TestCase):
-    def test_accepts_single_suggestion(self):
-        prediction = parse_prediction('{"suggestion":"call me"}')
+    def test_accepts_plain_text_suggestion(self):
+        prediction = parse_prediction("call me")
         self.assertEqual(prediction.suggestion, "call me")
 
-    def test_rejects_commentary(self):
-        with self.assertRaises(json.JSONDecodeError):
-            parse_prediction('Suggestion: {"suggestion":"call me"}')
-
-    def test_rejects_empty_suggestion(self):
+    def test_rejects_json_wrapped_suggestion(self):
         with self.assertRaises(ValueError):
-            parse_prediction('{"suggestion":""}')
+            parse_prediction('{"suggestion":"call me"}')
+
+    def test_rejects_scaffolding_label(self):
+        with self.assertRaises(ValueError):
+            parse_prediction("Suggestion: call me")
+
+    def test_rejects_empty_reply(self):
+        with self.assertRaises(ValueError):
+            parse_prediction("   ")
+
+
+class ParseGoldOutputTests(unittest.TestCase):
+    def test_accepts_json_gold_output(self):
+        prediction = parse_gold_output('{"suggestion":"call me"}')
+        self.assertEqual(prediction.suggestion, "call me")
 
     def test_rejects_extra_property(self):
         with self.assertRaises(ValueError):
-            parse_prediction('{"suggestion":"call me","why":"safe"}')
+            parse_gold_output('{"suggestion":"call me","why":"safe"}')
 
 
 class ScoreCompletionTests(unittest.TestCase):
@@ -35,7 +45,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": False,
                 "accepted_suggestions": ["usr/bin"],
             },
-            response_text='{ "suggestion": "usr/bin" }',
+            response_text="usr/bin",
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
@@ -48,7 +58,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": False,
                 "accepted_suggestions": ["q3_finl_v2.pdf"],
             },
-            response_text='{ "suggestion": "q3_final_v2.pdf" }',
+            response_text="q3_final_v2.pdf",
         )
         self.assertEqual(result.score, 0.15)
         self.assertFalse(result.success)
@@ -61,7 +71,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": True,
                 "accepted_suggestions": ["Can't come tomorrow."],
             },
-            response_text='{ "suggestion": "Can\'t come tomorrow." }',
+            response_text="Can't come tomorrow.",
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
