@@ -26,10 +26,11 @@ const failureEl = byId<HTMLInputElement>("simulate_failure");
 const casesEl = byId<HTMLDivElement>("cases");
 const comparisonEl = byId<HTMLDivElement>("comparison");
 const lastStateEl = byId<HTMLSpanElement>("last_state");
-const lastCommitEl = byId<HTMLParagraphElement>("last_commit");
+const lastCommitEl = byId<HTMLElement>("last_commit");
 const playgroundEl = byId<HTMLTextAreaElement>("playground");
 const debugTimelineEl = byId<HTMLDivElement>("debug_timeline");
 const inlineCandidatesEl = byId<HTMLDivElement>("inline_candidates");
+const inferenceStatusEl = byId<HTMLDivElement>("inference_status");
 
 // ---- playground: burst tracking, triggers, caret geometry ----
 
@@ -302,17 +303,17 @@ function snapshotSummary(snapshot: Snapshot): string {
 }
 
 function renderInlineCandidates(snapshot: Snapshot) {
+  if (inlineCandidatesEl.hidden) return;
   inlineCandidatesEl.replaceChildren();
   if (snapshot.phase === "unavailable") {
     inlineCandidatesEl.classList.remove("placeholder");
-    inlineCandidatesEl.append(
-      el("div", "inline-candidate error-text", `unavailable: ${snapshot.reason}`),
-    );
+    inlineCandidatesEl.append(el("div", "inline-candidate error-text", snapshot.reason));
     return;
   }
   if (snapshot.phase !== "suggesting") {
     inlineCandidatesEl.classList.add("placeholder");
-    inlineCandidatesEl.textContent = "No candidates";
+    inlineCandidatesEl.textContent =
+      snapshot.phase === "predicting" ? "Quip is thinking..." : "Suggestions appear here as Quip thinks.";
     return;
   }
   inlineCandidatesEl.classList.remove("placeholder");
@@ -322,12 +323,49 @@ function renderInlineCandidates(snapshot: Snapshot) {
   }
   if (snapshot.candidates.length === 0) {
     inlineCandidatesEl.classList.add("placeholder");
-    inlineCandidatesEl.textContent = "No candidates";
+    inlineCandidatesEl.textContent = "No suggestions for this draft.";
     return;
   }
   snapshot.candidates.forEach((candidate, index) => {
-    inlineCandidatesEl.append(el("div", "inline-candidate", `${index + 1}. ${candidate}`));
+    const option = el("button", "inline-candidate");
+    if (index === snapshot.selected) option.classList.add("selected");
+    option.type = "button";
+    option.append(el("strong", undefined, String(index + 1)), el("span", undefined, candidate));
+    option.addEventListener("click", () => void selectCandidate(index));
+    inlineCandidatesEl.append(option);
   });
+}
+
+function renderInferenceStatus(snapshot: Snapshot) {
+  inferenceStatusEl.className = "activity-pill";
+  switch (snapshot.phase) {
+    case "predicting":
+      inferenceStatusEl.classList.add("thinking");
+      inferenceStatusEl.innerHTML = '<span class="activity-dot"></span>Quip thinking';
+      lastStateEl.textContent = "thinking";
+      return;
+    case "suggesting":
+      inferenceStatusEl.classList.add("suggesting");
+      inferenceStatusEl.innerHTML =
+        `<span class="activity-dot"></span>${snapshot.candidates.length} suggestions ready`;
+      lastStateEl.textContent =
+        snapshot.backend && snapshot.latency_ms !== null
+          ? `${snapshot.backend} · ${snapshot.latency_ms} ms`
+          : "suggestions ready";
+      return;
+    case "applied":
+      inferenceStatusEl.innerHTML = '<span class="activity-dot"></span>Applied';
+      lastStateEl.textContent = "applied";
+      return;
+    case "unavailable":
+      inferenceStatusEl.classList.add("thinking");
+      inferenceStatusEl.innerHTML = '<span class="activity-dot"></span>Needs focus';
+      lastStateEl.textContent = snapshot.reason;
+      return;
+    case "idle":
+      inferenceStatusEl.innerHTML = '<span class="activity-dot"></span>Quip active';
+      lastStateEl.textContent = "";
+  }
 }
 
 function resetPlayground(reason: string, caret: number) {
@@ -823,9 +861,43 @@ function renderComparison(report: ComparisonReport) {
   comparisonEl.append(grid);
 }
 
+function loadComposerPrompt(text: string, label: string) {
+  window.clearTimeout(idleTimer);
+  playgroundEl.value = "";
+  playgroundEl.setSelectionRange(0, 0);
+  resetPlayground("demo_prompt_loaded", 0);
+  playgroundEl.value = text;
+  playgroundEl.setSelectionRange(text.length, text.length);
+  renderChunkIndicator();
+  lastCommitEl.textContent = "";
+  lastStateEl.textContent = `${label}: ready`;
+  recordTimelineEvent("demo_prompt_loaded", label, {
+    source: "demo_composer",
+    draft_chars: text.length,
+  });
+  playgroundEl.focus();
+  requestPrediction("idle");
+}
+
 failureEl.addEventListener("change", async () => {
   await api.setSimulateFailure(failureEl.checked);
   await refresh();
+});
+
+byId<HTMLButtonElement>("preset_primary").addEventListener("click", () => {
+  loadComposerPrompt("cnt cm tmrw", "compressed reply");
+});
+
+byId<HTMLButtonElement>("preset_typo").addEventListener("click", () => {
+  loadComposerPrompt("i went to the store instaed", "typo cleanup");
+});
+
+byId<HTMLButtonElement>("preset_short").addEventListener("click", () => {
+  loadComposerPrompt("omw", "quick shorthand");
+});
+
+byId<HTMLButtonElement>("run_safe_demo").addEventListener("click", () => {
+  loadComposerPrompt("cnt cm tmrw", "Quip demo");
 });
 
 byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {
@@ -864,13 +936,7 @@ void events.onMarks((marks) => {
   renderStrategyStats();
 });
 void events.onSnapshot((snapshot) => {
-  lastStateEl.textContent =
-    snapshot.phase === "unavailable"
-      ? `composition: unavailable (${snapshot.reason})`
-      : `composition: ${snapshot.phase}`;
-  if (snapshot.phase === "suggesting" && snapshot.backend) {
-    lastStateEl.textContent += ` (${snapshot.backend} · ${snapshot.latency_ms} ms)`;
-  }
+  renderInferenceStatus(snapshot);
   appendTimelineEvent("snapshot", snapshotSummary(snapshot), { phase: snapshot.phase });
   renderInlineCandidates(snapshot);
   if (snapshot.phase === "predicting") return; // bar keeps current candidates
