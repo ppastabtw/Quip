@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from freesolo.datasets import TaskExample
@@ -24,9 +25,21 @@ class QuipEnvironment(EnvironmentSingleTurn):
         self.dataset = load_task_examples(path)
 
     def build_prompt_messages(self, example: TaskExample, prompt_text: str):
+        user_input = (
+            json.loads(example.input)
+            if isinstance(example.input, str)
+            else example.input
+        )
         return [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": example.input},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    user_input,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
         ]
 
     def score_response(self, example: TaskExample, response_text: str) -> RewardResult:

@@ -17,6 +17,8 @@ from .contract import (
     REPORT_PATH,
     BuildError,
     Candidate,
+    DatasetContract,
+    V2_RUNTIME_10W_5K_CONTRACT,
     ambiguity_rejection_reason,
     compact_json,
     draft_rejection_reason,
@@ -46,6 +48,7 @@ class DatasetPolicy:
     generation_method: str = "qwerty_augmentation"
     letter_neighbors_only: bool = False
     source_sampling: str = "random_contiguous"
+    contract: DatasetContract = CONTRACT
 
 
 V1_POLICY = DatasetPolicy(
@@ -81,7 +84,16 @@ V2_DRAFT_POLICY = DatasetPolicy(
     source_sampling="runtime_chunks",
 )
 
-POLICIES = {policy.name: policy for policy in (V1_POLICY, V2_DRAFT_POLICY)}
+V2_RUNTIME_10W_5K_POLICY = replace(
+    V2_DRAFT_POLICY,
+    name="massive_runtime_10w_augmentation_v2_5k",
+    contract=V2_RUNTIME_10W_5K_CONTRACT,
+)
+
+POLICIES = {
+    policy.name: policy
+    for policy in (V1_POLICY, V2_DRAFT_POLICY, V2_RUNTIME_10W_5K_POLICY)
+}
 
 
 def event_count_weights(
@@ -157,12 +169,13 @@ def select_split(
     policy: DatasetPolicy = V1_POLICY,
     excluded_surfaces: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
-    expected = CONTRACT.expected_counts(split)
+    contract = policy.contract
+    expected = contract.expected_counts(split)
     surfaces: set[str] = set()
     used_families: set[str] = set()
     selected: list[dict[str, Any]] = []
 
-    for size in CONTRACT.window_sizes:
+    for size in contract.window_sizes:
         candidates = list(pools[size])
         rng.shuffle(candidates)
         required = expected["window_sizes"][size]
@@ -313,7 +326,12 @@ def write_jsonl(path: Path, rows: Sequence[dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
-def split_summary(rows: Sequence[dict[str, Any]], path: Path) -> dict[str, Any]:
+def split_summary(
+    rows: Sequence[dict[str, Any]],
+    path: Path,
+    *,
+    contract: DatasetContract = CONTRACT,
+) -> dict[str, Any]:
     changes = Counter(row["metadata"]["target_changed"] for row in rows)
     sizes = Counter(row["metadata"]["window_size"] for row in rows)
     unchanged_sizes = Counter(
@@ -330,9 +348,9 @@ def split_summary(rows: Sequence[dict[str, Any]], path: Path) -> dict[str, Any]:
         "rows": len(rows),
         "sha256": sha256_file(path),
         "changes": {"unchanged": changes[False], "changed": changes[True]},
-        "window_sizes": {str(size): sizes[size] for size in CONTRACT.window_sizes},
+        "window_sizes": {str(size): sizes[size] for size in contract.window_sizes},
         "unchanged_by_size": {
-            str(size): unchanged_sizes[size] for size in CONTRACT.window_sizes
+            str(size): unchanged_sizes[size] for size in contract.window_sizes
         },
         "augmentation_event_counts": {
             str(event_count): count
@@ -348,6 +366,7 @@ def compile_datasets(
     policy: DatasetPolicy = V1_POLICY,
     output_dir: Path = DATASET_DIR,
 ) -> dict[str, Any]:
+    contract = policy.contract
     manifest = load_manifest()
     source_paths = prepare_sources(manifest, offline=offline)
     records = parse_massive(source_paths["massive_en_us"])
@@ -356,12 +375,12 @@ def compile_datasets(
     def source_buffer_rows(split: str) -> dict[int, int] | None:
         if policy.source_buffer_share is None:
             return None
-        per_size = next(iter(CONTRACT.expected_counts(split)["window_sizes"].values()))
+        per_size = contract.expected_counts(split)["window_sizes"]
         return {
             size: max(
                 10,
                 int(
-                    per_size
+                    per_size[size]
                     * (
                         policy.one_word_source_buffer_share
                         if size == 1 and policy.one_word_source_buffer_share is not None
@@ -369,32 +388,35 @@ def compile_datasets(
                     )
                 ),
             )
-            for size in CONTRACT.window_sizes
+            for size in contract.window_sizes
         }
 
     test_pools = sample_massive_windows(
         records,
         partition="test",
-        required_by_size=CONTRACT.expected_counts("test")["window_sizes"],
+        required_by_size=contract.expected_counts("test")["window_sizes"],
         rng=rng,
         buffer_rows=source_buffer_rows("test"),
         sampling=policy.source_sampling,
+        window_sizes=contract.window_sizes,
     )
     eval_pools = sample_massive_windows(
         records,
         partition="dev",
-        required_by_size=CONTRACT.expected_counts("eval")["window_sizes"],
+        required_by_size=contract.expected_counts("eval")["window_sizes"],
         rng=rng,
         buffer_rows=source_buffer_rows("eval"),
         sampling=policy.source_sampling,
+        window_sizes=contract.window_sizes,
     )
     train_pools = sample_massive_windows(
         records,
         partition="train",
-        required_by_size=CONTRACT.expected_counts("train")["window_sizes"],
+        required_by_size=contract.expected_counts("train")["window_sizes"],
         rng=rng,
         buffer_rows=source_buffer_rows("train"),
         sampling=policy.source_sampling,
+        window_sizes=contract.window_sizes,
     )
     excluded_surfaces: set[str] = set()
     test_rows, test_surfaces = select_split(
@@ -442,10 +464,14 @@ def compile_datasets(
             "license": "CC BY 4.0",
         },
         "contract": {
-            "window_sizes": list(CONTRACT.window_sizes),
-            "window_share": 1 / len(CONTRACT.window_sizes),
-            "unchanged_share": CONTRACT.unchanged_share,
-            "augmented_share": 1 - CONTRACT.unchanged_share,
+            "window_sizes": list(contract.window_sizes),
+            "window_share": {
+                str(size): contract.expected_counts("train")["window_sizes"][size]
+                / contract.train_size
+                for size in contract.window_sizes
+            },
+            "unchanged_share": contract.unchanged_share,
+            "augmented_share": 1 - contract.unchanged_share,
             "augmentation": "deterministic_typing_errors",
             "augmentation_event_weights": {
                 str(event_count): weight
@@ -488,9 +514,9 @@ def compile_datasets(
         },
         "source_manifest_sha256": sha256_file(MANIFEST_PATH),
         "splits": {
-            "train": split_summary(train_rows, train_path),
-            "eval": split_summary(eval_rows, eval_path),
-            "test": split_summary(test_rows, test_path),
+            "train": split_summary(train_rows, train_path, contract=contract),
+            "eval": split_summary(eval_rows, eval_path, contract=contract),
+            "test": split_summary(test_rows, test_path, contract=contract),
         },
     }
     report_path.write_text(
@@ -501,12 +527,12 @@ def compile_datasets(
     expected_event_counts = {
         name: {
             size: event_count_quotas(
-                CONTRACT.expected_counts(name)["window_sizes"][size]
-                - CONTRACT.expected_counts(name)["unchanged_by_size"][size],
+                contract.expected_counts(name)["window_sizes"][size]
+                - contract.expected_counts(name)["unchanged_by_size"][size],
                 policy,
                 window_size=size,
             )
-            for size in CONTRACT.window_sizes
+            for size in contract.window_sizes
         }
         for name in ("train", "eval", "test")
     }
@@ -515,6 +541,7 @@ def compile_datasets(
         eval_path=eval_path,
         test_path=test_path,
         report_path=report_path,
+        contract=contract,
         expected_policy=policy.name,
         expected_event_counts=expected_event_counts,
         require_normalized_surface_isolation=policy.isolate_normalized_surfaces,

@@ -23,9 +23,8 @@ pub struct AppSettings {
     pub active_profile: String,
     pub backend_mode: BackendMode,
     pub model_variant: ModelVariant,
-    /// The burst window in words. Stays 5 (what the current model was
-    /// trained on) until a retrained model justifies raising it; the
-    /// playground derives its chunk boundary and char backstop from this.
+    /// The burst window in words. The playground derives its chunk boundary
+    /// and character backstop from this value.
     pub window_words: usize,
 }
 
@@ -38,7 +37,7 @@ impl Default for AppSettings {
             active_profile: "profile_a".to_string(),
             backend_mode: BackendMode::Fixture,
             model_variant: ModelVariant::GlobalPlusPersonal,
-            window_words: 5,
+            window_words: 10,
         }
     }
 }
@@ -50,6 +49,9 @@ impl AppSettings {
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
+        if settings.window_words == 5 {
+            settings.window_words = 10;
+        }
         settings.apply_environment_overrides();
         settings
     }

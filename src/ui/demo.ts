@@ -40,10 +40,9 @@ const inferenceStatusEl = byId<HTMLDivElement>("inference_status");
 // a time, each costing a full inference) and how the bar feels. A cadence
 // strategy decides which keystrokes are worth a serial slot.
 //
-// The window size in words comes from settings (`window_words`, 5 until a
-// retrained model raises it); the char backstop scales with it. The model
-// never sees more than one window of words.
-const windowWords = () => settings?.window_words ?? 5;
+// The window size in words comes from settings and the character backstop
+// scales with it. The model never sees more than one window of words.
+const windowWords = () => settings?.window_words ?? 10;
 const windowChars = () => windowWords() * 16;
 
 // Long enough that ordinary typing rhythm never trips it: only a deliberate
@@ -81,14 +80,14 @@ interface CadenceStrategy {
 
 const STRATEGIES: Record<string, CadenceStrategy> = {
   chunk_pause: {
-    label: "Pause, punctuation, or 5 words (current)",
-    hint: "The five-word chunk and punctuation fire immediately; a 600 ms pause catches unfinished bursts. Typing never waits on inference.",
+    label: "Pause, punctuation, or 10 words (current)",
+    hint: "The ten-word chunk and punctuation fire immediately; a 600 ms pause catches unfinished bursts. Typing never waits on inference.",
     pipelined: true,
     onKey: (key) => (key.sentencePunct ? "now" : PAUSE_MS),
   },
   sliding_word: {
     label: "Sliding window: marks, not bars",
-    hint: "Every completed word fires the trailing five-word window; corrections that stay stable across passes harden into dotted underlines. ⌘⏎ applies them, Esc reverts, and a sentence end offers the whole corrected sentence in one bar.",
+    hint: "Every completed word fires the trailing ten-word window; corrections that stay stable across passes harden into dotted underlines. ⌘⏎ applies them, Esc reverts, and a sentence end offers the whole corrected sentence in one bar.",
     pipelined: true,
     barless: true,
     onKey: (key) => (key.sentencePunct || key.wordBoundary ? "now" : 500),
@@ -114,7 +113,7 @@ const STRATEGIES: Record<string, CadenceStrategy> = {
   },
   sentence_only: {
     label: "Boundaries only",
-    hint: "Fetch only at . ! ? — plus the universal five-word chunk and 80-character backstop.",
+    hint: "Fetch only at . ! ? plus the universal ten-word chunk and 160-character backstop.",
     pipelined: false,
     onKey: (key) => (key.sentencePunct ? "now" : "never"),
   },
@@ -145,7 +144,7 @@ let typedThroughWords = 0;
  * the burst resolves (applied, dismissed, skipped, or invalidated). */
 const firedRanges = new Map<string, ChunkRange>();
 /** Chunks completed while inference was busy; fired oldest-first as the
- * serial slot frees up (15 words typed = three 5-word batches, one at a
+ * serial slot frees up (30 words typed = three 10-word batches, one at a
  * time, while typing continues). */
 const pendingChunks: ChunkRange[] = [];
 /** Mirror of the engine's shown offer (the oldest unresolved batch):

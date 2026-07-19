@@ -32,6 +32,9 @@ class DatasetContract:
     unchanged_share: float = 0.10
     augmentation_events: int = 1
     minimum_zipf_frequency: float = 3.0
+    train_window_counts: tuple[int, ...] | None = None
+    eval_window_counts: tuple[int, ...] | None = None
+    test_window_counts: tuple[int, ...] | None = None
 
     def expected_counts(self, split: str) -> dict[str, Any]:
         rows = {
@@ -41,24 +44,47 @@ class DatasetContract:
         }.get(split)
         if rows is None:
             raise ValueError(f"unknown dataset split: {split}")
-        if rows % len(self.window_sizes):
-            raise ValueError(f"{split} size must divide evenly across window sizes")
-        per_size = rows // len(self.window_sizes)
-        unchanged_per_size = int(per_size * self.unchanged_share)
-        if unchanged_per_size / per_size != self.unchanged_share:
+        configured_counts = {
+            "train": self.train_window_counts,
+            "eval": self.eval_window_counts,
+            "test": self.test_window_counts,
+        }[split]
+        if configured_counts is None:
+            if rows % len(self.window_sizes):
+                raise ValueError(f"{split} size must divide evenly across window sizes")
+            configured_counts = (rows // len(self.window_sizes),) * len(self.window_sizes)
+        if len(configured_counts) != len(self.window_sizes) or sum(configured_counts) != rows:
+            raise ValueError(f"{split} window counts must match the split size")
+        window_counts = dict(zip(self.window_sizes, configured_counts, strict=True))
+        unchanged_by_size = {
+            size: int(count * self.unchanged_share)
+            for size, count in window_counts.items()
+        }
+        if any(
+            unchanged_by_size[size] / count != self.unchanged_share
+            for size, count in window_counts.items()
+        ):
             raise ValueError(f"{split} unchanged share must produce exact integer quotas")
         return {
             "rows": rows,
-            "unchanged": unchanged_per_size * len(self.window_sizes),
-            "changed": (per_size - unchanged_per_size) * len(self.window_sizes),
-            "window_sizes": {size: per_size for size in self.window_sizes},
-            "unchanged_by_size": {
-                size: unchanged_per_size for size in self.window_sizes
-            },
+            "unchanged": sum(unchanged_by_size.values()),
+            "changed": rows - sum(unchanged_by_size.values()),
+            "window_sizes": window_counts,
+            "unchanged_by_size": unchanged_by_size,
         }
 
 
 CONTRACT = DatasetContract()
+SUPPORTED_WINDOW_SIZES = tuple(range(1, 11))
+V2_RUNTIME_10W_5K_CONTRACT = DatasetContract(
+    train_size=5000,
+    eval_size=1000,
+    test_size=1000,
+    window_sizes=SUPPORTED_WINDOW_SIZES,
+    train_window_counts=(160, 320, 400, 560, 640, 680, 600, 440, 360, 840),
+    eval_window_counts=(40, 80, 80, 120, 120, 120, 120, 80, 80, 160),
+    test_window_counts=(40, 80, 80, 120, 120, 120, 120, 80, 80, 160),
+)
 MAX_AUGMENTATION_EVENTS = 10
 
 URL_RE = re.compile(r"(?:https?://|www\.|\b[a-z0-9.-]+\.(?:com|org|net|io)\b)", re.I)
@@ -183,7 +209,7 @@ def window_rejection_reason(
         return reason
     if word_count(value) != expected_size:
         return "window_size"
-    if expected_size not in CONTRACT.window_sizes:
+    if expected_size not in SUPPORTED_WINDOW_SIZES:
         return "unsupported_window_size"
     if len(value) > 160:
         return "too_long"
@@ -376,9 +402,10 @@ def validate_split(
     name: str,
     rows: list[dict[str, Any]],
     *,
+    contract: DatasetContract = CONTRACT,
     expected_event_counts_by_size: dict[int, dict[int, int]] | None = None,
 ) -> None:
-    expected = CONTRACT.expected_counts(name)
+    expected = contract.expected_counts(name)
     changes = Counter(row["metadata"]["target_changed"] for row in rows)
     sizes = Counter(row["metadata"]["window_size"] for row in rows)
     unchanged_by_size = Counter(
@@ -400,7 +427,7 @@ def validate_split(
         raise ValueError(f"{name}: normalized duplicate inputs exist")
     if expected_event_counts_by_size is not None:
         actual_event_counts_by_size: dict[int, Counter[int]] = {
-            size: Counter() for size in CONTRACT.window_sizes
+            size: Counter() for size in contract.window_sizes
         }
         for row in rows:
             if not row["metadata"]["target_changed"]:
@@ -426,6 +453,7 @@ def validate_compiled_datasets(
     eval_path: Path,
     test_path: Path,
     report_path: Path,
+    contract: DatasetContract = CONTRACT,
     expected_policy: str = "massive_window_augmentation_v1",
     expected_event_counts: dict[str, dict[int, dict[int, int]]] | None = None,
     require_normalized_surface_isolation: bool = False,
@@ -436,16 +464,19 @@ def validate_compiled_datasets(
     validate_split(
         "train",
         train_rows,
+        contract=contract,
         expected_event_counts_by_size=(expected_event_counts or {}).get("train"),
     )
     validate_split(
         "eval",
         eval_rows,
+        contract=contract,
         expected_event_counts_by_size=(expected_event_counts or {}).get("eval"),
     )
     validate_split(
         "test",
         test_rows,
+        contract=contract,
         expected_event_counts_by_size=(expected_event_counts or {}).get("test"),
     )
 
@@ -472,7 +503,7 @@ def validate_compiled_datasets(
         split_report = report.get("splits", {}).get(name, {})
         if split_report.get("sha256") != sha256_file(path):
             raise ValueError(f"{name}: dataset hash does not match build report")
-        if split_report.get("rows") != CONTRACT.expected_counts(name)["rows"]:
+        if split_report.get("rows") != contract.expected_counts(name)["rows"]:
             raise ValueError(f"{name}: build report row count is incorrect")
     if report.get("source_manifest_sha256") != sha256_file(MANIFEST_PATH):
         raise ValueError("source manifest hash does not match build report")

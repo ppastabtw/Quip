@@ -103,11 +103,12 @@ def sample_massive_windows(
     rng: random.Random,
     buffer_rows: int | Mapping[int, int] | None = None,
     sampling: str = "random_contiguous",
+    window_sizes: tuple[int, ...] = CONTRACT.window_sizes,
 ) -> dict[int, list[Candidate]]:
     if sampling not in {"random_contiguous", "runtime_chunks"}:
         raise ValueError(f"unknown MASSIVE sampling mode: {sampling}")
-    windows: dict[int, list[Candidate]] = {size: [] for size in CONTRACT.window_sizes}
-    seen: dict[int, set[str]] = {size: set() for size in CONTRACT.window_sizes}
+    windows: dict[int, list[Candidate]] = {size: [] for size in window_sizes}
+    seen: dict[int, set[str]] = {size: set() for size in window_sizes}
     pool_targets = {
         size: required_by_size[size]
         + (
@@ -117,24 +118,24 @@ def sample_massive_windows(
             if isinstance(buffer_rows, Mapping)
             else buffer_rows
         )
-        for size in CONTRACT.window_sizes
+        for size in window_sizes
     }
     candidates = [record for record in records if record["partition"] == partition]
     rng.shuffle(candidates)
 
     for record in candidates:
-        if all(len(windows[size]) >= pool_targets[size] for size in CONTRACT.window_sizes):
+        if all(len(windows[size]) >= pool_targets[size] for size in window_sizes):
             break
         utterance = " ".join(record["utt"].split())
         if source_rejection_reason(utterance) or source_quality_rejection_reason(utterance):
             continue
         tokens = utterance.split()
         runtime_starts: dict[int, list[int]] = {
-            size: [] for size in CONTRACT.window_sizes
+            size: [] for size in window_sizes
         }
         if sampling == "runtime_chunks":
-            for start in range(0, len(tokens), max(CONTRACT.window_sizes)):
-                size = min(max(CONTRACT.window_sizes), len(tokens) - start)
+            for start in range(0, len(tokens), max(window_sizes)):
+                size = min(max(window_sizes), len(tokens) - start)
                 if size in runtime_starts:
                     runtime_starts[size].append(start)
             eligible_sizes = [
@@ -145,7 +146,7 @@ def sample_massive_windows(
         else:
             eligible_sizes = [
                 size
-                for size in CONTRACT.window_sizes
+                for size in window_sizes
                 if len(tokens) >= size and len(windows[size]) < pool_targets[size]
             ]
         if not eligible_sizes:
@@ -185,11 +186,10 @@ def sample_massive_windows(
                 target_changed=False,
             )
         )
-
     missing = {
-        size: (len(windows[size]), pool_targets[size])
-        for size in CONTRACT.window_sizes
-        if len(windows[size]) < pool_targets[size]
+        size: (len(windows[size]), required_by_size[size])
+        for size in window_sizes
+        if len(windows[size]) < required_by_size[size]
     }
     if missing:
         raise BuildError(f"MASSIVE sparse sampling did not fill window pools: {missing}")
