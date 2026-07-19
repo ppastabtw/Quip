@@ -33,6 +33,7 @@ fn main() {
 struct Options {
     address: String,
     model_id: String,
+    output_contract: String,
     label: Option<String>,
     runs: usize,
     warmup: usize,
@@ -53,12 +54,13 @@ struct BenchmarkSidecar {
 }
 
 impl BenchmarkSidecar {
-    fn spawn(address: &str, config: &LiveConfig) -> Result<Self, String> {
+    fn spawn(address: &str, config: &LiveConfig, output_contract: &str) -> Result<Self, String> {
         let executable = resolve_sidecar()?;
         let mut child = Command::new(&executable)
             .arg("--live")
             .env("QUIP_MODEL_ADDR", address)
             .env("QUIP_MODEL_ID", &config.model_id)
+            .env("QUIP_MODEL_OUTPUT_CONTRACT", output_contract)
             .env("QUIP_COMPLETION_COUNT", config.completion_count.to_string())
             .env("QUIP_TEMPERATURE", config.temperature.to_string())
             .env("QUIP_MAX_TOKENS", config.max_tokens.to_string())
@@ -134,6 +136,8 @@ impl Options {
         let mut options = Self {
             address: env::var("QUIP_MODEL_ADDR").unwrap_or_else(|_| "127.0.0.1:1234".to_owned()),
             model_id: env::var("QUIP_MODEL_ID").unwrap_or_else(|_| "default".to_owned()),
+            output_contract: env::var("QUIP_MODEL_OUTPUT_CONTRACT")
+                .unwrap_or_else(|_| "plain_text".to_owned()),
             label: env::var("QUIP_MODEL_LABEL").ok(),
             runs: 10,
             warmup: 2,
@@ -152,6 +156,9 @@ impl Options {
             match argument.as_str() {
                 "--address" => options.address = next_value(&mut arguments, "--address")?,
                 "--model-id" => options.model_id = next_value(&mut arguments, "--model-id")?,
+                "--output-contract" => {
+                    options.output_contract = next_value(&mut arguments, "--output-contract")?
+                }
                 "--label" => options.label = Some(next_value(&mut arguments, "--label")?),
                 "--runs" => {
                     options.runs = parse_value(&next_value(&mut arguments, "--runs")?, "--runs")?
@@ -201,6 +208,12 @@ impl Options {
         if options.runs == 0 {
             return Err("--runs must be at least 1".to_owned());
         }
+        if !matches!(
+            options.output_contract.as_str(),
+            "plain_text" | "json_suggestion"
+        ) {
+            return Err("--output-contract must be plain_text or json_suggestion".to_owned());
+        }
         if options.phrases.is_empty() {
             options.phrases = DEFAULT_PHRASES
                 .iter()
@@ -224,7 +237,7 @@ fn run(options: Options) -> Result<(), String> {
         LiveBackend::with_config(&options.address, config).map_err(|error| error.to_string())?;
     let address = backend.address().to_string();
     let config = backend.config().clone();
-    let mut sidecar = BenchmarkSidecar::spawn(&address, &config)?;
+    let mut sidecar = BenchmarkSidecar::spawn(&address, &config, &options.output_contract)?;
 
     let health_started = Instant::now();
     let health = sidecar.health()?;
@@ -279,6 +292,7 @@ fn run(options: Options) -> Result<(), String> {
     let output = BenchmarkOutput {
         model_label: options.label.unwrap_or_else(|| options.model_id.clone()),
         address,
+        output_contract: options.output_contract,
         warmup_runs: options.warmup,
         measured_runs: options.runs,
         phrase_count: options.phrases.len(),
@@ -334,6 +348,7 @@ struct RunSample {
 struct BenchmarkOutput {
     model_label: String,
     address: String,
+    output_contract: String,
     warmup_runs: usize,
     measured_runs: usize,
     phrase_count: usize,
@@ -649,9 +664,10 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
 fn print_human(output: &BenchmarkOutput) {
     println!("Quip model latency benchmark — {}", output.model_label);
     println!(
-        "Endpoint {} · model id {} · {} completions · temp {} · max {} tokens",
+        "Endpoint {} · model id {} · {} · {} completions · temp {} · max {} tokens",
         output.address,
         output.config.model_id,
+        output.output_contract,
         output.config.completion_count,
         output.config.temperature,
         output.config.max_tokens,
@@ -807,6 +823,7 @@ fn print_help() {
 Usage: quip-latency-tester [options]\n\n\
   --address HOST:PORT     OpenAI-compatible loopback endpoint (default 127.0.0.1:1234)\n\
   --model-id ID           Model field sent to the endpoint (default: default)\n\
+  --output-contract NAME  plain_text or json_suggestion (default: plain_text)\n\
   --label NAME            Human-readable model/config label\n\
   --runs N                Measured inference count (default: 10)\n\
   --warmup N              Warmup inference count (default: 2)\n\
@@ -822,6 +839,7 @@ Usage: quip-latency-tester [options]\n\n\
   --json                  Emit machine-readable samples and summaries\n\
   --html PATH             Write a self-contained interactive latency profile\n\
 Environment equivalents: QUIP_MODEL_ADDR, QUIP_MODEL_ID, QUIP_MODEL_LABEL,\n\
+QUIP_MODEL_OUTPUT_CONTRACT,\n\
 QUIP_COMPLETION_COUNT, QUIP_TEMPERATURE, QUIP_MAX_TOKENS, QUIP_STREAMING,\n\
 QUIP_EARLY_EXIT_AGREEMENT.\n\n\
 Benchmark streaming against the current batched n:5 default:\n\

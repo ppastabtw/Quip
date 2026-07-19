@@ -1,8 +1,10 @@
 # Inference sidecar (Workstream 2)
 
-The sidecar has a deterministic fixture backend and an opt-in live backend for
-Qwen3.5-2B through a loopback-only `mistral.rs` server. Fixture mode remains the
-demo-safe fallback and requires no model installation.
+The sidecar has a deterministic fixture backend and an opt-in live backend.
+Base Qwen3.5 and the selected exported global Freesolo LoRA run as separate
+loopback-only MLX-VLM servers over the same matching 8-bit base. The default
+`4b` preset uses the step-70 adapter; the `0.8b` and `2b` presets use step 80.
+Fixture mode remains the demo-safe fallback and requires no model installation.
 
 The sidecar speaks the Phase 0 shapes (`crates/quip-contracts`,
 `docs/phase-0.schema.json`): it answers `prediction_request` with
@@ -48,13 +50,34 @@ unavailable result for other phrases.
 
 ## Live phrase inference
 
-After installing `mistral.rs`, run one command from the repository root. It
-starts loopback-only Qwen3.5-2B from the prebuilt 4-bit UQFF artifact when
-needed and then opens the same interactive tester in live mode:
+Prepare the exported PEFT adapter once. This creates an ignored MLX runtime,
+converts the text-model LoRA weights, and downloads the matching 8-bit MLX
+base model; it does not modify the exported adapter:
+
+```bash
+src-tauri/sidecars/inference/scripts/setup-global-adapter.sh
+```
+
+Prepare either smaller tuned model instead:
+
+```bash
+QUIP_GLOBAL_MODEL_PRESET=0.8b \
+  src-tauri/sidecars/inference/scripts/setup-global-adapter.sh
+
+QUIP_GLOBAL_MODEL_PRESET=2b \
+  src-tauri/sidecars/inference/scripts/setup-global-adapter.sh
+```
+
+Then run one command from the repository root. It starts the selected global
+adapter on port 1235 and opens the same interactive tester in live mode:
 
 ```bash
 src-tauri/sidecars/inference/scripts/run-live-phrase-tester.sh
 ```
+
+Prefix the command with `QUIP_GLOBAL_MODEL_PRESET=0.8b` or `2b` to test a
+smaller adapter. Omit it, or set it to `4b`, to retain the existing 4B path.
+The same preset works with `run-live-app.sh` for the demo harness.
 
 Pass a phrase to perform one inference and exit:
 
@@ -62,20 +85,31 @@ Pass a phrase to perform one inference and exit:
 src-tauri/sidecars/inference/scripts/run-live-phrase-tester.sh "cnt cm tmr"
 ```
 
-The base Qwen result includes measured end-to-end latency. Until a Freesolo
-adapter is installed, the global variant returns `adapter_not_loaded` rather
-than duplicating the base result.
+Each available result includes measured end-to-end latency. `global_plus_personal` still
+returns `adapter_not_loaded` until a per-user adapter is integrated; it never
+silently falls back to the global or base model.
 
-The launcher reuses the Hugging Face cache without replacing model files. Set
-`QUIP_BASE_MODEL_ID=Qwen/Qwen3.5-4B` to run the cached 4B alternative, or point
-`QUIP_BASE_MODEL_ID` at another cached model or local model directory.
+The tuned Global model is the default to avoid keeping two 8-bit model copies
+resident. Set `QUIP_START_BASE_MODEL=1` only when a simultaneous Base comparison
+is worth the additional memory; otherwise the tester reports Base as unavailable.
 
-Each model completion is constrained to the same single-suggestion JSON schema
-used by Freesolo training:
+The launcher reuses the Hugging Face cache without replacing model files. The
+Base and Global endpoints can be changed with `QUIP_MODEL_ADDR` and
+`QUIP_GLOBAL_MODEL_ADDR`. Explicit `QUIP_GLOBAL_MODEL_ID`,
+`QUIP_GLOBAL_ADAPTER_DIR`, and `QUIP_GLOBAL_OUTPUT_CONTRACT` values override
+the selected preset.
+
+The model-server response contract is selected per endpoint and is normalized
+before candidates enter the shared Quip boundary. The 4B preset keeps the
+existing `plain_text` response. The 0.8B and 2B checkpoints were trained with
+guided JSON and therefore use `json_suggestion`:
 
 ```json
 {"suggestion":"send the draft"}
 ```
+
+This is additive: changing one endpoint's response decoder does not change the
+app-side `PredictionResult` contract or the other model preset.
 
 The Rust inference layer requests exactly five choices in one batched completion,
 removes exact-draft suggestions, deduplicates changed text, ranks duplicate votes with
@@ -83,6 +117,18 @@ earliest-completion tie-breaking, and returns zero to five candidates. Zero
 candidates means skip and no suggestion bar.
 
 ## Latency and model comparison
+
+Compare all three tuned adapters under identical app settings with one command:
+
+```bash
+src-tauri/sidecars/inference/scripts/compare-global-models.sh
+```
+
+The models run sequentially so only one is resident at a time. Each uses APC,
+streaming five-completion inference, 3-vote early exit, three warmups, the same
+latency phrases, and the same eval sample. The command prints one aggregate
+table and deletes its temporary detailed output. Adjust sample sizes with
+`--runs`, `--warmups`, and `--eval-sample`.
 
 Run the benchmark launcher from the repository root. It starts an isolated
 loopback model server at the checkpoint's native precision on port 1240,
@@ -167,8 +213,8 @@ stream (`stream: true` against `/v1/chat/completions`, handling both
 `Transfer-Encoding: chunked` and plain `Connection: close` framing — the
 server's actual choice is unconfirmed against a real mistral.rs instance,
 which is why both are implemented and covered by mock-server tests in
-`live.rs`). Streaming is off by default; the batched n:5 path it grew from
-is unchanged and still the one validated against a live server so far.
+`live.rs`). The live adapter launchers enable streaming by default. Set
+`QUIP_STREAMING=false` to retain the complete n:5 path for an A/B comparison.
 
 With streaming on, `run_streaming_batch` reads completions in the order they
 actually finish rather than the order they were dispatched, and once
@@ -188,8 +234,8 @@ target/debug/quip-latency-tester --address 127.0.0.1:1234 --runs 20 --streaming 
 ```
 
 Streaming's benefit depends on whether early-exit agreement typically lands
-before all 5 completions would have finished anyway — measure on real
-hardware before flipping the default; nothing in this repo does that yet.
+before all five completions finish. The three-model comparison command measures
+that optimized path on the current Mac.
 
 `model_input` (the JSON body of the user chat message) also orders
 `context_snippets`/`personal_patterns` before `text`: those two fields stay
@@ -202,15 +248,19 @@ more than a plausible mechanism.
 
 ## Run the full app with live inference
 
-The team can launch the pushed Tauri app, the Rust sidecar, and local Base Qwen
-with one command:
+The team can launch the Tauri app, Rust sidecar, and local Global adapter with
+one command:
 
 ```bash
 src-tauri/sidecars/inference/scripts/run-live-app.sh
 ```
 
-This development launcher builds the sidecar, starts the loopback model server
-when necessary, and forces `live` / `base` for that app session without
-overwriting persisted settings. The app keeps one NDJSON sidecar process alive
-for health and prediction requests. Global variants remain unavailable until
-the Freesolo adapter is exported and installed.
+This development launcher builds the sidecar, starts the Global loopback model
+server when necessary, sends three unmeasured warmup requests, and forces
+`live` / `global` for that app session without overwriting persisted settings.
+It opens the demo harness automatically;
+click **Try tuned adapter** to load `cancel next meetihng` and see the adapter
+offer `cancel next meeting`. The app keeps one NDJSON sidecar process alive for health and
+prediction requests. Select the model with `QUIP_GLOBAL_MODEL_PRESET=0.8b`,
+`2b`, or `4b`; set `QUIP_DEMO_WARMUP_RUNS=0` only when intentionally measuring
+a cold launch.

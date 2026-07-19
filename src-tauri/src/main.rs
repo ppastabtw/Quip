@@ -1507,10 +1507,20 @@ mod live_selftest {
 
     pub async fn run(app: AppHandle) -> Result<(), String> {
         let health = get_health(app.clone()).await;
-        if health.status != quip_contracts::HealthStatus::Ready || !health.loaded.base {
+        let requested_variant =
+            std::env::var("QUIP_MODEL_VARIANT").unwrap_or_else(|_| "base".to_owned());
+        let selected_loaded = match requested_variant.as_str() {
+            "base" => health.loaded.base,
+            "global" => health.loaded.global_adapter,
+            "global_plus_personal" => health.loaded.user_adapter,
+            _ => false,
+        };
+        if health.status == quip_contracts::HealthStatus::Unavailable || !selected_loaded {
             return Err(format!("sidecar health was not live-ready: {health:?}"));
         }
-        println!("LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded");
+        println!(
+            "LIVE SELFTEST ok: sidecar health is ready with {requested_variant} model artifacts loaded"
+        );
 
         // A slow local model must not hold the composition mutex. Prove that
         // the app can retract a predicting burst promptly, then verify the
@@ -1523,7 +1533,7 @@ mod live_selftest {
                     burst_id: "live_selftest_dismiss".to_owned(),
                     destination_id: "destination_live_selftest".to_owned(),
                     profile_id: "profile_default".to_owned(),
-                    draft: "this sa sntece".to_owned(),
+                    draft: "contropversy".to_owned(),
                     trigger: Trigger::Idle,
                     word_offset: None,
                     caret: Rect {
@@ -1575,7 +1585,7 @@ mod live_selftest {
                 burst_id: "live_selftest".to_owned(),
                 destination_id: "destination_live_selftest".to_owned(),
                 profile_id: "profile_default".to_owned(),
-                draft: "see you tomorow".to_owned(),
+                draft: "contropversy".to_owned(),
                 trigger: Trigger::Idle,
                 word_offset: None,
                 caret: Rect {

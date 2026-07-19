@@ -21,12 +21,40 @@ use serde_json::{json, Value};
 use crate::InferenceBackend;
 
 const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:1234";
+const DEFAULT_GLOBAL_MODEL_ID: &str = "mlx-community/Qwen3.5-4B-MLX-8bit";
 const COMPLETION_ATTEMPTS: usize = 3;
 const DEFAULT_MODEL_ID: &str = "default";
 const DEFAULT_COMPLETION_COUNT: usize = 5;
 const DEFAULT_TEMPERATURE: f64 = 0.1;
 const DEFAULT_MAX_TOKENS: u64 = 64;
 const SYSTEM_PROMPT: &str = include_str!("../../../../training/flash/system_prompt.txt");
+const SYSTEM_PROMPT_V0_JSON: &str =
+    include_str!("../../../../training/flash/system_prompt_v0_json.txt");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputContract {
+    PlainText,
+    JsonSuggestion,
+}
+
+impl OutputContract {
+    fn parse(value: &str, variable: &str) -> Result<Self, LiveBackendError> {
+        match value {
+            "plain_text" => Ok(Self::PlainText),
+            "json_suggestion" => Ok(Self::JsonSuggestion),
+            _ => Err(LiveBackendError::InvalidConfig(format!(
+                "{variable} must be plain_text or json_suggestion"
+            ))),
+        }
+    }
+
+    fn system_prompt(self) -> &'static str {
+        match self {
+            Self::PlainText => SYSTEM_PROMPT,
+            Self::JsonSuggestion => SYSTEM_PROMPT_V0_JSON,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum LiveBackendError {
@@ -255,6 +283,15 @@ pub struct LiveBackend {
     address: SocketAddr,
     timeout: Duration,
     config: LiveConfig,
+    output_contract: OutputContract,
+    global_endpoint: Option<ModelEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+struct ModelEndpoint {
+    address: SocketAddr,
+    model_id: String,
+    output_contract: OutputContract,
 }
 
 impl LiveBackend {
@@ -294,7 +331,25 @@ impl LiveBackend {
                 )
             })?;
         }
-        Self::with_config(&address, config)
+        let mut backend = Self::with_config(&address, config)?;
+        if let Ok(value) = std::env::var("QUIP_MODEL_OUTPUT_CONTRACT") {
+            backend.output_contract = OutputContract::parse(&value, "QUIP_MODEL_OUTPUT_CONTRACT")?;
+        }
+        if let Ok(global_address) = std::env::var("QUIP_GLOBAL_MODEL_ADDR") {
+            let global_model_id = std::env::var("QUIP_GLOBAL_MODEL_ID")
+                .unwrap_or_else(|_| DEFAULT_GLOBAL_MODEL_ID.to_owned());
+            let output_contract = std::env::var("QUIP_GLOBAL_OUTPUT_CONTRACT")
+                .ok()
+                .map(|value| OutputContract::parse(&value, "QUIP_GLOBAL_OUTPUT_CONTRACT"))
+                .transpose()?
+                .unwrap_or(OutputContract::PlainText);
+            backend = backend.with_global_endpoint_contract(
+                &global_address,
+                global_model_id,
+                output_contract,
+            )?;
+        }
+        Ok(backend)
     }
 
     pub fn new(address: &str) -> Result<Self, LiveBackendError> {
@@ -313,7 +368,42 @@ impl LiveBackend {
             address,
             timeout: Duration::from_secs(90),
             config,
+            output_contract: OutputContract::PlainText,
+            global_endpoint: None,
         })
+    }
+
+    pub fn with_global_endpoint(
+        self,
+        address: &str,
+        model_id: String,
+    ) -> Result<Self, LiveBackendError> {
+        self.with_global_endpoint_contract(address, model_id, OutputContract::PlainText)
+    }
+
+    fn with_global_endpoint_contract(
+        mut self,
+        address: &str,
+        model_id: String,
+        output_contract: OutputContract,
+    ) -> Result<Self, LiveBackendError> {
+        let address: SocketAddr = address
+            .parse()
+            .map_err(|_| LiveBackendError::InvalidAddress(address.to_owned()))?;
+        if !address.ip().is_loopback() {
+            return Err(LiveBackendError::InvalidAddress(address.to_string()));
+        }
+        if model_id.trim().is_empty() {
+            return Err(LiveBackendError::InvalidConfig(
+                "global model_id must not be empty".to_owned(),
+            ));
+        }
+        self.global_endpoint = Some(ModelEndpoint {
+            address,
+            model_id,
+            output_contract,
+        });
+        Ok(self)
     }
 
     pub fn address(&self) -> SocketAddr {
@@ -322,6 +412,15 @@ impl LiveBackend {
 
     pub fn config(&self) -> &LiveConfig {
         &self.config
+    }
+
+    fn for_endpoint(&self, endpoint: &ModelEndpoint) -> Self {
+        let mut backend = self.clone();
+        backend.address = endpoint.address;
+        backend.config.model_id = endpoint.model_id.clone();
+        backend.output_contract = endpoint.output_contract;
+        backend.global_endpoint = None;
+        backend
     }
 
     fn request(
@@ -389,7 +488,7 @@ impl LiveBackend {
         &self,
         request: &PredictionRequest,
     ) -> Result<PredictionResult, LiveBackendError> {
-        self.benchmark_prediction(request)
+        self.run_prediction(request)
             .map(|benchmark| benchmark.result)
     }
 
@@ -403,6 +502,13 @@ impl LiveBackend {
             ));
         }
 
+        self.run_prediction(request)
+    }
+
+    fn run_prediction(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<LiveBenchmark, LiveBackendError> {
         let backend_started = Instant::now();
         let batch_started = Instant::now();
         let (model_outputs, cancelled_count, completion_timings) = if self.config.streaming {
@@ -476,10 +582,10 @@ impl LiveBackend {
         let total_started = Instant::now();
         let build_started = Instant::now();
         let user_content = model_input(request).to_string();
-        let body = json!({
+        let mut body = json!({
             "model": &self.config.model_id,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.output_contract.system_prompt()},
                 {"role": "user", "content": user_content}
             ],
             "enable_thinking": false,
@@ -487,15 +593,27 @@ impl LiveBackend {
             "max_tokens": self.config.max_tokens,
             "stop": ["<|endoftext|>"]
         });
+        if self.output_contract == OutputContract::JsonSuggestion {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            });
+        }
         let body = serde_json::to_vec(&body)?;
         let request_build_us = elapsed_us(build_started);
         let response = self.request_timed("POST", "/v1/chat/completions", Some(&body))?;
         let response_decode_started = Instant::now();
-        let response_body: ChatCompletion = serde_json::from_slice(&response.body)?;
+        let ChatCompletion {
+            choices,
+            usage,
+            timings,
+        } = serde_json::from_slice(&response.body)?;
         let response_decode_us = elapsed_us(response_decode_started);
         let output_decode_started = Instant::now();
-        let choice = response_body
-            .choices
+        let choice = choices
             .into_iter()
             .next()
             .ok_or(LiveBackendError::MissingModelContent)?;
@@ -504,15 +622,13 @@ impl LiveBackend {
             .content
             .as_deref()
             .ok_or(LiveBackendError::MissingModelContent)?;
-        let output = content.trim().to_owned();
-        if output.is_empty() {
-            return Err(LiveBackendError::MissingModelContent);
-        }
-        let tokens = response_body.usage.map(|usage| {
+        let output = decode_model_output(content, self.output_contract)?;
+        let tokens = usage.map(|usage| {
             token_profile(
                 content,
                 &output,
                 usage,
+                timings,
                 choice.finish_reason,
                 response.timing.time_to_first_byte_us,
                 self.config.max_tokens,
@@ -622,10 +738,10 @@ impl LiveBackend {
         let total_started = Instant::now();
         let build_started = Instant::now();
         let user_content = model_input(request).to_string();
-        let body = json!({
+        let mut body = json!({
             "model": &self.config.model_id,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.output_contract.system_prompt()},
                 {"role": "user", "content": user_content}
             ],
             "enable_thinking": false,
@@ -634,15 +750,21 @@ impl LiveBackend {
             "stop": ["<|endoftext|>"],
             "stream": true
         });
+        if self.output_contract == OutputContract::JsonSuggestion {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            });
+        }
         let body = serde_json::to_vec(&body)?;
         let request_build_us = elapsed_us(build_started);
         let (content, http_timing) =
             self.request_streaming("POST", "/v1/chat/completions", &body, cancel)?;
         let response_decode_started = Instant::now();
-        let output = content.trim().to_owned();
-        if output.is_empty() {
-            return Err(LiveBackendError::MissingModelContent);
-        }
+        let output = decode_model_output(&content, self.output_contract)?;
         let response_decode_us = elapsed_us(response_decode_started);
 
         Ok(TimedModelOutput {
@@ -849,35 +971,62 @@ impl LiveBackend {
 
 impl InferenceBackend for LiveBackend {
     fn health(&self, _case_id: Option<&str>) -> SidecarHealth {
-        match self.request("GET", "/health", None) {
-            Ok(body) if body == b"OK" => SidecarHealth {
-                status: HealthStatus::Ready,
-                fixture_available: true,
-                loaded: LoadedArtifacts {
-                    base: true,
-                    global_adapter: false,
-                    user_adapter: false,
-                },
-                error: None,
-            },
-            Ok(_) => unavailable_health("The local model health response was not OK."),
-            Err(_) => unavailable_health(
-                "The local Qwen server is not reachable at the configured loopback address.",
+        let base_ready = self
+            .request("GET", "/health", None)
+            .is_ok_and(|body| healthy_response(&body, None));
+        let Some(global_endpoint) = &self.global_endpoint else {
+            return if base_ready {
+                ready_health(true, false)
+            } else {
+                unavailable_health(
+                    "The local Base model server is not reachable at the configured loopback address.",
+                )
+            };
+        };
+        let global = self.for_endpoint(global_endpoint);
+        let global_ready = global
+            .request("GET", "/health", None)
+            .is_ok_and(|body| healthy_response(&body, Some(&global_endpoint.model_id)));
+        match (base_ready, global_ready) {
+            (true, true) => ready_health(true, true),
+            (true, false) => degraded_health(
+                true,
+                false,
+                "global_adapter_unavailable",
+                "Base is ready, but the configured Global adapter server is unavailable.",
+            ),
+            (false, true) => ready_health(false, true),
+            (false, false) => unavailable_health(
+                "Neither configured local model server is reachable at its loopback address.",
             ),
         }
     }
 
     fn predict(&self, request: &PredictionRequest) -> PredictionResult {
-        if request.model_variant != ModelVariant::Base {
-            return prediction_error(
-                request,
-                "adapter_not_loaded",
-                "The global Freesolo adapter is not loaded yet.",
-                false,
-            );
-        }
+        let result = match request.model_variant {
+            ModelVariant::Base => self.predict_base(request),
+            ModelVariant::Global => {
+                let Some(endpoint) = &self.global_endpoint else {
+                    return prediction_error(
+                        request,
+                        "adapter_not_loaded",
+                        "The global Freesolo adapter is not configured.",
+                        false,
+                    );
+                };
+                self.for_endpoint(endpoint).predict_base(request)
+            }
+            ModelVariant::GlobalPlusPersonal => {
+                return prediction_error(
+                    request,
+                    "adapter_not_loaded",
+                    "The personal adapter is not loaded yet.",
+                    false,
+                );
+            }
+        };
 
-        self.predict_base(request).unwrap_or_else(|error| {
+        result.unwrap_or_else(|error| {
             prediction_error(request, "live_inference_failed", &error.to_string(), true)
         })
     }
@@ -885,6 +1034,55 @@ impl InferenceBackend for LiveBackend {
     fn benchmark(&self, request: &PredictionRequest) -> Result<LiveBenchmark, String> {
         self.benchmark_prediction(request)
             .map_err(|error| error.to_string())
+    }
+}
+
+fn healthy_response(body: &[u8], expected_model: Option<&str>) -> bool {
+    if body == b"OK" {
+        return expected_model.is_none();
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    if value.get("status").and_then(Value::as_str) != Some("healthy") {
+        return false;
+    }
+    expected_model.is_none_or(|expected| {
+        value.get("loaded_model").and_then(Value::as_str) == Some(expected)
+            && value
+                .get("loaded_adapter")
+                .and_then(Value::as_str)
+                .is_some_and(|adapter| !adapter.trim().is_empty())
+    })
+}
+
+fn ready_health(base: bool, global_adapter: bool) -> SidecarHealth {
+    SidecarHealth {
+        status: HealthStatus::Ready,
+        fixture_available: true,
+        loaded: LoadedArtifacts {
+            base,
+            global_adapter,
+            user_adapter: false,
+        },
+        error: None,
+    }
+}
+
+fn degraded_health(base: bool, global_adapter: bool, code: &str, message: &str) -> SidecarHealth {
+    SidecarHealth {
+        status: HealthStatus::Degraded,
+        fixture_available: true,
+        loaded: LoadedArtifacts {
+            base,
+            global_adapter,
+            user_adapter: false,
+        },
+        error: Some(ErrorInfo {
+            code: code.to_owned(),
+            message: message.to_owned(),
+            retryable: true,
+        }),
     }
 }
 
@@ -921,6 +1119,37 @@ fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
+fn prediction_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "suggestion": {
+                "type": "string",
+                "minLength": 1
+            }
+        },
+        "required": ["suggestion"],
+        "additionalProperties": false
+    })
+}
+
+fn decode_model_output(
+    content: &str,
+    output_contract: OutputContract,
+) -> Result<String, LiveBackendError> {
+    let suggestion = match output_contract {
+        OutputContract::PlainText => content.trim().to_owned(),
+        OutputContract::JsonSuggestion => {
+            let output: JsonSuggestion = serde_json::from_str(content.trim())?;
+            output.suggestion.trim().to_owned()
+        }
+    };
+    if suggestion.is_empty() {
+        return Err(LiveBackendError::MissingModelContent);
+    }
+    Ok(suggestion)
+}
+
 /// Stable-first field order: `context_snippets` and `personal_patterns` stay
 /// constant for an entire composition session, while `text` (the sliding
 /// window's draft) changes on every burst. Serializing the stable fields
@@ -946,6 +1175,8 @@ fn model_input(request: &PredictionRequest) -> Value {
 struct ChatCompletion {
     choices: Vec<ChatChoice>,
     usage: Option<ChatUsage>,
+    #[serde(default)]
+    timings: Option<ChatTimings>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -959,6 +1190,12 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
     content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JsonSuggestion {
+    suggestion: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,10 +1215,23 @@ struct ChatUsage {
     total_completion_time_sec: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct ChatTimings {
+    #[serde(default)]
+    prompt_ms: Option<f64>,
+    #[serde(default)]
+    predicted_ms: Option<f64>,
+    #[serde(default)]
+    prompt_per_token_ms: Option<f64>,
+    #[serde(default)]
+    predicted_per_token_ms: Option<f64>,
+}
+
 fn token_profile(
     content: &str,
     suggestion: &str,
     usage: ChatUsage,
+    timings: Option<ChatTimings>,
     finish_reason: Option<String>,
     model_server_us: u64,
     max_tokens: u64,
@@ -1001,15 +1251,25 @@ fn token_profile(
     } else {
         model_server_us as f64 / 1000.0 / usage.completion_tokens as f64
     };
-    let model_reported_total_ms = usage.total_time_sec.map(|seconds| seconds * 1000.0);
-    let prompt_prefill_ms = usage.total_prompt_time_sec.map(|seconds| seconds * 1000.0);
+    let model_reported_total_ms = usage
+        .total_time_sec
+        .map(|seconds| seconds * 1000.0)
+        .or_else(|| {
+            timings.map(|value| value.prompt_ms.unwrap_or(0.0) + value.predicted_ms.unwrap_or(0.0))
+        });
+    let prompt_prefill_ms = usage
+        .total_prompt_time_sec
+        .map(|seconds| seconds * 1000.0)
+        .or_else(|| timings.and_then(|value| value.prompt_ms));
     let completion_decode_ms = usage
         .total_completion_time_sec
-        .map(|seconds| seconds * 1000.0);
+        .map(|seconds| seconds * 1000.0)
+        .or_else(|| timings.and_then(|value| value.predicted_ms));
     let prompt_ms_per_token = usage
         .avg_prompt_tok_per_sec
         .filter(|rate| *rate > 0.0)
         .map(|rate| 1000.0 / rate)
+        .or_else(|| timings.and_then(|value| value.prompt_per_token_ms))
         .or_else(|| {
             prompt_prefill_ms
                 .filter(|_| usage.prompt_tokens > 0)
@@ -1019,6 +1279,7 @@ fn token_profile(
         .avg_compl_tok_per_sec
         .filter(|rate| *rate > 0.0)
         .map(|rate| 1000.0 / rate)
+        .or_else(|| timings.and_then(|value| value.predicted_per_token_ms))
         .or_else(|| {
             completion_decode_ms
                 .filter(|_| usage.completion_tokens > 0)
@@ -1282,9 +1543,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_implausibly_truncated, is_model_scaffolding, normalize_model_outputs, token_profile,
-        CancelHandle, ChatUsage, LiveBackend, LiveConfig, SYSTEM_PROMPT,
+        decode_model_output, healthy_response, is_implausibly_truncated, is_model_scaffolding,
+        normalize_model_outputs, token_profile, CancelHandle, ChatTimings, ChatUsage, LiveBackend,
+        LiveConfig, OutputContract, SYSTEM_PROMPT,
     };
+    use crate::InferenceBackend;
 
     fn request() -> PredictionRequest {
         PredictionRequest {
@@ -1319,6 +1582,45 @@ mod tests {
     }
 
     #[test]
+    fn global_endpoint_must_be_loopback_and_identified() {
+        let backend = LiveBackend::new("127.0.0.1:1234").unwrap();
+        assert!(backend
+            .clone()
+            .with_global_endpoint("0.0.0.0:1235", "global".to_owned())
+            .is_err());
+        assert!(backend
+            .with_global_endpoint("127.0.0.1:1235", " ".to_owned())
+            .is_err());
+    }
+
+    #[test]
+    fn recognizes_mistral_and_matching_mlx_health_shapes() {
+        assert!(healthy_response(b"OK", None));
+        assert!(!healthy_response(b"OK", Some("global")));
+        let mlx = br#"{"status":"healthy","loaded_model":"global","loaded_adapter":"adapter"}"#;
+        assert!(healthy_response(mlx, Some("global")));
+        assert!(!healthy_response(mlx, Some("other")));
+        assert!(!healthy_response(
+            br#"{"status":"healthy","loaded_model":"global","loaded_adapter":null}"#,
+            Some("global")
+        ));
+    }
+
+    #[test]
+    fn unloaded_adapter_variants_never_silently_run_base() {
+        let backend = LiveBackend::new("127.0.0.1:1234").unwrap();
+        for variant in [ModelVariant::Global, ModelVariant::GlobalPlusPersonal] {
+            let mut request = request();
+            request.model_variant = variant;
+            assert!(matches!(
+                backend.predict(&request),
+                quip_contracts::PredictionResult::Error { error, .. }
+                    if error.code == "adapter_not_loaded" && !error.retryable
+            ));
+        }
+    }
+
+    #[test]
     fn prompt_contains_policy_without_answer_shaped_text() {
         assert!(SYSTEM_PROMPT.contains("actual complete text"));
         assert!(SYSTEM_PROMPT.contains("If no confident correction is needed"));
@@ -1326,6 +1628,30 @@ mod tests {
         assert!(!SYSTEM_PROMPT
             .to_ascii_lowercase()
             .contains("best full text"));
+    }
+
+    #[test]
+    fn output_contracts_decode_independently() {
+        assert_eq!(
+            decode_model_output("call me", OutputContract::PlainText).unwrap(),
+            "call me"
+        );
+        assert_eq!(
+            decode_model_output(
+                r#"{"suggestion":"call me"}"#,
+                OutputContract::JsonSuggestion
+            )
+            .unwrap(),
+            "call me"
+        );
+        assert!(
+            decode_model_output(r#"{"text":"call me"}"#, OutputContract::JsonSuggestion).is_err()
+        );
+        assert!(decode_model_output(
+            r#"{"suggestion":"call me","reason":"typo"}"#,
+            OutputContract::JsonSuggestion
+        )
+        .is_err());
     }
 
     #[test]
@@ -1378,6 +1704,7 @@ mod tests {
                 total_prompt_time_sec: Some(0.25),
                 total_completion_time_sec: Some(0.25),
             },
+            None,
             Some("stop".to_owned()),
             500_000,
             32,
@@ -1391,6 +1718,39 @@ mod tests {
         assert_eq!(profile.completion_ms_per_token, Some(25.0));
         assert_eq!(profile.prompt_prefill_ms, Some(250.0));
         assert!(!profile.max_tokens_reached);
+    }
+
+    #[test]
+    fn token_profile_maps_mlx_server_timings() {
+        let profile = token_profile(
+            "controversy",
+            "controversy",
+            ChatUsage {
+                prompt_tokens: 80,
+                completion_tokens: 4,
+                total_tokens: 84,
+                avg_prompt_tok_per_sec: None,
+                avg_compl_tok_per_sec: None,
+                total_time_sec: None,
+                total_prompt_time_sec: None,
+                total_completion_time_sec: None,
+            },
+            Some(ChatTimings {
+                prompt_ms: Some(400.0),
+                predicted_ms: Some(200.0),
+                prompt_per_token_ms: Some(5.0),
+                predicted_per_token_ms: Some(50.0),
+            }),
+            Some("stop".to_owned()),
+            700_000,
+            32,
+        );
+
+        assert_eq!(profile.model_reported_total_ms, Some(600.0));
+        assert_eq!(profile.prompt_prefill_ms, Some(400.0));
+        assert_eq!(profile.completion_decode_ms, Some(200.0));
+        assert_eq!(profile.prompt_ms_per_token, Some(5.0));
+        assert_eq!(profile.completion_ms_per_token, Some(50.0));
     }
 
     #[test]

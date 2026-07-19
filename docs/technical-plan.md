@@ -8,8 +8,8 @@ Source: `docs/SPEC.md`
 - **system layer**: Rust for macOS integration, application state, orchestration, sidecar control, and packaging-sensitive code.
 - **macOS Accessibility**: `axuielement` for Accessibility trust, focused elements, text markers, and `AXObserver`; `objc2` ApplicationServices bindings only where `axuielement` lacks coverage.
 - **composition UI**: HTML and CSS rendered through Tauri for the caret-anchored candidate bar, settings, and demo controls.
-- **local inference**: `mistral.rs` with Metal as the leading runtime for Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and Rust-facing integration.
-- **model family**: start with Qwen3.5-2B at 4-bit; benchmark Qwen3.5-4B only after 2B establishes a working latency and quality baseline.
+- **local inference**: MLX-VLM serves Base Qwen3.5 and the exported global LoRA as separate loopback-only endpoints behind the same Rust sidecar contract. The current `mistral.rs` Qwen3.5 LoRA path rejects this architecture, and its 4B UQFF path also failed a real multi-request shape check.
+- **model family**: the local comparison lane includes tuned Qwen3.5 0.8B step 80, 2B step 80, and 4B step 70 adapters over matching 8-bit MLX bases. The 4B remains the quality default while the smaller presets measure the latency tradeoff.
 - **personalization**: Freesolo-trained per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
 - **storage**: local files or an embedded local store for settings, confirmed examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database is required for the judged build.
 - **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; Freesolo profile runs may use a substantial deduplicated set of confirmed interactions.
@@ -26,11 +26,11 @@ Source: `docs/SPEC.md`
 
 **continuous prediction with bounded churn**: Prediction runs as the burst grows, with a short debounce and immediate refresh at punctuation, Return, or the draft-window cap. Stale results are dropped while the current bar remains visible.
 
-**guided JSON model contract**: Each model completion emits exactly `{ "suggestion": "..." }`. Workstream 2 implements the aggregation rules in `docs/phase-0-contracts.md`. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
+**model response compatibility boundary**: Each decoded model completion yields exactly one full-text suggestion before aggregation. The selected endpoint declares either `plain_text` (the 4B path) or guided `json_suggestion` (the 0.8B and 2B checkpoints' training contract). Both normalize into the same app-side `PredictionResult`; one model's decoder must never silently change another model's behavior. Workstream 2 implements the aggregation rules in `docs/phase-0-contracts.md`.
 
 **literal input remains the default**: The application does not add the unchanged draft as a candidate because it is already present in the destination. Only an explicit candidate selection changes it.
 
-**mistral.rs sidecar first, direct SDK later**: Start with a bundled local loopback sidecar for inference so model lifecycle failures are isolated from the Tauri app. Direct Rust SDK integration remains a later optimization once adapter loading and schema decoding are proven.
+**replaceable loopback sidecar first, direct SDK later**: Use isolated local model services behind the bundled Rust sidecar so runtime-specific lifecycle failures do not leak into the Tauri app. Direct Rust SDK integration remains a later optimization once adapter loading and output decoding are proven.
 
 **adapter composition with merge fallback**: The preferred runtime loads the Qwen base, frozen global Freesolo adapter, and separate user adapter together. If stacking fails, merge the global adapter into the base once and load a single user adapter over it.
 
@@ -58,7 +58,7 @@ src-tauri/
     learning/           # local examples, pattern dictionary, profile state, adapter refresh orchestration
     settings/           # context toggle, learning pause/reset, profile selection, demo controls
   sidecars/
-    inference/          # local model runtime wrapper around mistral.rs or fallback runtime
+    inference/          # local model runtime wrapper around loopback MLX-VLM endpoints
 src/
   ui/                   # Tauri webview candidate bar, settings, demo harness
 training/
@@ -72,7 +72,7 @@ docs/
 
 ## Risk areas
 
-**mistral.rs adapter loading on Metal**: Failure looks like the app can run base Qwen but cannot load the exported Freesolo adapter or strict JSON decoding reliably. Roll back to a replaceable local sidecar with the same request/response contract. De-risk by proving adapter loading, quantization, schema decoding, and latency before wiring inference into the UI.
+**adapter loading on Metal**: The replaceable sidecar routes both Base and Global to separate MLX-VLM services over one 8-bit model identity; only Global receives the converted LoRA. Failure looks like either service failing health, output decoding, held-out correction, or latency checks. Roll back to fixture mode or Qwen3.5-2B Base, and keep proving adapter identity, quantization, behavior, and latency through the process validator.
 
 **global plus user adapter composition**: Failure looks like personalization cannot run alongside the global Freesolo behavior, or user adapters overwrite the trained restraint. Roll back to a base model with the global adapter merged once and one user adapter loaded over it. De-risk with a small adapter-composition test harness using two intentionally different user profiles.
 
@@ -120,11 +120,11 @@ docs/
 
 ### Workstream 2: local inference, adapters, and packaging
 
-1. Build the local inference sidecar around `mistral.rs` with the shared request/response contract and deterministic fixture mode.
-2. Prove base Qwen loading, 4-bit Metal inference, guided JSON decoding, five-completion aggregation, schema validation, and latency reporting before consuming app events.
-3. Load the global Freesolo adapter exported by the training workstream; if it fails, swap in a replaceable local runtime behind the same sidecar contract.
+1. Keep the local inference sidecar runtime-agnostic with the shared request/response contract and deterministic fixture mode.
+2. Prove Base Qwen loading, 8-bit Metal inference, plain full-text decoding, five-completion aggregation, contract validation, and latency reporting before consuming app events.
+3. Load the global Freesolo adapter through a separate MLX-VLM endpoint and require a held-out correction in addition to adapter-presence health.
 4. Test global plus per-user adapter composition with two intentionally different user profiles; if stacking fails, merge the global adapter into the base and load one user adapter.
-5. Benchmark Qwen3.5-2B on the M3 Pro and M4 Air; test Qwen3.5-4B only if quality requires it and latency remains interactive.
+5. Benchmark the tuned Qwen3.5 0.8B, 2B, and 4B 8-bit Global paths under identical APC, warmup, streaming, and early-exit settings on the target Macs.
 6. Load Freesolo-trained per-user adapters from two prepared profiles and verify that each changes only its intended patterns.
 7. Package model and adapter paths as local artifacts with health checks, missing-artifact errors, and no committed model binaries.
 
