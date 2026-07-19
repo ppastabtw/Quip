@@ -2,7 +2,13 @@ import json
 import unittest
 
 from dataset_compiler.contract import CONTRACT
-from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment, model_input_json
+from environment import (
+    HYBRID_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    QuipEnvironment,
+    load_environment,
+    model_input_json,
+)
 from scoring import model_text
 
 
@@ -66,6 +72,37 @@ class EnvironmentTests(unittest.TestCase):
         reward = environment.score_response(example, model_text(example.output))
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)
+
+    def test_hybrid_environment_preserves_text_and_adds_lexical_hints(self):
+        content = json.loads(
+            model_input_json(
+                {
+                    "text": "hteir going",
+                    "personal_patterns": [
+                        {"shorthand": "hteir", "expansion": "their"}
+                    ],
+                    "context_snippets": [
+                        {
+                            "app_name": "Notes",
+                            "window_title": "Draft",
+                            "visible_text": "They are going tomorrow.",
+                        }
+                    ],
+                },
+                lexical_hints=True,
+            )
+        )
+        self.assertEqual(
+            set(content), {"context_snippets", "text", "lexical_hints"}
+        )
+        self.assertEqual(content["text"], "hteir going")
+        self.assertTrue(content["lexical_hints"])
+
+        environment = QuipEnvironment(split="train", lexical_hints=True)
+        example = environment.dataset[0]
+        messages = environment.build_prompt_messages(example, "")
+        self.assertEqual(messages[0]["content"], HYBRID_SYSTEM_PROMPT)
+        self.assertIn("lexical_hints", json.loads(messages[1]["content"]))
 
 
 if __name__ == "__main__":

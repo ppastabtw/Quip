@@ -53,7 +53,12 @@ A global shortcut can run a prediction over selected existing text. The same can
 
 ### Model contract
 
-The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. Inference runs exactly five completions, and each returns one full-input suggestion:
+The input contains the bounded draft or selection, relevant window snippets,
+compact learned user patterns, and optional lexical hints generated from
+dictionary similarity. Lexical hints never replace the raw draft before model
+inference and are not trusted corrections. The model runs in non-thinking mode.
+Inference runs exactly five completions, and each returns one full-input
+suggestion:
 
 ```json
 { "suggestion": "best full text" }
