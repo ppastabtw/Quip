@@ -359,6 +359,24 @@ def split_summary(
     }
 
 
+def window_share_report(contract: DatasetContract) -> dict[str, Any]:
+    counts_by_split = {
+        split: contract.expected_counts(split)["window_sizes"]
+        for split in ("train", "eval", "test")
+    }
+    if all(len(set(counts.values())) == 1 for counts in counts_by_split.values()):
+        return {"window_share": 1 / len(contract.window_sizes)}
+    return {
+        "window_shares_by_split": {
+            split: {
+                str(size): counts[size] / contract.expected_counts(split)["rows"]
+                for size in contract.window_sizes
+            }
+            for split, counts in counts_by_split.items()
+        }
+    }
+
+
 def compile_datasets(
     *,
     seed: int,
@@ -465,11 +483,7 @@ def compile_datasets(
         },
         "contract": {
             "window_sizes": list(contract.window_sizes),
-            "window_share": {
-                str(size): contract.expected_counts("train")["window_sizes"][size]
-                / contract.train_size
-                for size in contract.window_sizes
-            },
+            **window_share_report(contract),
             "unchanged_share": contract.unchanged_share,
             "augmented_share": 1 - contract.unchanged_share,
             "augmentation": "deterministic_typing_errors",

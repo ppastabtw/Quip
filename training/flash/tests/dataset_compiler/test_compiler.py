@@ -6,6 +6,7 @@ from dataset_compiler.compiler import (
     V2_RUNTIME_10W_5K_POLICY,
     event_count_quotas,
     event_count_schedule,
+    window_share_report,
 )
 
 
@@ -39,6 +40,15 @@ def test_v2_runtime_10w_5k_policy_uses_requested_split_sizes():
         9: 80,
         10: 160,
     }
+    assert set(window_share_report(contract)["window_shares_by_split"]) == {
+        "train",
+        "eval",
+        "test",
+    }
+
+
+def test_v1_window_share_report_keeps_legacy_scalar():
+    assert window_share_report(V1_POLICY.contract) == {"window_share": 0.2}
 
 
 def test_v1_schedule_does_not_consume_rng_state():
