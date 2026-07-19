@@ -300,6 +300,18 @@ fn prediction_status_and_count(result: &PredictionResult) -> (&'static str, usiz
     }
 }
 
+fn raw_element_role_is(raw: Option<&accessibility::RawElementDiagnostic>, role: &str) -> bool {
+    raw.and_then(|raw| raw.role.value_summary.as_deref())
+        .is_some_and(|summary| summary == format!("string:{role}"))
+}
+
+fn is_retryable_menu_focus_miss(focused: &accessibility::FocusedElementDiagnostic) -> bool {
+    focused.app_bundle_id.is_none()
+        && focused.resolution_error == Some("not_text_role")
+        && (raw_element_role_is(focused.system_focused.as_ref(), "AXMenuItem")
+            || raw_element_role_is(focused.app_focused.as_ref(), "AXMenuItem"))
+}
+
 #[tauri::command]
 fn capture_focused_destination(profile_id: String, trigger: Trigger) -> CaptureResult {
     accessibility::capture_focused_destination(&profile_id, trigger)
@@ -356,7 +368,12 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             "focused": focused,
         }),
     );
-    let result = accessibility::capture_focused_destination(&profile_id, trigger);
+    let result = if is_retryable_menu_focus_miss(&focused) {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        accessibility::capture_focused_destination(&profile_id, trigger)
+    } else {
+        accessibility::capture_focused_destination(&profile_id, trigger)
+    };
     run_capture_result(app, result, include_context, "manual_focused_capture", None).await;
 }
 
