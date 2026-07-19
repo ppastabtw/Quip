@@ -36,10 +36,9 @@ quip_start_live_models
 printf '%s\n' 'Building the inference sidecar...'
 cargo build -p quip-inference-sidecar
 quip_warm_global_model "$repo_root/target/debug/quip-inference-sidecar"
-printf '%s\n' 'Launching Quip with the live Global adapter. Use Settings to select Base or return to fixture mode.'
+printf '%s\n' 'Launching Quip with the live Global adapter. Use the tray menu to open Settings or the optional demo.'
 
 QUIP_INFERENCE_SIDECAR="$repo_root/target/debug/quip-inference-sidecar" \
 QUIP_BACKEND_MODE=live \
 QUIP_MODEL_VARIANT=global \
-QUIP_SHOW="${QUIP_SHOW:-demo}" \
 npm run tauri dev

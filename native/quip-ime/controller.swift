@@ -145,7 +145,7 @@ class QuipNativeInputController: IMKInputController {
             client,
             NSRange(location: selected.location, length: 0)
         )
-        if caret.height <= 0, selected.location > 0 {
+        if !isUsableCaret(caret), selected.location > 0 {
             caret = QuipClientFirstRect(
                 client,
                 NSRange(location: selected.location - 1, length: 1)
@@ -153,9 +153,8 @@ class QuipNativeInputController: IMKInputController {
             caret.origin.x += caret.width
             caret.size.width = 1
         }
-        guard caret.height > 0 else {
-            quipLog("engine_capture_skipped reason=caret_unavailable")
-            return
+        if !isUsableCaret(caret) {
+            quipLog("engine_capture_using_accessibility_caret_fallback")
         }
         QuipEngineBridge.shared.capture(
             sessionID: sessionID,
@@ -164,6 +163,27 @@ class QuipNativeInputController: IMKInputController {
             caret: caret
         )
         quipLog("engine_capture_sent generation=\(generation) draft_utf16=\(draft.utf16.count)")
+    }
+
+    private func isUsableCaret(_ caret: NSRect) -> Bool {
+        guard caret.origin.x.isFinite,
+              caret.origin.y.isFinite,
+              caret.width.isFinite,
+              caret.height.isFinite,
+              caret.height >= 4,
+              caret.height <= 200,
+              caret.width >= 0,
+              caret.width <= 200
+        else { return false }
+        let bounds = NSRect(
+            x: caret.minX,
+            y: caret.minY,
+            width: max(caret.width, 1),
+            height: max(caret.height, 1)
+        )
+        return NSScreen.screens.contains { screen in
+            screen.frame.insetBy(dx: -64, dy: -64).intersects(bounds)
+        }
     }
 
     private func observeBridgeIfNeeded() {

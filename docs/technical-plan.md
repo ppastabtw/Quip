@@ -9,7 +9,7 @@ Source: `docs/SPEC.md`
 - **macOS text input**: a standalone Swift InputMethodKit source for pass-through live typing, verified UTF-16 ranges, caret geometry, and confirmed replacement; `axuielement` remains for bounded window context and existing-text mode.
 - **composition UI**: HTML and CSS rendered through Tauri for the caret-anchored candidate bar, settings, and demo controls.
 - **local inference**: MLX-VLM serves Base Qwen3.5 and the exported global LoRA as separate loopback-only endpoints behind the same Rust sidecar contract. The current `mistral.rs` Qwen3.5 LoRA path rejects this architecture, and its 4B UQFF path also failed a real multi-request shape check.
-- **model family**: the product lane is locked to Qwen3.5 2B over the matching 4-bit MLX base. The selected Global checkpoint is the v2 step-80 adapter.
+- **model family**: the product lane is locked to Qwen3.5 2B over the matching 4-bit MLX base. The selected Global checkpoint is `ppasta/quip-v2-context-mega` at revision `297ac9b68fce60ff34a9d415dea7d0376441e9a0`.
 - **personalization**: Freesolo-trained per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
 - **storage**: local files or an embedded local store for settings, confirmed examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database is required for the judged build.
 - **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; Freesolo profile runs may use a substantial deduplicated set of confirmed interactions.
@@ -82,7 +82,7 @@ docs/
 
 **InputMethodKit destination preservation**: Failure looks like Quip loses the verified UTF-16 range, receives stale caret geometry, commits into a changed input session, or fails across TextEdit and browser clients. The input source invalidates on selection/navigation mismatch and the judged build falls back to the narrowest known-good client. Accessibility and simulated paste remain limited to existing-text mode.
 
-**window context quality and privacy**: Failure looks like accessible snippets are empty, irrelevant, too large, or accidentally include secure/excluded fields. Roll back to disabling context by default while keeping the menu-bar toggle and deterministic examples. De-risk by auditing snippets from TextEdit, Notes, Chrome, and Safari with bounded length, source labels, and secure-field checks.
+**window context quality and privacy**: Failure looks like accessible snippets are empty, irrelevant, too large, or accidentally include secure/excluded fields. Keep context enabled, tighten the supported-app gate or ranking, and preserve the 240-character bound. De-risk by auditing snippets from TextEdit, Notes, Chrome, and Safari with source labels and secure-field checks; local debug events intentionally contain captured text and must never be committed.
 
 **latency on target hardware**: Failure looks like the 700 to 900 ms idle trigger feels broken because local inference returns too slowly or memory pressure destabilizes the demo. Roll back to Qwen3.5-2B at 4-bit, shorter prompts, smaller context, or deterministic corpus comparison. De-risk by measuring base and trained-model latency on both target Macs before expanding model size or context.
 

@@ -125,6 +125,106 @@
         "I'm hungry, let's get lunch!"
       ],
       "latency_ms": 515
+    },
+    {
+      "draft": "ill send the csv in about 10 minites",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "I'll send the CSV in about 10 minutes.",
+        "I'll send over the CSV in about 10 minutes."
+      ],
+      "latency_ms": 476
+    },
+    {
+      "draft": "please keep acme posted and let me know if there upset",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Please keep Acme posted and let me know if they're still upset.",
+        "Please keep Acme updated and let me know if they're still upset."
+      ],
+      "latency_ms": 438
+    },
+    {
+      "draft": "sam can you please patch this asap its pretty brocken",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Sam, can you please patch this ASAP? It's pretty broken.",
+        "Sam, could you please patch this ASAP? It's pretty broken."
+      ],
+      "latency_ms": 521
+    },
+    {
+      "draft": "thanks a lot for jumping on this really apreciate it",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Thanks a lot for jumping on this. I really appreciate it.",
+        "Thanks so much for jumping on this—I really appreciate it."
+      ],
+      "latency_ms": 419
+    },
+    {
+      "draft": "ill share another update before the reveiw no worries",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "I'll share another update before the review. No worries.",
+        "I'll post another update before the review."
+      ],
+      "latency_ms": 507
+    },
+    {
+      "draft": "please retry the export now and see if its working",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Please retry the export now and see if it's working.",
+        "Can you retry the export now and see if it works?"
+      ],
+      "latency_ms": 482
+    },
+    {
+      "draft": "let me know if it times out agian or gets stuck",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Let me know if it times out again or gets stuck.",
+        "Let me know right away if it times out again or gets stuck."
+      ],
+      "latency_ms": 493
+    },
+    {
+      "draft": "running about 10 minutes late sorry lost track of time",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Running about 10 minutes late—sorry, I lost track of time.",
+        "I'm running about 10 minutes late. Sorry, I lost track of time."
+      ],
+      "latency_ms": 455
+    },
+    {
+      "draft": "cant make it tomorow got some stuff going on sorry",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Can't make it tomorrow. I've got some stuff going on—sorry.",
+        "I can't make it tomorrow; I've got some stuff going on. Sorry."
+      ],
+      "latency_ms": 536
+    },
+    {
+      "draft": "please review the doc before standup and flag anything wierd",
+      "model_variant": "global",
+      "has_context": false,
+      "candidates": [
+        "Please review the doc before standup and flag anything weird.",
+        "Please check the doc before standup and flag anything unusual."
+      ],
+      "latency_ms": 514
     }
   ],
   "cases": [

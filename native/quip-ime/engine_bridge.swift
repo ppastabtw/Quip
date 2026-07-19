@@ -14,6 +14,9 @@ final class QuipEngineBridge {
     private var connection: NWConnection?
     private var receiveBuffer = Data()
     private var pendingMessages: [Data] = []
+    private var awaitingCaptureAcknowledgments: [
+        String: (generation: UInt, data: Data)
+    ] = [:]
     private var ready = false
     private var reconnectScheduled = false
     private var attemptedAppLaunch = false
@@ -90,22 +93,66 @@ final class QuipEngineBridge {
         data.append(0x0A)
         queue.async { [weak self] in
             guard let self else { return }
+            if let (sessionID, generation) = self.captureIdentity(from: data) {
+                self.awaitingCaptureAcknowledgments[sessionID] = (
+                    generation: generation,
+                    data: data
+                )
+                self.scheduleCaptureAcknowledgmentTimeout(
+                    sessionID: sessionID,
+                    generation: generation
+                )
+            }
             if self.ready, let connection = self.connection {
                 self.sendOnQueue(data, through: connection)
             } else {
-                if object["type"] as? String == "capture",
-                   let sessionID = object["session_id"] as? String {
-                    self.pendingMessages.removeAll { pending in
-                        guard let decoded = try? JSONSerialization.jsonObject(
-                            with: pending.dropLast()
-                        ) as? [String: Any] else { return false }
-                        return decoded["type"] as? String == "capture"
-                            && decoded["session_id"] as? String == sessionID
-                    }
-                }
-                self.pendingMessages.append(data)
+                self.enqueuePending(data)
                 self.connectOnQueue()
             }
+        }
+    }
+
+    private func captureIdentity(from data: Data) -> (sessionID: String, generation: UInt)? {
+        guard let decoded = try? JSONSerialization.jsonObject(
+            with: data.dropLast()
+        ) as? [String: Any],
+              decoded["type"] as? String == "capture",
+              let sessionID = decoded["session_id"] as? String,
+              let generation = (decoded["generation"] as? NSNumber)?.uintValue
+        else { return nil }
+        return (sessionID, generation)
+    }
+
+    private func enqueuePending(_ data: Data) {
+        if let (sessionID, _) = captureIdentity(from: data) {
+            pendingMessages.removeAll { pending in
+                captureIdentity(from: pending)?.sessionID == sessionID
+            }
+        }
+        pendingMessages.append(data)
+    }
+
+    private func scheduleCaptureAcknowledgmentTimeout(
+        sessionID: String,
+        generation: UInt
+    ) {
+        queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self,
+                  let pending = self.awaitingCaptureAcknowledgments[sessionID],
+                  pending.generation == generation
+            else { return }
+            quipLog(
+                "engine_bridge_capture_ack_timeout session=\(sessionID) generation=\(generation)"
+            )
+            self.enqueuePending(pending.data)
+            if let connection = self.connection {
+                self.disconnectOnQueue(connection)
+            }
+            self.connectOnQueue()
+            self.scheduleCaptureAcknowledgmentTimeout(
+                sessionID: sessionID,
+                generation: generation
+            )
         }
     }
 
@@ -149,7 +196,7 @@ final class QuipEngineBridge {
             guard let error else { return }
             self?.queue.async {
                 quipLog("engine_bridge_send_failed error=\(error)")
-                self?.pendingMessages.append(data)
+                self?.enqueuePending(data)
                 self?.disconnectOnQueue(connection)
                 self?.scheduleReconnect()
             }
@@ -190,6 +237,12 @@ final class QuipEngineBridge {
             else {
                 quipLog("engine_bridge_decode_failed")
                 continue
+            }
+            if message["type"] as? String == "capture_accepted",
+               let sessionID = message["session_id"] as? String,
+               let generation = (message["generation"] as? NSNumber)?.uintValue,
+               awaitingCaptureAcknowledgments[sessionID]?.generation == generation {
+                awaitingCaptureAcknowledgments.removeValue(forKey: sessionID)
             }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(

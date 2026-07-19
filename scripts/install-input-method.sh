@@ -20,11 +20,21 @@ trap cleanup_privileged_stage EXIT HUP INT TERM
 
 "$repo_root/scripts/build-native-input-method.sh"
 
-signing_identity=$(security find-identity -v -p codesigning 2>/dev/null \
-  | awk -F '"' '/Apple Development:|Developer ID Application:/ { print $2; exit }')
-if [ -n "$signing_identity" ]; then
-  codesign --force --deep --sign "$signing_identity" "$stage_bundle"
-  echo "Signed Quip Native with $signing_identity"
+signing_identity=${QUIP_CODESIGN_IDENTITY:--}
+if [ "$signing_identity" = "auto" ]; then
+  signing_identity=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F '"' '/Apple Development:|Developer ID Application:/ { print $2; exit }')
+fi
+if [ "$signing_identity" = "-" ]; then
+  codesign --force --deep --sign - "$stage_bundle"
+  echo "Signed Quip Native with an ad-hoc local signature"
+elif [ -n "$signing_identity" ]; then
+  if codesign --force --deep --sign "$signing_identity" "$stage_bundle"; then
+    echo "Signed Quip Native with $signing_identity"
+  else
+    echo "Development identity signing failed; falling back to an ad-hoc signature" >&2
+    codesign --force --deep --sign - "$stage_bundle"
+  fi
 else
   codesign --force --deep --sign - "$stage_bundle"
   echo "No development identity found; used an ad-hoc signature"
@@ -72,7 +82,9 @@ QUIP_INPUT_METHOD_BUNDLE="$installed_bundle" osascript -l JavaScript -e '
   }
 '
 "$lsregister" -f "$installed_bundle"
+killall QuipNativeIME 2>/dev/null || true
 killall TextInputMenuAgent 2>/dev/null || true
+xcrun swift "$repo_root/scripts/select-native-input-method.swift"
 
 echo "Installed the standalone input method at $installed_bundle"
 echo "Old system bundle backup: $old_system_backup"

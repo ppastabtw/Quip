@@ -31,6 +31,17 @@ struct Bridge {
 
 static BRIDGE: OnceLock<Arc<Bridge>> = OnceLock::new();
 
+fn caret_is_usable(caret: &Rect) -> bool {
+    caret.x.is_finite()
+        && caret.y.is_finite()
+        && caret.width.is_finite()
+        && caret.height.is_finite()
+        && (-10_000.0..=100_000.0).contains(&caret.x)
+        && (-10_000.0..=100_000.0).contains(&caret.y)
+        && (0.0..=200.0).contains(&caret.width)
+        && (4.0..=200.0).contains(&caret.height)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
@@ -190,8 +201,32 @@ fn handle_message(
             session_id,
             generation,
             draft,
-            caret,
+            mut caret,
         } => {
+            if !caret_is_usable(&caret) {
+                if let Some(accessibility_caret) =
+                    crate::accessibility::focused_caret_rect().filter(caret_is_usable)
+                {
+                    tracing::debug!(
+                        session_id,
+                        generation,
+                        "replaced invalid native caret with Accessibility geometry"
+                    );
+                    caret = accessibility_caret;
+                } else {
+                    tracing::warn!(
+                        session_id,
+                        generation,
+                        "native and Accessibility caret geometry unavailable"
+                    );
+                    caret = Rect {
+                        x: 512.0,
+                        y: 384.0,
+                        width: 1.0,
+                        height: 18.0,
+                    };
+                }
+            }
             let safe_session: String = session_id
                 .chars()
                 .map(|character| {
@@ -469,5 +504,21 @@ mod tests {
         .unwrap();
         assert!(encoded.contains("\"type\":\"commit\""));
         assert!(encoded.contains("Can't come tomorrow."));
+    }
+
+    #[test]
+    fn rejects_garbage_native_caret_geometry() {
+        assert!(!caret_is_usable(&Rect {
+            x: 1.6e-314,
+            y: -100_340.0,
+            width: 1.0,
+            height: 1.0,
+        }));
+        assert!(caret_is_usable(&Rect {
+            x: 465.0,
+            y: 244.0,
+            width: 1.0,
+            height: 16.0,
+        }));
     }
 }

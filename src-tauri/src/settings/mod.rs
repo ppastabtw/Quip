@@ -1,5 +1,5 @@
-//! Workstream 4: persisted app settings — enabled state, window-context
-//! toggle, learning pause, active profile, backend mode, and model variant.
+//! Workstream 4: persisted app settings — enabled state, learning pause,
+//! active profile, backend mode, and model variant.
 //! Stored as JSON in the app data dir; the tray and settings window both
 //! read and write through the engine.
 
@@ -43,11 +43,14 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// Context can be needed either for the current model request or for a
-    /// later confirmed learning label. The composition engine still enforces
-    /// `window_context` before any captured snippet reaches inference.
+    /// Supported, non-secure destinations always contribute bounded context.
+    /// The persisted field remains for backward-compatible settings decoding.
     pub fn should_capture_context(&self) -> bool {
-        self.window_context || !self.learning_paused
+        true
+    }
+
+    pub fn enforce_invariants(&mut self) {
+        self.window_context = true;
     }
 
     pub fn load(data_dir: &Path) -> Self {
@@ -59,6 +62,7 @@ impl AppSettings {
         if settings.window_words == 5 {
             settings.window_words = 10;
         }
+        settings.enforce_invariants();
         settings.apply_environment_overrides();
         settings
     }
@@ -92,18 +96,12 @@ mod tests {
     use super::AppSettings;
 
     #[test]
-    fn context_capture_policy_covers_model_and_learning_uses() {
+    fn context_capture_is_always_enabled() {
         let mut settings = AppSettings::default();
-        settings.window_context = true;
-        settings.learning_paused = true;
-        assert!(settings.should_capture_context());
-
-        settings.window_context = false;
-        settings.learning_paused = false;
-        assert!(settings.should_capture_context());
-
         settings.window_context = false;
         settings.learning_paused = true;
-        assert!(!settings.should_capture_context());
+        assert!(settings.should_capture_context());
+        settings.enforce_invariants();
+        assert!(settings.window_context);
     }
 }

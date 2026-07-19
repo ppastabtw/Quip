@@ -11,13 +11,16 @@ Run the real-app validator from the repository root:
 .agents/skills/validate-quip-context/scripts/validate.sh
 ```
 
-The validator builds the Tauri app, launches it with fixture inference and
-explicit local debug text, opens synthetic marker content in isolated TextEdit
-and Chrome processes, sends captures through the native InputMethodKit loopback
-protocol, and verifies that each bounded Accessibility snippet appears in the
-capture, prediction request, and inference-result metadata.
+The validator builds the Tauri app, launches it with fixture inference, opens
+synthetic marker content in TextEdit, Notes, and an isolated Chrome process,
+sends captures through the native InputMethodKit loopback protocol, and
+verifies that each bounded Accessibility snippet appears in the capture,
+prediction request, and inference-result metadata. The Notes check also proves
+that the caret line is excluded and moves its synthetic note to Recently
+Deleted during cleanup.
 
-The run temporarily activates TextEdit and Chrome and requires Accessibility
-permission for Quip. It must not kill an existing Quip process or print the
-captured snippet. A successful run ends with `Quip native context integration
-passed`. Treat unit tests or the fake Slack demo as insufficient evidence.
+The run temporarily activates TextEdit, Notes, and Chrome and requires
+Accessibility permission for Quip. It must not kill an existing Quip process
+or print the captured snippet. A successful run ends with `Quip native context
+integration passed`. Treat unit tests or the fake Slack demo as insufficient
+evidence.

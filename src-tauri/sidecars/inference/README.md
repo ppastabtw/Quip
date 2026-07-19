@@ -3,7 +3,9 @@
 The sidecar has a deterministic fixture backend and an opt-in live backend.
 Base Qwen3.5 and the selected exported global Freesolo LoRA run as separate
 loopback-only MLX-VLM servers over the same matching 4-bit base. Quip is locked
-to Qwen3.5 2B; the current Global model is the v2 step-80 adapter.
+to Qwen3.5 2B; the current Global model is the private
+`ppasta/quip-v2-context-mega` adapter pinned at revision
+`297ac9b68fce60ff34a9d415dea7d0376441e9a0`.
 Fixture mode remains the demo-safe fallback and requires no model installation.
 
 The sidecar speaks the Phase 0 shapes (`crates/quip-contracts`,
@@ -50,9 +52,11 @@ unavailable result for other phrases.
 
 ## Live phrase inference
 
-Prepare the exported PEFT adapter once. This creates an ignored MLX runtime,
-converts the text-model LoRA weights, and downloads the matching 4-bit MLX
-base model; it does not modify the exported adapter:
+Prepare the Global PEFT adapter once. This pulls the pinned adapter revision
+from Hugging Face when it is not already present, creates an ignored MLX
+runtime, converts the text-model LoRA weights, and downloads the matching 4-bit
+MLX base model; it does not modify the exported adapter. Access to the private
+model repository requires an existing Hugging Face login or `HF_TOKEN`:
 
 ```bash
 src-tauri/sidecars/inference/scripts/setup-global-adapter.sh
@@ -274,8 +278,9 @@ src-tauri/sidecars/inference/scripts/run-live-app.sh
 This development launcher builds the sidecar, starts the Global loopback model
 server when necessary, sends three unmeasured warmup requests, and forces
 `live` / `global` for that app session without overwriting persisted settings.
-It opens the demo harness automatically;
-click **Try tuned adapter** to load `cancel next meetihng` and see the adapter
-offer `cancel next meeting`. The app keeps one NDJSON sidecar process alive for health and
-prediction requests. The model is fixed to `QUIP_GLOBAL_MODEL_PRESET=2b`; set
-`QUIP_DEMO_WARMUP_RUNS=0` only when intentionally measuring a cold launch.
+It starts tray-only so the native keyboard can be used without opening the demo
+harness. Open **Demo & Playground…** from the tray menu when needed, or launch
+with `QUIP_SHOW=demo` for the presenter workflow. The app keeps one NDJSON
+sidecar process alive for health and prediction requests. The model is fixed to
+`QUIP_GLOBAL_MODEL_PRESET=2b`; set `QUIP_DEMO_WARMUP_RUNS=0` only when
+intentionally measuring a cold launch.

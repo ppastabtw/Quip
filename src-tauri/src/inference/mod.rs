@@ -531,6 +531,61 @@ mod tests {
     }
 
     #[test]
+    fn slack_safe_demo_replies_have_deterministic_happy_paths() {
+        let backend = FixtureBackend::new();
+        let cases = [
+            (
+                "cant make it tomorow got some stuff going on sorry",
+                "Can't make it tomorrow. I've got some stuff going on—sorry.",
+            ),
+            (
+                "ill send the csv in about 10 minites",
+                "I'll send the CSV in about 10 minutes.",
+            ),
+            (
+                "please keep acme posted and let me know if there upset",
+                "Please keep Acme posted and let me know if they're still upset.",
+            ),
+            (
+                "sam can you please patch this asap its pretty brocken",
+                "Sam, can you please patch this ASAP? It's pretty broken.",
+            ),
+            (
+                "thanks a lot for jumping on this really apreciate it",
+                "Thanks a lot for jumping on this. I really appreciate it.",
+            ),
+            (
+                "ill share another update before the reveiw no worries",
+                "I'll share another update before the review. No worries.",
+            ),
+            (
+                "please retry the export now and see if its working",
+                "Please retry the export now and see if it's working.",
+            ),
+            (
+                "let me know if it times out agian or gets stuck",
+                "Let me know if it times out again or gets stuck.",
+            ),
+            (
+                "running about 10 minutes late sorry lost track of time",
+                "Running about 10 minutes late—sorry, I lost track of time.",
+            ),
+            (
+                "please review the doc before standup and flag anything wierd",
+                "Please review the doc before standup and flag anything weird.",
+            ),
+        ];
+
+        for (draft, expected) in cases {
+            let result = backend.predict(&request(draft, ModelVariant::Global));
+            assert_eq!(
+                candidates(&result).first().map(String::as_str),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
     fn personal_variant_without_matching_patterns_falls_back_to_global() {
         let backend = FixtureBackend::new();
         let result = backend.predict(&request("cnt cm tmrw", ModelVariant::GlobalPlusPersonal));

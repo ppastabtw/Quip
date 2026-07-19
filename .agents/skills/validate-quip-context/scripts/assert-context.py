@@ -10,10 +10,14 @@ import time
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
-        raise SystemExit("usage: assert-context.py EVENTS BURST_PART APP MARKER")
+    if len(sys.argv) not in (5, 6):
+        raise SystemExit(
+            "usage: assert-context.py EVENTS BURST_PART APP MARKER "
+            "[EXCLUDED_MARKER]"
+        )
     path = pathlib.Path(sys.argv[1])
-    burst_part, expected_app, marker = sys.argv[2:]
+    burst_part, expected_app, marker = sys.argv[2:5]
+    excluded_marker = sys.argv[5] if len(sys.argv) == 6 else None
     deadline = time.monotonic() + 12
     last_event: dict[str, object] | None = None
     captured_chars: int | None = None
@@ -38,6 +42,10 @@ def main() -> int:
                     text = snippet.get("visible_text", "")
                     if marker not in text:
                         break
+                    if excluded_marker is not None and excluded_marker in text:
+                        raise SystemExit(
+                            "context snippet contained the excluded marker"
+                        )
                     if len(text) > 240:
                         raise SystemExit("context snippet exceeded 240 characters")
                     captured_chars = snippet.get("visible_text_chars", len(text))

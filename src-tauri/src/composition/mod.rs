@@ -201,7 +201,7 @@ impl Engine {
             return Err(self.current_snapshot());
         }
         self.burst_seq += 1;
-        let context_used_for_model = self.settings.window_context;
+        let context_used_for_model = true;
         let captured_context = input.context_snippets;
         let burst = Burst {
             burst_id: input
@@ -744,19 +744,12 @@ mod tests {
     }
 
     #[test]
-    fn window_context_setting_controls_prediction_context() {
+    fn window_context_is_always_sent_to_prediction() {
         let (mut engine, dir) = test_engine();
-        engine.settings.window_context = true;
         let (_, request, _) = engine
             .begin_burst(typed_with_context("meet there tmrw"))
             .unwrap();
         assert_eq!(request.context_snippets.len(), 1);
-
-        engine.settings.window_context = false;
-        let (_, request, _) = engine
-            .begin_burst(typed_with_context("meet there tmrw"))
-            .unwrap();
-        assert!(request.context_snippets.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -844,7 +837,7 @@ mod tests {
         assert!(raw.contains("\"confirmed_candidate\""));
         let saved: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
         assert_eq!(saved["context_snippets"][0]["app_name"], "Notes");
-        assert_eq!(saved["context_used_for_model"], false);
+        assert_eq!(saved["context_used_for_model"], true);
         // Selecting twice is impossible: the offer was consumed.
         assert!(engine.select(0).is_err());
         let _ = std::fs::remove_dir_all(dir);

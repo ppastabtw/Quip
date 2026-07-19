@@ -12,7 +12,7 @@ quip_live_runtime_init() {
   case "$global_model_preset" in
     2b)
       preset_global_model_id=mlx-community/Qwen3.5-2B-MLX-4bit
-      preset_global_adapter_dir="$repo_root/artifacts/adapters/quip-qwen3.5-2b-v2-step80-mlx"
+      preset_global_adapter_dir="$repo_root/artifacts/adapters/quip-v2-context-mega-mlx"
       preset_global_output_contract=json_suggestion
       global_validation_draft=contropversy
       global_validation_expected=controversy

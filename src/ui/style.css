@@ -662,19 +662,6 @@ th {
   margin-bottom: 8px;
 }
 
-.composer-actions,
-.prompt-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.composer-actions {
-  justify-content: space-between;
-  margin-top: 9px;
-}
-
 .last-commit {
   display: block;
   min-height: 18px;

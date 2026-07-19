@@ -79,7 +79,7 @@ This is the only primary demo flow. Selection-transform mode is a backup/proof o
 - Start from a clean TextEdit document with large enough font to see the before/after.
 - Start Quip in fixture or known-good mode unless live inference has passed rehearsal twice in a row.
 - Keep `QUIP_DEMO_SAFE_MODE=1 QUIP_SHOW=demo npm run tauri -- dev` ready as the explicit presenter fallback.
-- Confirm the tray/menu settings before demo: enabled on, window context set to the mode required for the chosen example, active profile set.
+- Confirm the tray/menu settings before demo: enabled on and active profile set. Window context is always on for supported destinations.
 - Preload exact demo phrases:
   - `cnt cm tmrw`
   - one typo example from the deterministic corpus

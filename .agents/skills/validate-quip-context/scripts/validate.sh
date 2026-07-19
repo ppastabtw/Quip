@@ -23,13 +23,33 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/quip-context-validation.XXXXXX")"
 APP_PID=""
 TEXTEDIT_PID=""
 CHROME_PID=""
+NOTES_CREATED=0
 TEXTEDIT_NAME="quip-context-textedit-$$.txt"
 TEXTEDIT_FILE="$TMP_ROOT/$TEXTEDIT_NAME"
 CHROME_TITLE="Quip Context Validation $$"
 CHROME_FILE="$TMP_ROOT/quip-context-chrome-$$.html"
+NOTES_TITLE="QUIP_NOTES_CONTEXT_VALIDATION_TITLE_$$"
 EVENTS="$TMP_ROOT/debug/events.jsonl"
 
+cleanup_notes() {
+  if [[ "$NOTES_CREATED" != "1" ]]; then
+    return
+  fi
+  osascript - "$NOTES_TITLE" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run argv
+  set validationTitle to item 1 of argv
+  tell application "Notes"
+    set validationNotes to every note whose name contains validationTitle
+    repeat with validationNote in validationNotes
+      delete validationNote
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
 cleanup() {
+  cleanup_notes
   if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
@@ -73,7 +93,6 @@ cargo build -p quip
 mkdir -p "$TMP_ROOT/debug"
 QUIP_DATA_DIR="$TMP_ROOT/data" \
 QUIP_DEBUG_DIR="$TMP_ROOT/debug" \
-QUIP_DEBUG_TEXT=1 \
 QUIP_BACKEND_MODE=fixture \
 QUIP_MODEL_VARIANT=base \
 "$ROOT/target/debug/quip" >"$TMP_ROOT/quip.log" 2>&1 &
@@ -107,10 +126,43 @@ if grep -qx "$TEXTEDIT_PID" <<<"$textedit_before"; then
   echo "TextEdit did not launch an isolated validation process" >&2
   exit 1
 fi
+osascript -e "tell application \"System Events\" to set frontmost of first application process whose unix id is $TEXTEDIT_PID to true"
+sleep 0.5
 python3 .agents/skills/validate-quip-context/scripts/send-capture.py \
   context_textedit "project review tmrw"
 python3 .agents/skills/validate-quip-context/scripts/assert-context.py \
   "$EVENTS" native_burst_context_textedit TextEdit QUIP_TEXTEDIT_CONTEXT_MARKER
+
+NOTES_CREATED=1
+osascript - "$NOTES_TITLE" <<'APPLESCRIPT'
+on run argv
+  set validationTitle to item 1 of argv
+  tell application "Notes"
+    reopen
+    activate
+  end tell
+  delay 0.5
+  tell application "System Events"
+    tell process "Notes"
+      keystroke "n" using command down
+      delay 0.5
+      keystroke validationTitle
+      key code 36
+      keystroke "QUIP_NOTES_ABOVE_CONTEXT_MARKER project review is tomorrow."
+      key code 36
+      keystroke "QUIP_NOTES_CURRENT_LINE_MUST_BE_EXCLUDED cnt cm tmrw"
+    end tell
+  end tell
+  delay 0.5
+end run
+APPLESCRIPT
+python3 .agents/skills/validate-quip-context/scripts/send-capture.py \
+  context_notes "cnt cm tmrw"
+python3 .agents/skills/validate-quip-context/scripts/assert-context.py \
+  "$EVENTS" native_burst_context_notes Notes \
+  QUIP_NOTES_ABOVE_CONTEXT_MARKER QUIP_NOTES_CURRENT_LINE_MUST_BE_EXCLUDED
+cleanup_notes
+NOTES_CREATED=0
 
 CHROME_EXEC="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 if [[ ! -x "$CHROME_EXEC" ]]; then
@@ -129,6 +181,8 @@ fi
   >"$TMP_ROOT/chrome.log" 2>&1 &
 CHROME_PID="$!"
 sleep 3
+osascript -e "tell application \"System Events\" to set frontmost of first application process whose unix id is $CHROME_PID to true"
+sleep 0.5
 python3 .agents/skills/validate-quip-context/scripts/send-capture.py \
   context_chrome "meet there tmrw"
 python3 .agents/skills/validate-quip-context/scripts/assert-context.py \

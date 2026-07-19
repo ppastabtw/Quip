@@ -65,7 +65,6 @@ async fn with_sidecar<T: Send + 'static>(
 
 struct TrayHandles {
     enabled: CheckMenuItem<Wry>,
-    window_context: CheckMenuItem<Wry>,
     pause_learning: CheckMenuItem<Wry>,
     profiles: Vec<(String, CheckMenuItem<Wry>)>,
 }
@@ -73,7 +72,6 @@ struct TrayHandles {
 impl TrayHandles {
     fn sync(&self, settings: &AppSettings) {
         let _ = self.enabled.set_checked(settings.enabled);
-        let _ = self.window_context.set_checked(settings.window_context);
         let _ = self.pause_learning.set_checked(settings.learning_paused);
         for (profile_id, item) in &self.profiles {
             let _ = item.set_checked(*profile_id == settings.active_profile);
@@ -116,6 +114,8 @@ fn sync_bar(app: &AppHandle, snapshot: &Snapshot) {
             ..
         } => {
             let width = bar_width(candidates, error.is_some());
+            let _ = bar.set_always_on_top(true);
+            let _ = bar.set_visible_on_all_workspaces(true);
             let _ = bar.set_size(LogicalSize::new(width, BAR_HEIGHT));
             let _ = bar.set_position(LogicalPosition::new(
                 (caret.x - 8.0).max(0.0),
@@ -899,6 +899,7 @@ fn update_settings(app: AppHandle, settings: AppSettings) {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
         engine.settings = settings;
+        engine.settings.enforce_invariants();
         engine.save_settings();
     }
     emit_settings(&app);
@@ -1115,14 +1116,6 @@ fn build_tray(
         settings.enabled,
         None::<&str>,
     )?;
-    let window_context = CheckMenuItem::with_id(
-        app,
-        "toggle_context",
-        "Window context",
-        true,
-        settings.window_context,
-        None::<&str>,
-    )?;
     let pause_learning = CheckMenuItem::with_id(
         app,
         "toggle_learning",
@@ -1167,7 +1160,6 @@ fn build_tray(
         app,
         &[
             &enabled,
-            &window_context,
             &pause_learning,
             &profile_menu,
             &PredefinedMenuItem::separator(app)?,
@@ -1191,7 +1183,6 @@ fn build_tray(
 
     Ok(TrayHandles {
         enabled,
-        window_context,
         pause_learning,
         profiles: profile_items,
     })
@@ -1208,15 +1199,12 @@ fn on_tray_menu(app: &AppHandle, id: &str) {
             });
         }
         "quit" => app.exit(0),
-        "toggle_enabled" | "toggle_context" | "toggle_learning" => {
+        "toggle_enabled" | "toggle_learning" => {
             {
                 let engine = app.state::<EngineState>();
                 let mut engine = engine.0.lock().unwrap();
                 match id {
                     "toggle_enabled" => engine.settings.enabled = !engine.settings.enabled,
-                    "toggle_context" => {
-                        engine.settings.window_context = !engine.settings.window_context
-                    }
                     _ => engine.settings.learning_paused = !engine.settings.learning_paused,
                 }
                 engine.save_settings();
@@ -1289,7 +1277,7 @@ fn main() {
             tracing::info!(data_dir = %data_dir.display(), "quip starting");
 
             let debug_dir = resolve_debug_dir(&data_dir);
-            let include_debug_text = std::env::var("QUIP_DEBUG_TEXT").as_deref() == Ok("1");
+            let include_debug_text = true;
             app.manage(DebugState(Mutex::new(DebugSink::new(
                 debug_dir.clone(),
                 include_debug_text,

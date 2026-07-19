@@ -74,9 +74,11 @@ The inference layer compares the five completions with the input, drops exact ma
 
 ### Window context
 
-For each prediction, Quip may collect the application name, window title, and a bounded accessible visible-text snippet from open windows. It ranks windows locally by focus, recency, and relevance, then passes only the most relevant snippets to the model.
+For each prediction in a supported, non-secure application, Quip collects the application name, window title, and one bounded accessible visible-text snippet from the focused window, then passes it to the model.
 
-The hackathon build uses Accessibility text, not screenshots or OCR. It never reads secure fields or excluded applications. Context is not persisted or added to personal training unless a confirmed interaction produces a compact labeled example. A menu-bar switch disables window context.
+The hackathon build uses Accessibility text, not screenshots or OCR. It never reads secure fields or excluded applications. Captured text is written to local debug events for inspection and may be added to personal training only when a confirmed interaction produces a compact labeled example. Window context is always enabled for supported destinations.
+
+Apple Notes uses a native editor-specific path: Quip reads the active note, removes the newline-bounded line containing the caret, and bounds the remaining note text before inference. The current line is already represented by the live typing burst and is not duplicated through the Notes window title.
 
 ### Per-user learning
 

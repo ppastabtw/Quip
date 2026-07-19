@@ -963,43 +963,9 @@ function renderComparison(report: ComparisonReport) {
   comparisonEl.append(grid);
 }
 
-function loadComposerPrompt(text: string, label: string) {
-  window.clearTimeout(idleTimer);
-  playgroundEl.value = "";
-  playgroundEl.setSelectionRange(0, 0);
-  resetPlayground("demo_prompt_loaded", 0);
-  playgroundEl.value = text;
-  playgroundEl.setSelectionRange(text.length, text.length);
-  renderChunkIndicator();
-  lastCommitEl.textContent = "";
-  lastStateEl.textContent = `${label}: ready`;
-  recordTimelineEvent("demo_prompt_loaded", label, {
-    source: "demo_composer",
-    draft_chars: text.length,
-  });
-  playgroundEl.focus();
-  requestPrediction("idle");
-}
-
 failureEl.addEventListener("change", async () => {
   await api.setSimulateFailure(failureEl.checked);
   await refresh();
-});
-
-byId<HTMLButtonElement>("preset_primary").addEventListener("click", () => {
-  loadComposerPrompt("cancel next meetihng", "live tuned-model reply");
-});
-
-byId<HTMLButtonElement>("preset_typo").addEventListener("click", () => {
-  loadComposerPrompt("i went to the store instaed", "typo cleanup");
-});
-
-byId<HTMLButtonElement>("preset_short").addEventListener("click", () => {
-  loadComposerPrompt("omw", "quick shorthand");
-});
-
-byId<HTMLButtonElement>("run_safe_demo").addEventListener("click", () => {
-  loadComposerPrompt("cancel next meetihng", "Quip live demo");
 });
 
 byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {

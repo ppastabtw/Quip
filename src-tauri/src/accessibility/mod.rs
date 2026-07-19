@@ -609,6 +609,72 @@ fn normalize_context_segment(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn is_context_line_break(ch: char) -> bool {
+    matches!(ch, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')
+}
+
+fn byte_index_at_utf16(value: &str, target_utf16: usize) -> usize {
+    let mut used_utf16 = 0;
+    for (byte_index, ch) in value.char_indices() {
+        let next_utf16 = used_utf16 + ch.len_utf16();
+        if next_utf16 > target_utf16 {
+            return byte_index;
+        }
+        used_utf16 = next_utf16;
+        if used_utf16 == target_utf16 {
+            return byte_index + ch.len_utf8();
+        }
+    }
+    value.len()
+}
+
+fn normalize_context_lines(value: &str) -> String {
+    value
+        .split(is_context_line_break)
+        .map(normalize_context_segment)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn notes_context_excluding_current_line(value: &str, selected_range_utf16: Range<usize>) -> String {
+    let caret_utf16 = selected_range_utf16.end.min(utf16_len(value));
+    let mut caret_byte = byte_index_at_utf16(value, caret_utf16);
+
+    // Treat a position between CR and LF as the end of the preceding line.
+    if caret_byte > 0
+        && caret_byte < value.len()
+        && value.as_bytes()[caret_byte - 1] == b'\r'
+        && value.as_bytes()[caret_byte] == b'\n'
+    {
+        caret_byte -= 1;
+    }
+
+    let line_start = value[..caret_byte]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| is_context_line_break(*ch))
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    let next_break = value[caret_byte..]
+        .char_indices()
+        .find(|(_, ch)| is_context_line_break(*ch));
+    let remove_end = next_break
+        .map(|(relative_index, ch)| {
+            let mut end = caret_byte + relative_index + ch.len_utf8();
+            if ch == '\r' && value[end..].starts_with('\n') {
+                end += 1;
+            }
+            end
+        })
+        .unwrap_or(value.len());
+
+    let mut remaining = String::with_capacity(value.len() - (remove_end - line_start));
+    remaining.push_str(&value[..line_start]);
+    remaining.push_str(&value[remove_end..]);
+    normalize_context_lines(&remaining)
+}
+
 fn collect_context_text<T: Clone>(
     roots: Vec<T>,
     max_chars: usize,
@@ -688,6 +754,20 @@ fn ax_context_text(element: &AXUIElement) -> Option<String> {
         .flatten()
         .or_else(|| element.string_attribute(AX_VALUE_ATTRIBUTE).ok().flatten())
         .or_else(|| element.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten())
+}
+
+fn notes_editor_context(element: &AXUIElement) -> Option<String> {
+    let value = element
+        .string_attribute(AX_VALUE_ATTRIBUTE)
+        .ok()
+        .flatten()?;
+    let selected_range_utf16 = element
+        .range_attribute(AX_SELECTED_TEXT_RANGE_ATTRIBUTE)
+        .ok()
+        .flatten()
+        .and_then(ax_range_to_range)?;
+    let context = notes_context_excluding_current_line(&value, selected_range_utf16);
+    (!context.is_empty()).then_some(context)
 }
 
 fn collect_ax_window_text(window: &AXUIElement, max_chars: usize) -> String {
@@ -1196,6 +1276,10 @@ fn focused_editable_element() -> Result<FocusedEditableElement, AccessibilityErr
     })
 }
 
+pub(crate) fn focused_caret_rect() -> Option<Rect> {
+    focused_editable_element().ok().map(|focused| focused.caret)
+}
+
 #[allow(dead_code)]
 fn destination_registry() -> &'static Mutex<DestinationRegistry> {
     DESTINATION_REGISTRY.get_or_init(|| Mutex::new(DestinationRegistry::default()))
@@ -1327,12 +1411,20 @@ fn focused_context_snippet(limit: ContextSnippetLimit) -> Option<ContextSnippet>
             .ok()
             .flatten()
     });
-    let window_title = focused_window
-        .as_ref()
-        .and_then(|window| window.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten())
-        .unwrap_or_default();
+    let window_title = if app_bundle_id == NOTES_BUNDLE_ID {
+        // Notes window titles can contain a preview of the active editor line.
+        // Keep that line out of every model-facing context field.
+        NOTES_APP_NAME.to_string()
+    } else {
+        focused_window
+            .as_ref()
+            .and_then(|window| window.string_attribute(AX_TITLE_ATTRIBUTE).ok().flatten())
+            .unwrap_or_default()
+    };
     let editor_fallback = || ax_context_text(&element).map(|text| normalize_context_segment(&text));
-    let visible_text = if app_bundle_id == TEXTEDIT_BUNDLE_ID {
+    let visible_text = if app_bundle_id == NOTES_BUNDLE_ID {
+        notes_editor_context(&element)
+    } else if app_bundle_id == TEXTEDIT_BUNDLE_ID {
         editor_fallback()
     } else {
         focused_window
@@ -1507,12 +1599,12 @@ mod tests {
     use super::{
         bound_context_snippets, bound_draft, bounded_suffix_with_range, build_ready_capture_result,
         capture_preflight, collect_context_snippets, collect_context_text,
-        editability_from_fallback, is_supported_app, resolve_contract, validate_element_contract,
-        validate_focused_editable_element, AccessibilityError, AccessibilityPermissionStatus,
-        CaptureResult, ContextSnippet, ContextSnippetLimit, ContractError, DestinationRegistry,
-        DestinationSnapshot, ElementContract, FocusResolutionError, FocusSource,
-        FocusedElementSnapshot, ProbeElement, AX_STATIC_TEXT_ROLE, AX_TEXT_AREA_ROLE,
-        AX_TEXT_FIELD_ROLE,
+        editability_from_fallback, is_supported_app, notes_context_excluding_current_line,
+        resolve_contract, validate_element_contract, validate_focused_editable_element,
+        AccessibilityError, AccessibilityPermissionStatus, CaptureResult, ContextSnippet,
+        ContextSnippetLimit, ContractError, DestinationRegistry, DestinationSnapshot,
+        ElementContract, FocusResolutionError, FocusSource, FocusedElementSnapshot, ProbeElement,
+        AX_STATIC_TEXT_ROLE, AX_TEXT_AREA_ROLE, AX_TEXT_FIELD_ROLE,
     };
     use quip_contracts::{Rect, Trigger};
 
@@ -1958,6 +2050,39 @@ mod tests {
         );
 
         assert_eq!(text, "same mes");
+    }
+
+    #[test]
+    fn notes_context_excludes_only_the_line_containing_the_caret() {
+        let note = "Project kickoff is Monday.\nCnt cm tmrw\nMeet at Union Station.";
+        let caret = "Project kickoff is Monday.\nCnt".encode_utf16().count();
+
+        assert_eq!(
+            notes_context_excluding_current_line(note, caret..caret),
+            "Project kickoff is Monday.\nMeet at Union Station."
+        );
+    }
+
+    #[test]
+    fn notes_context_handles_utf16_and_notes_line_separators() {
+        let note = "Above\u{2028}𝄞 current\u{2028}Below";
+        let caret = "Above\u{2028}𝄞".encode_utf16().count();
+
+        assert_eq!(
+            notes_context_excluding_current_line(note, caret..caret),
+            "Above\nBelow"
+        );
+    }
+
+    #[test]
+    fn notes_context_keeps_previous_lines_when_caret_is_on_empty_trailing_line() {
+        let note = "Above\nCurrent line\n";
+        let caret = note.encode_utf16().count();
+
+        assert_eq!(
+            notes_context_excluding_current_line(note, caret..caret),
+            "Above\nCurrent line"
+        );
     }
 
     #[test]

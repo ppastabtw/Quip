@@ -12,14 +12,18 @@ navigation, dismissal, and commit messages. A commit is applied with the
 active text client's `insertText:replacementRange:` operation after the client
 range is revalidated.
 
-When Window Context is enabled, the Tauri app also traverses the focused
-supported window's Accessibility tree, collects up to 240 characters of
-visible static text, excludes editable controls, and includes the bounded
-snippet in the prediction request. TextEdit falls back to its active document
-text because the document is itself the editor. Debug events record the
-context source and character counts by default; launching with
-`QUIP_DEBUG_TEXT=1` additionally records snippet text for explicit local
-diagnostics.
+The non-focusable candidate bar is always-on-top and visible across macOS
+workspaces. Invalid native caret geometry falls back to the focused element's
+Accessibility bounds so Notes cannot place the bar off-screen.
+
+The Tauri app always traverses the focused supported window's Accessibility
+tree, collects up to 240 characters of visible static text, excludes editable
+controls, and includes the bounded snippet in the prediction request. TextEdit
+falls back to its active document text because the document is itself the
+editor. Apple Notes reads its native active editor, removes the line containing
+the caret, and bounds the remaining note text; its window title is replaced by
+a non-content label so the current line cannot leak through preview metadata.
+Local debug events record the snippet title and text for inspection.
 
 ```text
 TextEdit / Notes / browser text field
@@ -52,10 +56,11 @@ npm run install:input-method
 ```
 
 The installer builds and signs a staged bundle, backs up an earlier Quip input
-method under `/tmp`, installs `Quip Native.app` in `/Library/Input Methods`, and
-registers it with Text Input Services. macOS requires administrator approval.
-After installation, add **Quip Native** under Keyboard Settings → Text Input →
-Edit, then select it from the input menu.
+method under `/tmp`, installs `Quip Native.app` in `/Library/Input Methods`,
+registers it with Text Input Services, restarts the old input-method host, and
+selects Quip Native. It uses an ad-hoc local signature by default; set
+`QUIP_CODESIGN_IDENTITY=auto` to use an available Apple development identity.
+macOS requires administrator approval.
 
 For live model inference, start the model services and Tauri app before typing:
 
@@ -63,12 +68,17 @@ For live model inference, start the model services and Tauri app before typing:
 src-tauri/sidecars/inference/scripts/run-live-app.sh
 ```
 
+The live launcher starts Quip tray-only; it does not open the demo harness.
+Open the demo explicitly from the tray menu or set `QUIP_SHOW=demo` when it is
+needed for development.
+
 The input method reconnects automatically to the app's loopback bridge. If the
 app is installed in `/Applications`, the input method can launch it when the
 bridge is unavailable; a development run should normally be started explicitly
 so its live backend and model-variant environment are unambiguous.
 
-Validate the real Accessibility/native-bridge boundary in TextEdit and Chrome:
+Validate the real Accessibility/native-bridge boundary in TextEdit, Notes, and
+Chrome:
 
 ```sh
 .agents/skills/validate-quip-context/scripts/validate.sh

@@ -5,7 +5,6 @@ import { api, byId, el, events, type AppSettings } from "./ipc";
 import type { ModelVariant } from "./contracts";
 
 const enabledEl = byId<HTMLInputElement>("enabled");
-const contextEl = byId<HTMLInputElement>("window_context");
 const pausedEl = byId<HTMLInputElement>("learning_paused");
 const profileEl = byId<HTMLSelectElement>("active_profile");
 const variantEl = byId<HTMLSelectElement>("model_variant");
@@ -19,7 +18,6 @@ let settings: AppSettings | undefined;
 function apply(next: AppSettings) {
   settings = next;
   enabledEl.checked = next.enabled;
-  contextEl.checked = next.window_context;
   pausedEl.checked = next.learning_paused;
   profileEl.value = next.active_profile;
   variantEl.value = next.model_variant;
@@ -49,7 +47,7 @@ function push() {
   const next: AppSettings = {
     ...settings,
     enabled: enabledEl.checked,
-    window_context: contextEl.checked,
+    window_context: true,
     learning_paused: pausedEl.checked,
     active_profile: profileEl.value,
     model_variant: variantEl.value as ModelVariant,
@@ -59,7 +57,7 @@ function push() {
   void api.updateSettings(next).then(() => renderPatterns(next.active_profile));
 }
 
-for (const control of [enabledEl, contextEl, pausedEl, profileEl, variantEl, backendEl]) {
+for (const control of [enabledEl, pausedEl, profileEl, variantEl, backendEl]) {
   control.addEventListener("change", push);
 }
 
