@@ -503,6 +503,60 @@ fn safe_demo_capture(case_id: &str) -> Result<CaptureResult, String> {
     })
 }
 
+#[tauri::command]
+async fn run_safe_demo(app: AppHandle, case_id: Option<String>) -> Result<(), String> {
+    let case_id = case_id.unwrap_or_else(|| "primary".to_string());
+    let result = match safe_demo_capture(&case_id) {
+        Ok(result) => result,
+        Err(error) => {
+            record_debug(
+                &app,
+                "demo_safe_mode_failed",
+                format!("safe demo failed: {case_id}"),
+                json!({
+                    "case_id": case_id,
+                    "error": error,
+                }),
+            );
+            return Err(error);
+        }
+    };
+
+    record_debug(
+        &app,
+        "demo_safe_mode_started",
+        format!("safe demo started: {case_id}"),
+        json!({
+            "case_id": case_id,
+            "destination_id": "destination_textedit",
+            "draft_chars": match &result {
+                CaptureResult::Ready { draft, .. } => draft.chars().count(),
+                CaptureResult::Unavailable { .. } => 0,
+            },
+            "accessibility_bypassed": true,
+        }),
+    );
+
+    let previous_mode = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        let previous_mode = engine.settings.backend_mode;
+        engine.settings.backend_mode = BackendMode::Fixture;
+        previous_mode
+    };
+    emit_settings(&app);
+
+    run_capture_result(app.clone(), result, false, "safe_demo_mode", None).await;
+
+    {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.settings.backend_mode = previous_mode;
+    }
+    emit_settings(&app);
+    Ok(())
+}
+
 async fn run_capture_result(
     app: AppHandle,
     result: CaptureResult,
