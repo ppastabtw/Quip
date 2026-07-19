@@ -13,7 +13,6 @@ from augmentation import augment_text
 from .contract import (
     CONTRACT,
     DATASET_DIR,
-    ENGLISH_TOKEN_RE,
     MANIFEST_PATH,
     REPORT_PATH,
     BuildError,
@@ -46,6 +45,7 @@ class DatasetPolicy:
     minimum_characters_per_event: int | None = None
     generation_method: str = "qwerty_augmentation"
     letter_neighbors_only: bool = False
+    source_sampling: str = "random_contiguous"
 
 
 V1_POLICY = DatasetPolicy(
@@ -74,10 +74,11 @@ V2_DRAFT_POLICY = DatasetPolicy(
     allow_input_word_count_change=True,
     isolate_normalized_surfaces=True,
     source_buffer_share=0.50,
-    one_word_source_buffer_share=2.25,
+    one_word_source_buffer_share=0.75,
     minimum_characters_per_event=3,
     generation_method="deterministic_typing_augmentation",
     letter_neighbors_only=True,
+    source_sampling="runtime_chunks",
 )
 
 POLICIES = {policy.name: policy for policy in (V1_POLICY, V2_DRAFT_POLICY)}
@@ -155,7 +156,6 @@ def select_split(
     rng: random.Random,
     policy: DatasetPolicy = V1_POLICY,
     excluded_surfaces: set[str] | None = None,
-    valid_vocabulary: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     expected = CONTRACT.expected_counts(split)
     surfaces: set[str] = set()
@@ -247,7 +247,6 @@ def select_split(
                 if ambiguity_rejection_reason(
                     draft,
                     minimum_zipf_frequency=policy.ambiguity_minimum_zipf,
-                    valid_vocabulary=valid_vocabulary,
                 ):
                     continue
                 input_normalized = normalize_text(draft)
@@ -352,11 +351,6 @@ def compile_datasets(
     manifest = load_manifest()
     source_paths = prepare_sources(manifest, offline=offline)
     records = parse_massive(source_paths["massive_en_us"])
-    valid_vocabulary = {
-        token.casefold()
-        for record in records
-        for token in ENGLISH_TOKEN_RE.findall(record["utt"])
-    }
     rng = random.Random(seed)
 
     def source_buffer_rows(split: str) -> dict[int, int] | None:
@@ -384,6 +378,7 @@ def compile_datasets(
         required_by_size=CONTRACT.expected_counts("test")["window_sizes"],
         rng=rng,
         buffer_rows=source_buffer_rows("test"),
+        sampling=policy.source_sampling,
     )
     eval_pools = sample_massive_windows(
         records,
@@ -391,6 +386,7 @@ def compile_datasets(
         required_by_size=CONTRACT.expected_counts("eval")["window_sizes"],
         rng=rng,
         buffer_rows=source_buffer_rows("eval"),
+        sampling=policy.source_sampling,
     )
     train_pools = sample_massive_windows(
         records,
@@ -398,6 +394,7 @@ def compile_datasets(
         required_by_size=CONTRACT.expected_counts("train")["window_sizes"],
         rng=rng,
         buffer_rows=source_buffer_rows("train"),
+        sampling=policy.source_sampling,
     )
     excluded_surfaces: set[str] = set()
     test_rows, test_surfaces = select_split(
@@ -406,7 +403,6 @@ def compile_datasets(
         rng=rng,
         policy=policy,
         excluded_surfaces=(excluded_surfaces if policy.isolate_normalized_surfaces else None),
-        valid_vocabulary=valid_vocabulary,
     )
     excluded_surfaces.update(test_surfaces)
     eval_rows, eval_surfaces = select_split(
@@ -415,7 +411,6 @@ def compile_datasets(
         rng=rng,
         policy=policy,
         excluded_surfaces=(excluded_surfaces if policy.isolate_normalized_surfaces else None),
-        valid_vocabulary=valid_vocabulary,
     )
     excluded_surfaces.update(eval_surfaces)
     train_rows, _ = select_split(
@@ -424,7 +419,6 @@ def compile_datasets(
         rng=rng,
         policy=policy,
         excluded_surfaces=(excluded_surfaces if policy.isolate_normalized_surfaces else None),
-        valid_vocabulary=valid_vocabulary,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -481,7 +475,7 @@ def compile_datasets(
             "ambiguity_minimum_zipf": policy.ambiguity_minimum_zipf,
             "profanity_filter": "better-profanity==0.7.0",
             "source_quality": "wordfreq==3.1.1 with minimum Zipf frequency 3.0",
-            "sampling": "one seeded random contiguous window per source utterance",
+            "sampling": policy.source_sampling,
             "source_buffer_share": policy.source_buffer_share,
             "one_word_source_buffer_share": policy.one_word_source_buffer_share,
             "minimum_characters_per_event": policy.minimum_characters_per_event,

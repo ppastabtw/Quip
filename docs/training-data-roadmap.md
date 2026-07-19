@@ -279,7 +279,7 @@ duplicated planning text together.
 | DQ-002 | Keep the 90% changed and 10% unchanged ratio for now | done | Decision recorded; reopen only with interaction telemetry or a user decision |
 | DQ-003 | Defer context and personalization training | needs external data | Confirmed team interaction examples and approved schema |
 | DQ-004 | Add a non-mutating dataset diagnostic report | done | `training/flash/scripts/report_dataset_quality.py`; current build matches; 52 tests pass |
-| DQ-005 | Add deterministic multi-event augmentation | dry build done, approval pending | Operator tests, exact severity quotas, inspected samples, and representative-model evidence |
+| DQ-005 | Add deterministic multi-event augmentation | revised build ready | Inspect samples and repeat representative 2B evidence |
 | DQ-006 | Add spacing and dropped-vowel transformations | done in V2 draft | Validated compressed rows, operator counts, and inspected examples |
 | DQ-007 | Filter ambiguous valid-word corrections | partial | Common-token probes are zero; grammatical and contextual ambiguity remains a known heuristic limit |
 | DQ-008 | Add protected-text hard negatives | todo | Synthetic names, identifiers, paths, and capitalization cases preserved unchanged |
@@ -288,16 +288,18 @@ duplicated planning text together.
 | DQ-011 | Add phonetic-spelling data | implemented in V2 draft | Deterministic rules and category counts exist; broader phonetic coverage remains |
 | DQ-012 | Strengthen cross-split isolation | done in V2 draft | Validator rejects injected leakage; dry build has zero input, target, and family overlap |
 | DQ-013 | Expand and version evaluation datasets | todo | Per-category denominators, confidence rationale, hashes, and protocol name |
-| DQ-014 | Add five-completion product evaluation | implemented, live run pending | Runtime and evaluator share ranking; managed and benchmark runners request five completions |
+| DQ-014 | Add five-completion product evaluation | done | Runtime and evaluator share ranking; 2B base and five checkpoints each produced 1,000 completions |
 | DQ-015 | Reconcile the stale 80-character documentation | needs repair | Five-word behavior documented after safe worktree integration |
 | DQ-016 | Preserve protocol-aware Discord reporting | needs external confirmation | Discord post confirmation after the final six-model report was routed with the metric-reset caveat |
 | DQ-017 | Choose the first implementation slice | done | DQ-004 selected and completed without mutating the dataset |
 | DQ-018 | Give the current dataset and evaluator an explicit protocol identity | done for V2 draft | `docs/training-data-v2-draft.md` records hashes, evaluator behavior, and exclusions |
 | DQ-019 | Choose between the 2B product base, local 4B evaluation, and the managed 35B-A3B quality winner | needs product evidence | Mac quality, latency, memory, and adapter-loading observations |
+| DQ-020 | Restrict pipeline iteration to 2B | done | User decision recorded; every other model size remains a historical benchmark entry only until protocol finalization |
+| DQ-021 | Reject underdetermined heavy corruptions | in progress | Deterministic recoverability rule, regression fixtures, rebuilt audit, and inspected rejected examples |
 
-Recommended next slice: prepare one representative Qwen 2B SFT dry-run against
-the V2 draft, calculate the actual submission estimate and five-completion
-evaluation request count, then request approval before any paid submission.
+Recommended next slice: publish the runtime-aligned, globally filtered dataset
+environment and run one representative 2B SFT plus ranked-five checkpoint
+sweep. Do not train any other model size.
 
 ## Execution log
 
@@ -317,3 +319,8 @@ decisions rather than rewriting history.
 | 2026-07-18 | Built and iterated the ignored V2 dry dataset. | `docs/training-data-v2-draft.md`; compiler report; inspected samples; repeated seed-42 build. | V2 has exact severity quotas, compressed and phonetic families, zero flagged common-token ambiguity cases, and zero protected cross-split overlap. V1 hashes remain byte-identical. |
 | 2026-07-18 | Replaced single-completion evaluation with the product-ranked five-completion protocol. | Shared `rank_candidate_items` fixture; managed, benchmark, and checkpoint runners; evaluator tests. | Reports top-ranked success, candidate recall at five, and mean completion success separately. Previous V1 percentages are not directly comparable. |
 | 2026-07-18 | Published an isolated V2 environment and ran the representative training preflight. | Environment `ariobarin/quip-v2-draft-20260718t2050`; dry-run `flash-1784418431-547761a4`; committed representative config. | Server validation passed. Estimated training cost is $0.07. No paid run was submitted pending explicit approval. |
+| 2026-07-19 | Completed the first representative V2 2B training run and full checkpoint sweep. | Run `flash-1784436250-97876093`; base predictions; checkpoints 20 through 100; 200 examples and 1,000 completions per evaluation. | Step 80 leads at 63.5% ranked success, 72.5% recall at five, and 15.0% unnecessary edits versus 35.5%, 44.5%, and 90.0% for base. The run charged $0.07. |
+| 2026-07-19 | Audited step 80 failures by category, severity, and candidate aggregation. | Preserved prediction JSONL and deterministic ranked-five scorer. | Of 31 compressed failures, 27 lacked the accepted target among all five completions. The audit exposed awkward source fragments, underdetermined heavy corruptions, one protected proper-name interruption, and two fragment-like unchanged interruptions. Repair data quality before another run. |
+| 2026-07-19 | Limited iterative training to Qwen 2B only. | User amendment authority. | Keep every other model-size result in the historical benchmark, but do not train or tune those sizes until the pipeline is finalized. |
+| 2026-07-19 | Replaced arbitrary MASSIVE windows with runtime-aligned chunks and broadened common-word rejection. | Seed-42 build hashes, 68 passing tests, quality report, and inspected evaluation samples. | The 2,000/200/200 build preserves exact severity and 90/10 quotas, follows five-word queue boundaries, rejects all-common English drafts without a corpus-membership loophole, and has zero protected split overlap. |
+| 2026-07-19 | Tested slot-wide protected-value preservation as a possible hard-negative policy. | Failed deterministic build at test size one with 29 of 40 rows after all protected values were made immutable. | Rejected as overbroad. Keep DQ-008 open for a smaller explicit protected-text corpus instead of weakening the current quotas or hiding the failed experiment. |
