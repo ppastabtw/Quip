@@ -7,7 +7,7 @@ id = "ariobarin/quip-v2-context-mega-20260719"
 
 [environment.params]
 split = "train"
-dataset_path = "context_data/mixed/train.jsonl"
+dataset_path = "dataset/train.jsonl"
 
 [train]
 max_examples = 5240
