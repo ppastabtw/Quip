@@ -231,7 +231,7 @@ Required `capture_retry` payload:
 - [x] Register `run_safe_demo`: `src-tauri/src/main.rs`
 - [x] Add `QUIP_DEMO_SAFE_MODE=1` startup path: `src-tauri/src/main.rs`
 - [x] Add one-shot focused-capture retry: `src-tauri/src/main.rs`
-- [ ] Emit safe-demo and retry debug events: `src-tauri/src/main.rs`
+- [x] Emit safe-demo and retry debug events: `src-tauri/src/main.rs`
 - [ ] Add `runSafeDemo`: `src/ui/ipc.ts`
 - [ ] Add `Run safe demo` button: `src/ui/demo.html`
 - [ ] Wire button behavior and UI state: `src/ui/demo.ts`

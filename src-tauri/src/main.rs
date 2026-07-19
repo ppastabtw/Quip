@@ -370,6 +370,20 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
     );
     let result = if is_retryable_menu_focus_miss(&focused) {
         std::thread::sleep(std::time::Duration::from_millis(150));
+        let retry_focused = accessibility::focused_element_diagnostic();
+        record_resolver_candidates(&app, "capture_retry", &retry_focused);
+        record_debug(
+            &app,
+            "capture_retry",
+            "retrying manual focused capture after menu focus miss",
+            json!({
+                "source": "manual_focused_capture",
+                "retry_delay_ms": 150,
+                "first_resolution_error": focused.resolution_error,
+                "first_app_bundle_id": focused.app_bundle_id,
+                "focused": retry_focused,
+            }),
+        );
         accessibility::capture_focused_destination(&profile_id, trigger)
     } else {
         accessibility::capture_focused_destination(&profile_id, trigger)
