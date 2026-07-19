@@ -238,7 +238,7 @@ Required `capture_retry` payload:
 - [x] Ensure demo phrases exist in fixture corpus: `src-tauri/fixtures/demo_corpus.json`
 - [x] Add app validation skill: `.agents/skills/validate-quip-demo/SKILL.md`
 - [x] Add validation script: `.agents/skills/validate-quip-demo/scripts/validate.sh`
-- [ ] Update demo scope doc after implementation: `docs/hackathon-demo-scope-quip.md`
+- [x] Update demo scope doc after implementation: `docs/hackathon-demo-scope-quip.md`
 
 ## Execution Progress
 
