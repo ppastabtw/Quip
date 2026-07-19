@@ -146,7 +146,9 @@ class PrototypeRequestTests(unittest.TestCase):
         self.assertEqual(payload["temperature"], 0.9)
         self.assertEqual(payload["max_tokens"], 96)
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
-        self.assertNotIn("response_format", payload)
+        schema = payload["response_format"]["json_schema"]["schema"]
+        self.assertEqual(schema["required"], ["suggestion"])
+        self.assertFalse(schema["additionalProperties"])
 
     def test_rejects_blank_draft(self):
         with self.assertRaisesRegex(PlaygroundError, "draft must be a non-empty string"):

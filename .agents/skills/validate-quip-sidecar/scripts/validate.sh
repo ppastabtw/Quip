@@ -4,8 +4,19 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 cd "$repo_root"
 
+if python -c 'pass' >/dev/null 2>&1; then
+  python_bin=python
+elif python3 -c 'pass' >/dev/null 2>&1; then
+  python_bin=python3
+elif py -3 -c 'pass' >/dev/null 2>&1; then
+  python_bin=$(py -3 -c 'import sys; print(sys.executable)')
+else
+  printf '%s\n' 'Python 3 is required for sidecar validation.' >&2
+  exit 1
+fi
+
 cargo fmt --manifest-path src-tauri/sidecars/inference/Cargo.toml -- --check
-cargo test --workspace
+cargo test -p quip-inference-sidecar
 cargo build -p quip-inference-sidecar
 
 sidecar="target/debug/quip-inference-sidecar"
@@ -22,7 +33,7 @@ trap 'rm -f "$responses"' EXIT HUP INT TERM
   printf '%s\n' '{"operation":"predict","request":{"request_id":"pred_missing_adapter","profile_id":"profile_default","model_variant":"global","draft":"cnt cm tmrw","context_snippets":[],"personal_patterns":[]}}'
 } | "$sidecar" > "$responses"
 
-python3 - "$responses" <<'PY'
+"$python_bin" - "$responses" <<'PY'
 import json
 import pathlib
 import sys

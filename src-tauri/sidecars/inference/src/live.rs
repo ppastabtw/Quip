@@ -485,7 +485,14 @@ impl LiveBackend {
             "enable_thinking": false,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "stop": ["<|endoftext|>"]
+            "stop": ["<|endoftext|>"],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            }
         });
         let body = serde_json::to_vec(&body)?;
         let request_build_us = elapsed_us(build_started);
@@ -504,10 +511,7 @@ impl LiveBackend {
             .content
             .as_deref()
             .ok_or(LiveBackendError::MissingModelContent)?;
-        let output = content.trim().to_owned();
-        if output.is_empty() {
-            return Err(LiveBackendError::MissingModelContent);
-        }
+        let output = parse_model_output(content)?;
         let tokens = response_body.usage.map(|usage| {
             token_profile(
                 content,
@@ -632,6 +636,13 @@ impl LiveBackend {
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
             "stop": ["<|endoftext|>"],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            },
             "stream": true
         });
         let body = serde_json::to_vec(&body)?;
@@ -639,10 +650,7 @@ impl LiveBackend {
         let (content, http_timing) =
             self.request_streaming("POST", "/v1/chat/completions", &body, cancel)?;
         let response_decode_started = Instant::now();
-        let output = content.trim().to_owned();
-        if output.is_empty() {
-            return Err(LiveBackendError::MissingModelContent);
-        }
+        let output = parse_model_output(&content)?;
         let response_decode_us = elapsed_us(response_decode_started);
 
         Ok(TimedModelOutput {
@@ -942,6 +950,20 @@ fn model_input(request: &PredictionRequest) -> Value {
     }
 }
 
+fn prediction_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "suggestion": {
+                "type": "string",
+                "minLength": 1
+            }
+        },
+        "required": ["suggestion"],
+        "additionalProperties": false
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct ChatCompletion {
     choices: Vec<ChatChoice>,
@@ -959,6 +981,23 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
     content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelOutput {
+    suggestion: String,
+}
+
+fn parse_model_output(content: &str) -> Result<String, LiveBackendError> {
+    let suggestion = serde_json::from_str::<ModelOutput>(content)?
+        .suggestion
+        .trim()
+        .to_owned();
+    if suggestion.is_empty() {
+        return Err(LiveBackendError::MissingModelContent);
+    }
+    Ok(suggestion)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1128,9 +1167,10 @@ fn normalize_model_outputs(
     }
 }
 
-/// Suppress literal schema/example text if a small model echoes prompt
-/// scaffolding instead of producing a correction. Returning no candidate is
-/// safer than offering text that was never derived from the user's draft.
+/// Suppress literal schema/example text if a small model places prompt
+/// scaffolding inside the schema-valid suggestion field. Returning no
+/// candidate is safer than offering text that was never derived from the
+/// user's draft.
 fn is_model_scaffolding(suggestion: &str) -> bool {
     let normalized = suggestion.trim().to_ascii_lowercase();
     let repeats_prompt_policy = SYSTEM_PROMPT.lines().any(|line| {
@@ -1282,8 +1322,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_implausibly_truncated, is_model_scaffolding, normalize_model_outputs, token_profile,
-        CancelHandle, ChatUsage, LiveBackend, LiveConfig, SYSTEM_PROMPT,
+        is_implausibly_truncated, is_model_scaffolding, normalize_model_outputs,
+        parse_model_output, token_profile, CancelHandle, ChatUsage, LiveBackend, LiveConfig,
+        SYSTEM_PROMPT,
     };
 
     fn request() -> PredictionRequest {
@@ -1322,6 +1363,8 @@ mod tests {
     fn prompt_contains_policy_without_answer_shaped_text() {
         assert!(SYSTEM_PROMPT.contains("actual complete text"));
         assert!(SYSTEM_PROMPT.contains("If no confident correction is needed"));
+        assert!(SYSTEM_PROMPT.contains("exactly one JSON object"));
+        assert!(SYSTEM_PROMPT.contains("suggestion"));
         assert!(!SYSTEM_PROMPT.contains("Suggestion text:"));
         assert!(!SYSTEM_PROMPT
             .to_ascii_lowercase()
@@ -1364,9 +1407,21 @@ mod tests {
     }
 
     #[test]
-    fn token_profile_reports_zero_schema_tax_for_plain_text() {
+    fn parses_only_the_strict_model_output_contract() {
+        assert_eq!(
+            parse_model_output(r#"{"suggestion":"can't meet tomorrow"}"#).unwrap(),
+            "can't meet tomorrow"
+        );
+        assert!(parse_model_output("can't meet tomorrow").is_err());
+        assert!(
+            parse_model_output(r#"{"suggestion":"can't meet tomorrow","reason":"fixed"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn token_profile_reports_json_schema_tax() {
         let profile = token_profile(
-            "can't meet tomorrow",
+            r#"{"suggestion":"can't meet tomorrow"}"#,
             "can't meet tomorrow",
             ChatUsage {
                 prompt_tokens: 80,
@@ -1385,8 +1440,8 @@ mod tests {
 
         assert_eq!(profile.prompt_tokens, 80);
         assert_eq!(profile.completion_tokens, 10);
-        assert_eq!(profile.deterministic_schema_chars, 0);
-        assert_eq!(profile.estimated_schema_tokens, 0.0);
+        assert!(profile.deterministic_schema_chars > 0);
+        assert!(profile.estimated_schema_tokens > 0.0);
         assert_eq!(profile.server_ms_per_output_token, 50.0);
         assert_eq!(profile.completion_ms_per_token, Some(25.0));
         assert_eq!(profile.prompt_prefill_ms, Some(250.0));
@@ -1519,9 +1574,10 @@ mod tests {
     // trusting this in production.
 
     fn sse_body_for(suggestion: &str) -> Vec<u8> {
+        let model_output = json!({"suggestion": suggestion}).to_string();
         let chunk1 = format!(
             "data: {}\n\n",
-            json!({"choices": [{"delta": {"content": suggestion}}]})
+            json!({"choices": [{"delta": {"content": model_output}}]})
         );
         let chunk2 = format!(
             "data: {}\n\n",
@@ -1544,12 +1600,14 @@ mod tests {
     /// Drains one HTTP request off `stream` (headers plus its
     /// Content-Length body) so the mock server behaves like a real one
     /// instead of racing the client's write.
-    fn drain_one_request(stream: &mut TcpStream) {
+    fn drain_one_request(stream: &mut TcpStream) -> bool {
         let mut buf = Vec::new();
         let mut chunk = [0_u8; 4096];
         let content_length = loop {
             let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "client closed before sending a full request");
+            if read == 0 {
+                return false;
+            }
             buf.extend_from_slice(&chunk[..read]);
             let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
                 continue;
@@ -1570,6 +1628,7 @@ mod tests {
             }
         };
         let _ = content_length;
+        true
     }
 
     #[test]
@@ -1578,7 +1637,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            drain_one_request(&mut stream);
+            assert!(drain_one_request(&mut stream));
             let body = sse_body_for("Can't come tomorrow.");
             let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
             response.extend_from_slice(&body);
@@ -1600,7 +1659,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            drain_one_request(&mut stream);
+            assert!(drain_one_request(&mut stream));
             let body = to_chunked_encoding(&sse_body_for("Can't come tomorrow."));
             let mut response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
             response.extend_from_slice(&body);
@@ -1622,7 +1681,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            drain_one_request(&mut stream);
+            assert!(drain_one_request(&mut stream));
             // Never respond: park on a read that only ends when the client
             // (the cancellation under test) shuts the socket down.
             let mut park = [0_u8; 1];
@@ -1659,7 +1718,9 @@ mod tests {
             let mut served_fast = 0;
             for _ in 0..completion_count {
                 let (mut stream, _) = listener.accept().unwrap();
-                drain_one_request(&mut stream);
+                if !drain_one_request(&mut stream) {
+                    continue;
+                }
                 if served_fast < early_exit_agreement {
                     served_fast += 1;
                     let body = sse_body_for("Can't come tomorrow.");

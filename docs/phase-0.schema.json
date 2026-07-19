@@ -46,6 +46,15 @@
     }
   },
   "$defs": {
+    "model_completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suggestion"],
+      "properties": {
+        "suggestion": { "type": "string", "minLength": 1 }
+      },
+      "description": "Internal raw completion shared by training, evaluation, and live inference."
+    },
     "model_variant": {
       "enum": ["base", "global", "global_plus_personal"]
     },

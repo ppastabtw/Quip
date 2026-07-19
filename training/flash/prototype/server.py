@@ -28,7 +28,11 @@ from augmentation import (  # noqa: E402
     normalize_weights,
 )
 from environment import SYSTEM_PROMPT  # noqa: E402
-from scoring import parse_prediction, rank_candidate_items  # noqa: E402
+from scoring import (  # noqa: E402
+    OUTPUT_RESPONSE_FORMAT,
+    parse_prediction,
+    rank_candidate_items,
+)
 
 
 INDEX_PATH = Path(__file__).with_name("index.html")
@@ -138,6 +142,7 @@ def request_payload(
         ],
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "response_format": OUTPUT_RESPONSE_FORMAT,
         "chat_template_kwargs": {"enable_thinking": False},
     }
 
@@ -188,7 +193,7 @@ def _run_suggestion(
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise PlaygroundError(
             HTTPStatus.BAD_GATEWAY,
-            "The model returned an empty or scaffolded reply instead of corrected text",
+            "The model returned a response outside the Quip JSON contract",
         ) from error
 
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}

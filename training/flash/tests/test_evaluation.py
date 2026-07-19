@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scoring import parse_gold_output
+from scoring import model_text, parse_gold_output
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "evaluate_predictions.py"
@@ -20,7 +20,7 @@ class EvaluationTests(unittest.TestCase):
         predictions = [
             {
                 "example_id": row["metadata"]["example_id"],
-                "responses": [parse_gold_output(row["output"]).suggestion] * 5,
+                "responses": [model_text(row["output"])] * 5,
                 "latency_ms": 100,
             }
             for row in dataset
@@ -42,7 +42,7 @@ class EvaluationTests(unittest.TestCase):
         )
         prediction = {
             "example_id": unchanged["metadata"]["example_id"],
-            "responses": ["/opt/homebrew/bun"] * 5,
+            "responses": [model_text({"suggestion": "/opt/homebrew/bun"})] * 5,
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "predictions.jsonl"
@@ -61,7 +61,10 @@ class EvaluationTests(unittest.TestCase):
         wrong = input_text + " wrong"
         prediction = {
             "example_id": changed["metadata"]["example_id"],
-            "responses": [wrong, wrong, wrong, gold, gold],
+            "responses": [
+                model_text({"suggestion": suggestion})
+                for suggestion in [wrong, wrong, wrong, gold, gold]
+            ],
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "predictions.jsonl"
@@ -81,7 +84,10 @@ class EvaluationTests(unittest.TestCase):
         false_edit = unchanged["input"]["text"] + " changed"
         prediction = {
             "example_id": unchanged["metadata"]["example_id"],
-            "responses": [original, original, original, original, false_edit],
+            "responses": [
+                model_text({"suggestion": suggestion})
+                for suggestion in [original, original, original, original, false_edit]
+            ],
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "predictions.jsonl"

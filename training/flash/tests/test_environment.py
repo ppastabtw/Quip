@@ -2,7 +2,7 @@ import unittest
 
 from dataset_compiler.contract import CONTRACT
 from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment
-from scoring import parse_gold_output
+from scoring import model_text
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -20,6 +20,7 @@ class EnvironmentTests(unittest.TestCase):
         messages = environment.build_prompt_messages(example, "")
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("one full-text suggestion", messages[0]["content"])
+        self.assertIn("exactly one JSON object", messages[0]["content"])
         self.assertEqual(messages[1]["content"], example.input)
 
     def test_prompt_has_policy_without_answer_shaped_text(self):
@@ -31,8 +32,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_gold_output_passes_environment_reward(self):
         environment = QuipEnvironment(split="eval")
         example = environment.dataset[0]
-        gold_suggestion = parse_gold_output(example.output).suggestion
-        reward = environment.score_response(example, gold_suggestion)
+        reward = environment.score_response(example, model_text(example.output))
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)
 

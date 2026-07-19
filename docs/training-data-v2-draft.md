@@ -140,9 +140,11 @@ runs during pipeline iteration.
 
 ## First representative training result
 
-The following result used the earlier JSON-wrapped reply contract. Current
-`origin/main` requires plain-text model replies, so the adapter is historical
-pipeline evidence and must not be promoted as a current-contract model.
+The following result used the authoritative JSON model reply contract. The
+same strict `suggestion` object is now enforced by training, evaluation, the
+prototype, and live inference. This makes the adapter eligible for runtime
+validation, but does not promote it automatically because its dataset still
+has known quality limitations.
 
 The candidate config is
 `training/flash/configs/sft-v2-qwen-2b-representative.toml`. It uses
@@ -168,7 +170,7 @@ completions per example.
 | V2 Qwen3.5-2B | 80 | 63.5% | 72.5% | 60.2% | 15.0% |
 | V2 Qwen3.5-2B | 100 | 61.5% | 71.5% | 59.7% | 20.0% |
 
-Step 80 was the provisional leader under the earlier reply contract, not a
+Step 80 was the provisional leader under the current reply contract, not a
 promoted model. Its 31
 compressed-category failures include 27 cases where none of five completions
 matched the single accepted label. The audit found examples whose clean target
@@ -176,5 +178,6 @@ is an awkward source fragment or is no longer uniquely recoverable after
 several mutations. Three of 20 unchanged examples also interrupted the
 candidate bar, including a protected proper name and two fragment-like inputs.
 The revised build aligns source windows with runtime chunking and strengthens
-the common-word ambiguity rejection. The next action is a 2B-only rerun using
-the current plain-text reply contract.
+the common-word ambiguity rejection. First, runtime-validate the existing step
+80 adapter under the restored contract. Then run one 2B-only comparison on the
+revised dataset and score both models with the same five-completion evaluator.
