@@ -1,0 +1,24 @@
+model = "Qwen/Qwen3.5-2B"
+algorithm = "grpo"
+seed = 42
+
+[environment]
+id = "ariobarin/quip-v2-runtime-10w-5k-grpo-judge-20260719"
+
+[environment.params]
+split = "train"
+judge_model = "Qwen/Qwen3.6-35B-A3B"
+
+[train]
+# Eight unique prompts per step makes 625 steps one full pass over 5,000 rows.
+max_examples = 5000
+max_steps = 625
+save_at_steps = [50, 100, 250, 400, 625]
+# Best fully evaluated checkpoint available when this run was launched: 76.9%.
+init_from_adapter = "flash-1784446044-7bc2f567/step-150"
+group_size = 8
+batch_size = 8
+temperature = 1.0
+max_completion_tokens = 64
+max_context_tokens = 1024
+structured_outputs = { json = { type = "object", properties = { suggestion = { type = "string", minLength = 1 } }, required = ["suggestion"], additionalProperties = false }, disable_additional_properties = true }

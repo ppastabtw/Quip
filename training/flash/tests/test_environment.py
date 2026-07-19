@@ -65,6 +65,7 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("personal patterns", SYSTEM_PROMPT)
         self.assertNotIn("Suggestion text:", SYSTEM_PROMPT)
         self.assertNotIn("best full text", SYSTEM_PROMPT.lower())
+        self.assertIn("Never replace an explicit value", SYSTEM_PROMPT)
 
     def test_gold_output_passes_environment_reward(self):
         environment = QuipEnvironment(split="eval")
@@ -103,6 +104,28 @@ class EnvironmentTests(unittest.TestCase):
         messages = environment.build_prompt_messages(example, "")
         self.assertEqual(messages[0]["content"], HYBRID_SYSTEM_PROMPT)
         self.assertIn("lexical_hints", json.loads(messages[1]["content"]))
+
+    def test_model_input_combines_context_and_lexical_hints(self):
+        content = json.loads(
+            model_input_json(
+                {
+                    "text": "met at gat c14",
+                    "context_snippets": [
+                        {
+                            "app_name": "Calendar",
+                            "window_title": "Flight",
+                            "visible_text": "Gate C14",
+                        }
+                    ],
+                },
+                lexical_hints=True,
+            )
+        )
+        self.assertEqual(
+            set(content), {"context_snippets", "text", "lexical_hints"}
+        )
+        self.assertEqual(content["context_snippets"][0]["visible_text"], "Gate C14")
+        self.assertTrue(content["lexical_hints"])
 
 
 if __name__ == "__main__":
