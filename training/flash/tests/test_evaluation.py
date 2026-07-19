@@ -77,10 +77,8 @@ class EvaluationTests(unittest.TestCase):
         unchanged = next(
             row for row in dataset if row["metadata"]["target_changed"] is False
         )
-        original = model_text(unchanged["output"])
-        false_edit = model_text(
-            {"suggestion": unchanged["input"]["text"] + " changed"}
-        )
+        original = parse_gold_output(unchanged["output"]).suggestion
+        false_edit = unchanged["input"]["text"] + " changed"
         prediction = {
             "example_id": unchanged["metadata"]["example_id"],
             "responses": [original, original, original, original, false_edit],

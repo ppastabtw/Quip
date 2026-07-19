@@ -140,6 +140,10 @@ runs during pipeline iteration.
 
 ## First representative training result
 
+The following result used the earlier JSON-wrapped reply contract. Current
+`origin/main` requires plain-text model replies, so the adapter is historical
+pipeline evidence and must not be promoted as a current-contract model.
+
 The candidate config is
 `training/flash/configs/sft-v2-qwen-2b-representative.toml`. It uses
 Qwen3.5-2B, 2,000 examples, LoRA rank 32, batch size 8, and 100 steps. The V2
@@ -164,11 +168,13 @@ completions per example.
 | V2 Qwen3.5-2B | 80 | 63.5% | 72.5% | 60.2% | 15.0% |
 | V2 Qwen3.5-2B | 100 | 61.5% | 71.5% | 59.7% | 20.0% |
 
-Step 80 is the provisional checkpoint leader, not a promoted model. Its 31
+Step 80 was the provisional leader under the earlier reply contract, not a
+promoted model. Its 31
 compressed-category failures include 27 cases where none of five completions
 matched the single accepted label. The audit found examples whose clean target
 is an awkward source fragment or is no longer uniquely recoverable after
 several mutations. Three of 20 unchanged examples also interrupted the
 candidate bar, including a protected proper name and two fragment-like inputs.
 The revised build aligns source windows with runtime chunking and strengthens
-the common-word ambiguity rejection. The next action is a 2B-only rerun.
+the common-word ambiguity rejection. The next action is a 2B-only rerun using
+the current plain-text reply contract.
