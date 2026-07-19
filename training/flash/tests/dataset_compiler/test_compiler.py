@@ -3,9 +3,42 @@ import random
 from dataset_compiler.compiler import (
     V1_POLICY,
     V2_DRAFT_POLICY,
+    V2_RUNTIME_10W_5K_POLICY,
     event_count_quotas,
     event_count_schedule,
 )
+
+
+def test_v2_runtime_10w_5k_policy_uses_requested_split_sizes():
+    contract = V2_RUNTIME_10W_5K_POLICY.contract
+
+    assert contract.expected_counts("train")["rows"] == 5000
+    assert contract.expected_counts("eval")["rows"] == 1000
+    assert contract.expected_counts("test")["rows"] == 1000
+    assert contract.expected_counts("train")["window_sizes"] == {
+        1: 160,
+        2: 320,
+        3: 400,
+        4: 560,
+        5: 640,
+        6: 680,
+        7: 600,
+        8: 440,
+        9: 360,
+        10: 840,
+    }
+    assert contract.expected_counts("eval")["window_sizes"] == {
+        1: 40,
+        2: 80,
+        3: 80,
+        4: 120,
+        5: 120,
+        6: 120,
+        7: 120,
+        8: 80,
+        9: 80,
+        10: 160,
+    }
 
 
 def test_v1_schedule_does_not_consume_rng_state():

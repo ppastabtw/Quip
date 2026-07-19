@@ -929,22 +929,15 @@ fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
-/// Stable-first field order: `context_snippets` and `personal_patterns` stay
-/// constant for an entire composition session, while `text` (the sliding
-/// window's draft) changes on every burst. Serializing the stable fields
-/// first — and `text` last — means consecutive sliding-window requests
-/// within a session share the longest possible literal byte prefix up to
-/// where the draft actually diverges, which is what a server-side prefix
-/// cache keys on. Whether this actually reduces measured latency (vs. the
-/// server's own batching behavior) needs the 5/10/15-word matrix from
-/// `run-latency-benchmark.sh` on real hardware — unverified here.
+/// Context comes before `text`, the sliding draft that changes on every burst.
+/// Empty context is omitted from the model input. Personal patterns remain an
+/// internal request field and are not part of the finalized model contract.
 fn model_input(request: &PredictionRequest) -> Value {
-    if request.context_snippets.is_empty() && request.personal_patterns.is_empty() {
+    if request.context_snippets.is_empty() {
         json!({"text": request.draft})
     } else {
         json!({
             "context_snippets": request.context_snippets,
-            "personal_patterns": request.personal_patterns,
             "text": request.draft,
         })
     }
@@ -1318,11 +1311,11 @@ mod tests {
         time::Duration,
     };
 
-    use quip_contracts::{ModelVariant, PredictionRequest};
+    use quip_contracts::{ContextSnippet, ModelVariant, PersonalPattern, PredictionRequest};
     use serde_json::json;
 
     use super::{
-        is_implausibly_truncated, is_model_scaffolding, normalize_model_outputs,
+        is_implausibly_truncated, is_model_scaffolding, model_input, normalize_model_outputs,
         parse_model_output, token_profile, CancelHandle, ChatUsage, LiveBackend, LiveConfig,
         SYSTEM_PROMPT,
     };
@@ -1362,9 +1355,10 @@ mod tests {
     #[test]
     fn prompt_contains_policy_without_answer_shaped_text() {
         assert!(SYSTEM_PROMPT.contains("actual complete text"));
-        assert!(SYSTEM_PROMPT.contains("If no confident correction is needed"));
+        assert!(SYSTEM_PROMPT.contains("If no correction is needed"));
         assert!(SYSTEM_PROMPT.contains("exactly one JSON object"));
         assert!(SYSTEM_PROMPT.contains("suggestion"));
+        assert!(!SYSTEM_PROMPT.contains("personal patterns"));
         assert!(!SYSTEM_PROMPT.contains("Suggestion text:"));
         assert!(!SYSTEM_PROMPT
             .to_ascii_lowercase()
@@ -1380,13 +1374,37 @@ mod tests {
             "text_1,",
             "suggestion",
             "} tomorrow",
-            "Correct confident keyboard typos, phonetic spellings, and common compressed phrases.",
-            "I'm Quip, a conservative English text corrector. I can help with that.",
+            "Correct keyboard typos, phonetic spellings, and compressed phrases.",
+            "You are an English text corrector.",
             "uggestionuggestion:see you tomorrow",
         ] {
             assert!(is_model_scaffolding(leaked), "{leaked}");
         }
         assert!(!is_model_scaffolding("this is a sentence"));
+    }
+
+    #[test]
+    fn model_input_matches_finalized_contract() {
+        let mut with_context = request();
+        with_context.context_snippets.push(ContextSnippet {
+            app_name: "Notes".to_owned(),
+            window_title: "Trip planning".to_owned(),
+            visible_text: "Tomorrow: meet at Union Station.".to_owned(),
+        });
+        assert_eq!(
+            model_input(&with_context),
+            json!({
+                "context_snippets": with_context.context_snippets,
+                "text": "cnt cm tmr",
+            })
+        );
+
+        let mut with_pattern = request();
+        with_pattern.personal_patterns.push(PersonalPattern {
+            shorthand: "tmr".to_owned(),
+            expansion: "tomorrow".to_owned(),
+        });
+        assert_eq!(model_input(&with_pattern), json!({"text": "cnt cm tmr"}));
     }
 
     #[test]

@@ -181,3 +181,23 @@ The revised build aligns source windows with runtime chunking and strengthens
 the common-word ambiguity rejection. First, runtime-validate the existing step
 80 adapter under the restored contract. Then run one 2B-only comparison on the
 revised dataset and score both models with the same five-completion evaluator.
+
+## Runtime 10W 5K comparison
+
+The next experiment is named `Quip V2 Runtime 10W 5K`. It uses one-through-ten
+word runtime chunks and the revised ambiguity policy with 5,000 training rows,
+1,000 evaluation rows, and 1,000 test rows. The Qwen3.5-2B recipe keeps seed
+42, LoRA rank 32, LoRA alpha 64, batch size 8, and learning rate `1e-5`.
+Training scales from 100 to 250 steps to retain the first run's
+examples-per-step ratio, with checkpoints at 50, 100, 150, 200, and 250.
+
+The dataset policy is `massive_runtime_10w_augmentation_v2_5k`, the evaluation
+protocol is `v2-runtime-10w-5k-ranked-five`, and the Freesolo environment is
+`ariobarin/quip-v2-runtime-10w-5k-20260719`.
+
+The window distribution follows observed ten-word queue chunks rather than an
+equal-size quota. The training quotas for one through ten words are 160, 320,
+400, 560, 640, 680, 600, 440, 360, and 840. Evaluation and test each use 40,
+80, 80, 120, 120, 120, 120, 80, 80, and 160. These counts preserve the exact
+severity weights and reduce ambiguous one-word data while covering every
+supported window size.

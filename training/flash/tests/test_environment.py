@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from dataset_compiler.contract import CONTRACT
@@ -19,13 +20,22 @@ class EnvironmentTests(unittest.TestCase):
         example = environment.dataset[0]
         messages = environment.build_prompt_messages(example, "")
         self.assertEqual(messages[0]["role"], "system")
-        self.assertIn("one full-text suggestion", messages[0]["content"])
+        self.assertIn("English text corrector", messages[0]["content"])
         self.assertIn("exactly one JSON object", messages[0]["content"])
-        self.assertEqual(messages[1]["content"], example.input)
+        self.assertEqual(
+            messages[1]["content"],
+            json.dumps(
+                json.loads(example.input),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        self.assertEqual(set(json.loads(messages[1]["content"])), {"text"})
 
     def test_prompt_has_policy_without_answer_shaped_text(self):
         self.assertIn("actual complete text", SYSTEM_PROMPT)
-        self.assertIn("If no confident correction is needed", SYSTEM_PROMPT)
+        self.assertIn("If no correction is needed", SYSTEM_PROMPT)
+        self.assertNotIn("personal patterns", SYSTEM_PROMPT)
         self.assertNotIn("Suggestion text:", SYSTEM_PROMPT)
         self.assertNotIn("best full text", SYSTEM_PROMPT.lower())
 
