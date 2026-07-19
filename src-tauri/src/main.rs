@@ -1279,6 +1279,7 @@ fn main() {
             commit_confirmed_text,
             cancel_destination,
             inject_capture,
+            run_safe_demo,
             select_candidate,
             move_selection,
             dismiss_suggestions,
