@@ -4,6 +4,17 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 cd "$repo_root"
 
+if python -c 'pass' >/dev/null 2>&1; then
+  python_bin=python
+elif python3 -c 'pass' >/dev/null 2>&1; then
+  python_bin=python3
+elif py -3 -c 'pass' >/dev/null 2>&1; then
+  python_bin=$(py -3 -c 'import sys; print(sys.executable)')
+else
+  printf '%s\n' 'Python 3 is required for live sidecar validation.' >&2
+  exit 1
+fi
+
 .agents/skills/validate-quip-sidecar/scripts/validate.sh
 
 . "$repo_root/src-tauri/sidecars/inference/scripts/live-model-runtime.sh"
@@ -34,7 +45,7 @@ quip_start_base_server
   printf '%s\n' '{"operation":"predict","request":{"request_id":"live-validation-protected","profile_id":"profile_default","model_variant":"base","draft":"https://freesolo.co/docs","context_snippets":[],"personal_patterns":[]}}'
 } | env -u QUIP_GLOBAL_MODEL_ADDR -u QUIP_GLOBAL_MODEL_ID "$sidecar" --live >"$responses"
 
-python3 - "$responses" <<'PY'
+"$python_bin" - "$responses" <<'PY'
 import json
 import pathlib
 import sys
@@ -120,7 +131,7 @@ printf '%s\n' "$phrase_output"
   --output-contract "$global_output_contract" \
   --label "validation-qwen" --warmup 1 --runs 2 \
   --phrase "cnt cm tmr" --html "$benchmark_html" --json >"$benchmark_json"
-python3 - "$benchmark_json" "$benchmark_html" <<'PY'
+"$python_bin" - "$benchmark_json" "$benchmark_html" <<'PY'
 import json
 import pathlib
 import sys

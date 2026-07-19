@@ -109,11 +109,13 @@ checkpoint was trained with this contract:
 {"suggestion":"send the draft"}
 ```
 
-This does not change the app-side `PredictionResult` contract.
+The sidecar rejects plain text, empty suggestions, commentary, and additional
+fields before candidate ranking.
 
-The Rust inference layer requests exactly five choices in that cache-forked
-batch, removes exact-draft suggestions, deduplicates changed text, ranks
-duplicate votes with earliest-completion tie-breaking, and returns zero to five
+This does not change the app-side `PredictionResult` contract. The Rust
+inference layer requests exactly five choices in one cache-forked batch,
+removes exact-draft suggestions, deduplicates changed text, ranks duplicate
+votes with earliest-completion tie-breaking, and returns zero to five
 candidates. Zero candidates means skip and no suggestion bar.
 
 ## Latency and model comparison

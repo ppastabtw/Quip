@@ -1,7 +1,12 @@
 import json
 import unittest
 
-from scoring import parse_gold_output, parse_prediction, score_completion
+from scoring import (
+    parse_gold_output,
+    parse_prediction,
+    rank_candidate_items,
+    score_completion,
+)
 
 
 def input_json(text: str) -> str:
@@ -9,13 +14,17 @@ def input_json(text: str) -> str:
 
 
 class ParsePredictionTests(unittest.TestCase):
-    def test_accepts_plain_text_suggestion(self):
-        prediction = parse_prediction("call me")
+    def test_accepts_json_suggestion(self):
+        prediction = parse_prediction('{"suggestion":"call me"}')
         self.assertEqual(prediction.suggestion, "call me")
 
-    def test_rejects_json_wrapped_suggestion(self):
+    def test_rejects_plain_text_suggestion(self):
         with self.assertRaises(ValueError):
-            parse_prediction('{"suggestion":"call me"}')
+            parse_prediction("call me")
+
+    def test_rejects_extra_property(self):
+        with self.assertRaises(ValueError):
+            parse_prediction('{"suggestion":"call me","why":"safe"}')
 
     def test_rejects_scaffolding_label(self):
         with self.assertRaises(ValueError):
@@ -54,7 +63,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": True,
                 "accepted_suggestions": ["meet at Union Station tomorrow"],
             },
-            response_text="meet at Union Station tomorrow",
+            response_text='{"suggestion":"meet at Union Station tomorrow"}',
         )
         self.assertTrue(result.success)
         self.assertEqual(result.score, 1.0)
@@ -76,11 +85,10 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": False,
                 "accepted_suggestions": ["usr/bin"],
             },
-            response_text="usr/bin",
+            response_text='{"suggestion":"usr/bin"}',
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
-
     def test_unnecessary_edit_is_severely_penalized(self):
         result = score_completion(
             input_text=input_json("q3_finl_v2.pdf"),
@@ -89,7 +97,7 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": False,
                 "accepted_suggestions": ["q3_finl_v2.pdf"],
             },
-            response_text="q3_final_v2.pdf",
+            response_text='{"suggestion":"q3_final_v2.pdf"}',
         )
         self.assertEqual(result.score, 0.15)
         self.assertFalse(result.success)
@@ -102,10 +110,120 @@ class ScoreCompletionTests(unittest.TestCase):
                 "target_changed": True,
                 "accepted_suggestions": ["Can't come tomorrow."],
             },
-            response_text="Can't come tomorrow.",
+            response_text='{"suggestion":"Can\\u0027t come tomorrow."}',
         )
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
+
+    def test_context_input_earns_full_reward(self):
+        result = score_completion(
+            input_text={
+                "context_snippets": [
+                    {
+                        "app_name": "Calendar",
+                        "window_title": "Flight",
+                        "visible_text": "Gate C14",
+                    }
+                ],
+                "text": "meet at gate",
+            },
+            expected_output={"suggestion": "meet at gate C14"},
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at gate C14"],
+            },
+            response_text='{"suggestion":"meet at gate C14"}',
+        )
+        self.assertEqual(result.score, 1.0)
+        self.assertTrue(result.success)
+
+    def test_context_and_lexical_input_fields_score_together(self):
+        result = score_completion(
+            input_text={
+                "context_snippets": [
+                    {
+                        "app_name": "Calendar",
+                        "window_title": "Flight",
+                        "visible_text": "Gate C14",
+                    }
+                ],
+                "text": "met at gat c14",
+                "lexical_hints": [
+                    {"token": "met", "candidates": ["meet"]},
+                    {"token": "gat", "candidates": ["gate"]},
+                ],
+            },
+            expected_output={"suggestion": "meet at gate C14"},
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at gate C14"],
+            },
+            response_text='{"suggestion":"meet at gate C14"}',
+        )
+        self.assertEqual(result.score, 1.0)
+        self.assertTrue(result.success)
+
+    def test_context_input_with_one_snippet_earns_full_reward(self):
+        result = score_completion(
+            input_text=json.dumps(
+                {
+                    "context_snippets": [
+                        {
+                            "app_name": "Notes",
+                            "window_title": "Trip",
+                            "visible_text": "Meet at Union Station tomorrow.",
+                        }
+                    ],
+                    "text": "meet there tmrw",
+                }
+            ),
+            expected_output='{"suggestion":"meet at Union Station tomorrow"}',
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at Union Station tomorrow"],
+            },
+            response_text='{"suggestion":"meet at Union Station tomorrow"}',
+        )
+        self.assertEqual(result.score, 1.0)
+        self.assertTrue(result.success)
+
+    def test_empty_or_none_context_scores_as_absent(self):
+        for context_snippets in ([], None):
+            with self.subTest(context_snippets=context_snippets):
+                result = score_completion(
+                    input_text={
+                        "text": "already correct",
+                        "context_snippets": context_snippets,
+                    },
+                    expected_output={"suggestion": "already correct"},
+                    metadata={
+                        "target_changed": False,
+                        "accepted_suggestions": ["already correct"],
+                    },
+                    response_text='{"suggestion":"already correct"}',
+                )
+                self.assertEqual(result.score, 1.0)
+                self.assertTrue(result.success)
+
+
+class CandidateRankingTests(unittest.TestCase):
+    def test_ranks_by_votes_then_first_completion_and_hides_unchanged(self):
+        candidates = rank_candidate_items(
+            [
+                {"index": 1, "suggestion": "draft"},
+                {"index": 2, "suggestion": "corrected"},
+                {"index": 3, "suggestion": "alternate"},
+                {"index": 4, "suggestion": "corrected"},
+                {"index": 5, "suggestion": "alternate"},
+            ],
+            "draft",
+        )
+
+        self.assertEqual(
+            [candidate["suggestion"] for candidate in candidates],
+            ["corrected", "alternate"],
+        )
+        self.assertEqual(candidates[0]["completion_indices"], [2, 4])
 
 if __name__ == "__main__":
     unittest.main()

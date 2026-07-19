@@ -25,6 +25,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 training/flash/.data-cache/
+training/flash/.launch/
 
 # Local model artifacts, adapters, evaluations, and logs
 artifacts/models/*

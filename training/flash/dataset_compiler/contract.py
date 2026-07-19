@@ -32,6 +32,9 @@ class DatasetContract:
     unchanged_share: float = 0.10
     augmentation_events: int = 1
     minimum_zipf_frequency: float = 3.0
+    train_window_counts: tuple[int, ...] | None = None
+    eval_window_counts: tuple[int, ...] | None = None
+    test_window_counts: tuple[int, ...] | None = None
 
     def expected_counts(self, split: str) -> dict[str, Any]:
         rows = {
@@ -41,24 +44,48 @@ class DatasetContract:
         }.get(split)
         if rows is None:
             raise ValueError(f"unknown dataset split: {split}")
-        if rows % len(self.window_sizes):
-            raise ValueError(f"{split} size must divide evenly across window sizes")
-        per_size = rows // len(self.window_sizes)
-        unchanged_per_size = int(per_size * self.unchanged_share)
-        if unchanged_per_size / per_size != self.unchanged_share:
+        configured_counts = {
+            "train": self.train_window_counts,
+            "eval": self.eval_window_counts,
+            "test": self.test_window_counts,
+        }[split]
+        if configured_counts is None:
+            if rows % len(self.window_sizes):
+                raise ValueError(f"{split} size must divide evenly across window sizes")
+            configured_counts = (rows // len(self.window_sizes),) * len(self.window_sizes)
+        if len(configured_counts) != len(self.window_sizes) or sum(configured_counts) != rows:
+            raise ValueError(f"{split} window counts must match the split size")
+        window_counts = dict(zip(self.window_sizes, configured_counts, strict=True))
+        unchanged_by_size = {
+            size: int(count * self.unchanged_share)
+            for size, count in window_counts.items()
+        }
+        if any(
+            unchanged_by_size[size] / count != self.unchanged_share
+            for size, count in window_counts.items()
+        ):
             raise ValueError(f"{split} unchanged share must produce exact integer quotas")
         return {
             "rows": rows,
-            "unchanged": unchanged_per_size * len(self.window_sizes),
-            "changed": (per_size - unchanged_per_size) * len(self.window_sizes),
-            "window_sizes": {size: per_size for size in self.window_sizes},
-            "unchanged_by_size": {
-                size: unchanged_per_size for size in self.window_sizes
-            },
+            "unchanged": sum(unchanged_by_size.values()),
+            "changed": rows - sum(unchanged_by_size.values()),
+            "window_sizes": window_counts,
+            "unchanged_by_size": unchanged_by_size,
         }
 
 
 CONTRACT = DatasetContract()
+SUPPORTED_WINDOW_SIZES = tuple(range(1, 11))
+V2_RUNTIME_10W_5K_CONTRACT = DatasetContract(
+    train_size=5000,
+    eval_size=1000,
+    test_size=1000,
+    window_sizes=SUPPORTED_WINDOW_SIZES,
+    train_window_counts=(160, 320, 400, 560, 640, 680, 600, 440, 360, 840),
+    eval_window_counts=(40, 80, 80, 120, 120, 120, 120, 80, 80, 160),
+    test_window_counts=(40, 80, 80, 120, 120, 120, 120, 80, 80, 160),
+)
+MAX_AUGMENTATION_EVENTS = 10
 
 URL_RE = re.compile(r"(?:https?://|www\.|\b[a-z0-9.-]+\.(?:com|org|net|io)\b)", re.I)
 EMAIL_RE = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
@@ -71,6 +98,9 @@ MARKUP_RE = re.compile(
 CODE_RE = re.compile(r"(?:\b(?:def|class|import|return|const|let|var)\b|[{};]{2,}|\w+\([^)]*\)\s*[;{])")
 WORDLIKE_RE = re.compile(r"[A-Za-z]")
 ENGLISH_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+ENGLISH_PHRASE_RE = re.compile(
+    r"[A-Za-z]+(?:'[A-Za-z]+)?(?:\s+[A-Za-z]+(?:'[A-Za-z]+)?)*"
+)
 
 ALLOWED_ROW_KEYS = {"input", "output", "metadata"}
 REQUIRED_METADATA_KEYS = {
@@ -179,10 +209,44 @@ def window_rejection_reason(
         return reason
     if word_count(value) != expected_size:
         return "window_size"
-    if expected_size not in CONTRACT.window_sizes:
+    if expected_size not in SUPPORTED_WINDOW_SIZES:
         return "unsupported_window_size"
     if len(value) > 160:
         return "too_long"
+    return None
+
+
+def draft_rejection_reason(value: str, *, check_profanity: bool = True) -> str | None:
+    reason = source_rejection_reason(value, check_profanity=check_profanity)
+    if reason:
+        return reason
+    if value != re.sub(r"\s+", " ", value).strip():
+        return "irregular_whitespace"
+    if len(value) > 160:
+        return "too_long"
+    return None
+
+
+def ambiguity_rejection_reason(
+    value: str,
+    *,
+    minimum_zipf_frequency: float | None,
+    valid_vocabulary: set[str] | None = None,
+) -> str | None:
+    if minimum_zipf_frequency is None or not ENGLISH_PHRASE_RE.fullmatch(value):
+        return None
+    from wordfreq import zipf_frequency
+
+    tokens = ENGLISH_TOKEN_RE.findall(value)
+    if valid_vocabulary is not None and any(
+        token.casefold() not in valid_vocabulary for token in tokens
+    ):
+        return None
+    if all(
+        zipf_frequency(token.casefold(), "en") >= minimum_zipf_frequency
+        for token in tokens
+    ):
+        return "all_tokens_common_valid_words"
     return None
 
 
@@ -211,7 +275,7 @@ def make_row(candidate: Candidate, *, generation: dict[str, Any]) -> dict[str, A
             "category": candidate.category,
             "target_changed": candidate.target_changed,
             "accepted_suggestions": [suggestion],
-            "window_size": word_count(candidate.text),
+            "window_size": word_count(candidate.target),
         },
     }
 
@@ -236,15 +300,18 @@ def validate_generation_metadata(generation: Any, path: Path, line_number: int) 
     method = generation.get("method")
     if method == "sourced":
         valid = set(generation) == {"method"}
-    elif method == "qwerty_augmentation":
+    elif method in {"qwerty_augmentation", "deterministic_typing_augmentation"}:
         operations = generation.get("operations")
+        requested_events = generation.get("requested_events")
         valid = (
             set(generation) == {"method", "seed", "requested_events", "operations"}
             and isinstance(generation["seed"], int)
             and not isinstance(generation["seed"], bool)
-            and generation["requested_events"] == CONTRACT.augmentation_events
+            and isinstance(requested_events, int)
+            and not isinstance(requested_events, bool)
+            and 1 <= requested_events <= MAX_AUGMENTATION_EVENTS
             and isinstance(operations, list)
-            and len(operations) == CONTRACT.augmentation_events
+            and len(operations) == requested_events
             and all(
                 isinstance(operation, dict)
                 and set(operation) == {"event", "operator", "index", "source", "replacement"}
@@ -284,10 +351,16 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
             size = metadata["window_size"]
             if not isinstance(size, int) or isinstance(size, bool):
                 raise ValueError(f"{path}:{line_number}: window_size must be an integer")
-            for value in (text, suggestion):
-                reason = window_rejection_reason(value, expected_size=size)
-                if reason:
-                    raise ValueError(f"{path}:{line_number}: rejected text: {reason}")
+            input_reason = draft_rejection_reason(text)
+            if input_reason:
+                raise ValueError(
+                    f"{path}:{line_number}: rejected input text: {input_reason}"
+                )
+            target_reason = window_rejection_reason(suggestion, expected_size=size)
+            if target_reason:
+                raise ValueError(
+                    f"{path}:{line_number}: rejected target text: {target_reason}"
+                )
             if not isinstance(metadata["target_changed"], bool):
                 raise ValueError(f"{path}:{line_number}: target_changed must be boolean")
             if metadata["target_changed"] != (suggestion != text):
@@ -315,7 +388,7 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
                 input_text=row["input"],
                 expected_output=row["output"],
                 metadata=metadata,
-                response_text=suggestion,
+                response_text=compact_json(row["output"]),
             )
             if result.score != 1.0 or not result.success:
                 raise ValueError(f"{path}:{line_number}: gold output failed reward: {result.reason}")
@@ -325,8 +398,14 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_split(name: str, rows: list[dict[str, Any]]) -> None:
-    expected = CONTRACT.expected_counts(name)
+def validate_split(
+    name: str,
+    rows: list[dict[str, Any]],
+    *,
+    contract: DatasetContract = CONTRACT,
+    expected_event_counts_by_size: dict[int, dict[int, int]] | None = None,
+) -> None:
+    expected = contract.expected_counts(name)
     changes = Counter(row["metadata"]["target_changed"] for row in rows)
     sizes = Counter(row["metadata"]["window_size"] for row in rows)
     unchanged_by_size = Counter(
@@ -346,6 +425,26 @@ def validate_split(name: str, rows: list[dict[str, Any]]) -> None:
     inputs = [normalize_text(row_text(row, Path(name), index)) for index, row in enumerate(rows, 1)]
     if len(inputs) != len(set(inputs)):
         raise ValueError(f"{name}: normalized duplicate inputs exist")
+    if expected_event_counts_by_size is not None:
+        actual_event_counts_by_size: dict[int, Counter[int]] = {
+            size: Counter() for size in contract.window_sizes
+        }
+        for row in rows:
+            if not row["metadata"]["target_changed"]:
+                continue
+            generation = row["metadata"]["generation"]
+            actual_event_counts_by_size[row["metadata"]["window_size"]][
+                generation["requested_events"]
+            ] += 1
+        actual_event_counts = {
+            size: dict(sorted(counts.items()))
+            for size, counts in actual_event_counts_by_size.items()
+        }
+        if actual_event_counts != expected_event_counts_by_size:
+            raise ValueError(
+                f"{name}: augmentation-event quota mismatch: "
+                f"expected {expected_event_counts_by_size}, got {actual_event_counts}"
+            )
 
 
 def validate_compiled_datasets(
@@ -354,13 +453,32 @@ def validate_compiled_datasets(
     eval_path: Path,
     test_path: Path,
     report_path: Path,
+    contract: DatasetContract = CONTRACT,
+    expected_policy: str = "massive_window_augmentation_v1",
+    expected_event_counts: dict[str, dict[int, dict[int, int]]] | None = None,
+    require_normalized_surface_isolation: bool = False,
 ) -> None:
     train_rows = load_rows(train_path)
     eval_rows = load_rows(eval_path)
     test_rows = load_rows(test_path)
-    validate_split("train", train_rows)
-    validate_split("eval", eval_rows)
-    validate_split("test", test_rows)
+    validate_split(
+        "train",
+        train_rows,
+        contract=contract,
+        expected_event_counts_by_size=(expected_event_counts or {}).get("train"),
+    )
+    validate_split(
+        "eval",
+        eval_rows,
+        contract=contract,
+        expected_event_counts_by_size=(expected_event_counts or {}).get("eval"),
+    )
+    validate_split(
+        "test",
+        test_rows,
+        contract=contract,
+        expected_event_counts_by_size=(expected_event_counts or {}).get("test"),
+    )
 
     all_rows = train_rows + eval_rows + test_rows
     ids = [row["metadata"]["example_id"] for row in all_rows]
@@ -368,27 +486,24 @@ def validate_compiled_datasets(
         raise ValueError("metadata.example_id values must be globally unique")
     split_rows = {"train": train_rows, "eval": eval_rows, "test": test_rows}
     expected_partitions = {"train": {"train"}, "eval": {"dev"}, "test": {"test"}}
-    family_sets: dict[str, set[str]] = {}
     for name, rows in split_rows.items():
         if {row["metadata"]["source_partition"] for row in rows} != expected_partitions[name]:
             raise ValueError(f"{name} rows come from the wrong MASSIVE partition")
-        family_sets[name] = {row["metadata"]["family_id"] for row in rows}
-    split_names = tuple(split_rows)
-    for index, left in enumerate(split_names):
-        for right in split_names[index + 1 :]:
-            if family_sets[left] & family_sets[right]:
-                raise ValueError(f"{left} and {right} contain source-family leakage")
+    validate_cross_split_isolation(
+        split_rows,
+        require_normalized_surface_isolation=require_normalized_surface_isolation,
+    )
 
     if not report_path.is_file():
         raise ValueError("dataset build report is missing")
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("dataset_policy") != "massive_window_augmentation_v1":
+    if report.get("dataset_policy") != expected_policy:
         raise ValueError("dataset build report policy is incorrect")
     for name, path in (("train", train_path), ("eval", eval_path), ("test", test_path)):
         split_report = report.get("splits", {}).get(name, {})
         if split_report.get("sha256") != sha256_file(path):
             raise ValueError(f"{name}: dataset hash does not match build report")
-        if split_report.get("rows") != CONTRACT.expected_counts(name)["rows"]:
+        if split_report.get("rows") != contract.expected_counts(name)["rows"]:
             raise ValueError(f"{name}: build report row count is incorrect")
     if report.get("source_manifest_sha256") != sha256_file(MANIFEST_PATH):
         raise ValueError("source manifest hash does not match build report")
@@ -400,3 +515,38 @@ def validate_compiled_datasets(
             f"{name}: {len(rows)} rows "
             f"(categories={dict(sorted(categories.items()))}, windows={dict(sorted(sizes.items()))})"
         )
+
+
+def validate_cross_split_isolation(
+    split_rows: dict[str, list[dict[str, Any]]],
+    *,
+    require_normalized_surface_isolation: bool,
+) -> None:
+    split_names = tuple(split_rows)
+    family_sets = {
+        name: {row["metadata"]["family_id"] for row in rows}
+        for name, rows in split_rows.items()
+    }
+    for index, left in enumerate(split_names):
+        for right in split_names[index + 1 :]:
+            if family_sets[left] & family_sets[right]:
+                raise ValueError(f"{left} and {right} contain source-family leakage")
+            if require_normalized_surface_isolation:
+                left_surfaces = {
+                    normalize_text(row_text(row, Path(left), row_index))
+                    for row_index, row in enumerate(split_rows[left], 1)
+                } | {
+                    normalize_text(row_suggestion(row, Path(left), row_index))
+                    for row_index, row in enumerate(split_rows[left], 1)
+                }
+                right_surfaces = {
+                    normalize_text(row_text(row, Path(right), row_index))
+                    for row_index, row in enumerate(split_rows[right], 1)
+                } | {
+                    normalize_text(row_suggestion(row, Path(right), row_index))
+                    for row_index, row in enumerate(split_rows[right], 1)
+                }
+                if left_surfaces & right_surfaces:
+                    raise ValueError(
+                        f"{left} and {right} contain normalized input or target leakage"
+                    )

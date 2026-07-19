@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from benchmarking import (  # noqa: E402
     FreesoloTransport,
     ModelSpec,
+    complete_candidate_set,
     load_jsonl,
     model_runtime_summary,
     prediction_record,
@@ -167,7 +168,7 @@ def benchmark_target(
     try:
         for row in rows:
             try:
-                result = transport.complete(row, spec, 128)
+                result = complete_candidate_set(transport, row, spec, 128)
                 record = prediction_record(row=row, spec=spec, result=result)
             except Exception as error:
                 record = prediction_record(row=row, spec=spec, error=error)

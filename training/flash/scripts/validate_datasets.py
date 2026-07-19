@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dataset_compiler.contract import DATASET_DIR, REPORT_PATH, validate_compiled_datasets  # noqa: E402
-from scoring import parse_gold_output, score_completion  # noqa: E402
+from scoring import model_text, parse_gold_output, score_completion  # noqa: E402
 
 
 SMOKE_METADATA_KEYS = {
@@ -71,7 +71,7 @@ def validate_smoke_split(path: Path) -> tuple[set[str], set[str]]:
                 input_text=row["input"],
                 expected_output=row["output"],
                 metadata=metadata,
-                response_text=prediction.suggestion,
+                response_text=model_text(row["output"]),
             )
             if result.score != 1.0 or not result.success:
                 raise ValueError(

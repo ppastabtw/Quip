@@ -53,11 +53,22 @@ A global shortcut can run a prediction over selected existing text. The same can
 
 ### Model contract
 
-The input contains the bounded draft or selection, relevant window snippets, and compact learned user patterns. The model runs in non-thinking mode. Inference runs exactly five completions, and each returns one full-input suggestion:
+The input contains the bounded draft or selection, relevant window snippets,
+compact learned user patterns, and optional lexical hints generated from
+dictionary similarity. Lexical hints never replace the raw draft before model
+inference and are not trusted corrections. The model runs in non-thinking mode.
+Inference runs exactly five completions, and each returns one full-input
+suggestion:
 
 ```json
 { "suggestion": "best full text" }
 ```
+
+Every raw completion must validate against `model_completion` in
+`docs/phase-0.schema.json`. Plain text, extra fields, empty suggestions, and
+commentary are rejected. Training, managed evaluation, the prototype, and live
+inference request the same constrained JSON schema where the backend supports
+it.
 
 The inference layer compares the five completions with the input, drops exact matches, deduplicates changed suggestions, and ranks them by vote count with earliest completion as the tie breaker. It exposes zero through five candidates. The typed text is never repeated as a candidate because doing nothing already preserves it. The shared wire invariants live in `docs/phase-0-contracts.md`.
 

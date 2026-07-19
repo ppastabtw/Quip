@@ -1,0 +1,24 @@
+model = "Qwen/Qwen3.5-2B"
+algorithm = "grpo"
+seed = 42
+
+[environment]
+id = "ariobarin/quip-v2-context-mega-grpo-judge-20260719"
+
+[environment.params]
+split = "train"
+judge_model = "Qwen/Qwen3.6-35B-A3B"
+lexical_hints = false
+
+[train]
+# Replace after selecting the mixed-context SFT checkpoint.
+init_from_adapter = "REPLACE_WITH_MIXED_SFT_RUN_ID/step-REPLACE_WITH_SELECTED_STEP"
+max_examples = 5240
+max_steps = 655
+save_at_steps = [50, 100, 250, 400, 655]
+group_size = 8
+batch_size = 8
+temperature = 1.0
+max_completion_tokens = 64
+max_context_tokens = 1024
+structured_outputs = { json = { type = "object", properties = { suggestion = { type = "string", minLength = 1 } }, required = ["suggestion"], additionalProperties = false }, disable_additional_properties = true }

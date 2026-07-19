@@ -121,6 +121,7 @@ def split_diagnostics(
     rows: Sequence[Mapping[str, Any]],
     *,
     source_index: Mapping[tuple[str, str], Mapping[str, Any]],
+    source_vocabulary: set[str],
     sample_limit: int,
 ) -> dict[str, Any]:
     categories: Counter[Any] = Counter()
@@ -171,17 +172,23 @@ def split_diagnostics(
 
         if changed:
             edit_distances[levenshtein_distance(input_text, target)] += 1
-            if (
-                metadata.get("window_size") == 1
-                and ENGLISH_WORD_RE.fullmatch(input_text)
-            ):
-                frequency = zipf_frequency(input_text.casefold(), "en")
-                if frequency >= COMMON_WORD_ZIPF:
+            tokens = input_text.split()
+            if tokens and all(ENGLISH_WORD_RE.fullmatch(token) for token in tokens):
+                frequencies = [
+                    zipf_frequency(token.casefold(), "en") for token in tokens
+                ]
+                if (
+                    all(frequency >= COMMON_WORD_ZIPF for frequency in frequencies)
+                    and (
+                        not source_vocabulary
+                        or all(token.casefold() in source_vocabulary for token in tokens)
+                    )
+                ):
                     ambiguity_candidates.append(
                         {
                             "input": input_text,
                             "target": target,
-                            "zipf_frequency": round(frequency, 3),
+                            "minimum_token_zipf": round(min(frequencies), 3),
                         }
                     )
 
@@ -193,7 +200,11 @@ def split_diagnostics(
 
     row_count = len(rows)
     ambiguity_candidates.sort(
-        key=lambda item: (-item["zipf_frequency"], item["input"], item["target"])
+        key=lambda item: (
+            -item["minimum_token_zipf"],
+            item["input"],
+            item["target"],
+        )
     )
     duplicate_input_rows = sum(count - 1 for count in normalized_inputs.values() if count > 1)
     return {
@@ -217,7 +228,10 @@ def split_diagnostics(
             "rate": _rate(capitalization_targets, row_count),
         },
         "ambiguous_valid_word_candidates": {
-            "criterion": f"changed one-word input with English Zipf frequency >= {COMMON_WORD_ZIPF}",
+            "criterion": (
+                "changed input made entirely of English tokens with minimum "
+                f"Zipf frequency >= {COMMON_WORD_ZIPF}"
+            ),
             "count": len(ambiguity_candidates),
             "sample": ambiguity_candidates[:sample_limit],
         },
@@ -323,11 +337,20 @@ def build_dataset_quality_report(
     split_paths = {name: dataset_dir / f"{name}.jsonl" for name in SPLIT_NAMES}
     split_rows = {name: load_jsonl(path) for name, path in split_paths.items()}
     source_index = load_massive_source_index(source_records_path)
+    source_vocabulary = {
+        token.casefold()
+        for row in source_index.values()
+        if isinstance(row.get("utt"), str)
+        for token in ENGLISH_WORD_RE.findall(row["utt"])
+    }
 
     split_reports: dict[str, Any] = {}
     for name in SPLIT_NAMES:
         split_reports[name] = split_diagnostics(
-            split_rows[name], source_index=source_index, sample_limit=sample_limit
+            split_rows[name],
+            source_index=source_index,
+            source_vocabulary=source_vocabulary,
+            sample_limit=sample_limit,
         )
         split_reports[name]["sha256"] = sha256_file(split_paths[name])
 

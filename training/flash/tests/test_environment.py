@@ -1,8 +1,18 @@
+import json
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 from dataset_compiler.contract import CONTRACT
-from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment
-from scoring import parse_gold_output
+from environment import (
+    HYBRID_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    QuipEnvironment,
+    load_environment,
+    model_input_json,
+)
+from scoring import model_text
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -19,22 +29,141 @@ class EnvironmentTests(unittest.TestCase):
         example = environment.dataset[0]
         messages = environment.build_prompt_messages(example, "")
         self.assertEqual(messages[0]["role"], "system")
-        self.assertIn("one full-text suggestion", messages[0]["content"])
-        self.assertEqual(messages[1]["content"], example.input)
+        self.assertIn("English text corrector", messages[0]["content"])
+        self.assertIn("exactly one JSON object", messages[0]["content"])
+        self.assertEqual(
+            messages[1]["content"],
+            json.dumps(
+                json.loads(example.input),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        self.assertEqual(set(json.loads(messages[1]["content"])), {"text"})
+
+    def test_model_input_projects_finalized_fields_in_stable_order(self):
+        value = model_input_json(
+            {
+                "text": "meet there tmrw",
+                "personal_patterns": [{"shorthand": "tmrw", "expansion": "tomorrow"}],
+                "context_snippets": [
+                    {
+                        "app_name": "Notes",
+                        "window_title": "Trip planning",
+                        "visible_text": "Tomorrow: meet at Union Station.",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            value,
+            '{"context_snippets":[{"app_name":"Notes","window_title":"Trip planning","visible_text":"Tomorrow: meet at Union Station."}],"text":"meet there tmrw"}',
+        )
+        self.assertNotIn("personal_patterns", value)
+
+    def test_model_input_omits_empty_or_none_context(self):
+        for context_snippets in ([], None):
+            with self.subTest(context_snippets=context_snippets):
+                self.assertEqual(
+                    model_input_json(
+                        {
+                            "text": "already correct",
+                            "context_snippets": context_snippets,
+                        }
+                    ),
+                    '{"text":"already correct"}',
+                )
+
+    def test_nonlexical_environment_import_does_not_require_wordfreq(self):
+        root = Path(__file__).resolve().parents[1]
+        code = """
+import builtins
+real_import = builtins.__import__
+def blocked(name, *args, **kwargs):
+    if name == 'wordfreq' or name.startswith('wordfreq.'):
+        raise ModuleNotFoundError('wordfreq deliberately blocked')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = blocked
+import environment
+assert environment.load_environment(split='eval').dataset
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_prompt_has_policy_without_answer_shaped_text(self):
         self.assertIn("actual complete text", SYSTEM_PROMPT)
-        self.assertIn("If no confident correction is needed", SYSTEM_PROMPT)
+        self.assertIn("If no correction is needed", SYSTEM_PROMPT)
+        self.assertNotIn("personal patterns", SYSTEM_PROMPT)
         self.assertNotIn("Suggestion text:", SYSTEM_PROMPT)
         self.assertNotIn("best full text", SYSTEM_PROMPT.lower())
+        self.assertIn("Never replace an explicit value", SYSTEM_PROMPT)
 
     def test_gold_output_passes_environment_reward(self):
         environment = QuipEnvironment(split="eval")
         example = environment.dataset[0]
-        gold_suggestion = parse_gold_output(example.output).suggestion
-        reward = environment.score_response(example, gold_suggestion)
+        reward = environment.score_response(example, model_text(example.output))
         self.assertEqual(reward.score, 1.0)
         self.assertTrue(reward.success)
+
+    def test_hybrid_environment_preserves_text_and_adds_lexical_hints(self):
+        content = json.loads(
+            model_input_json(
+                {
+                    "text": "hteir going",
+                    "personal_patterns": [
+                        {"shorthand": "hteir", "expansion": "their"}
+                    ],
+                    "context_snippets": [
+                        {
+                            "app_name": "Notes",
+                            "window_title": "Draft",
+                            "visible_text": "They are going tomorrow.",
+                        }
+                    ],
+                },
+                lexical_hints=True,
+            )
+        )
+        self.assertEqual(
+            set(content), {"context_snippets", "text", "lexical_hints"}
+        )
+        self.assertEqual(content["text"], "hteir going")
+        self.assertTrue(content["lexical_hints"])
+
+        environment = QuipEnvironment(split="train", lexical_hints=True)
+        example = environment.dataset[0]
+        messages = environment.build_prompt_messages(example, "")
+        self.assertEqual(messages[0]["content"], HYBRID_SYSTEM_PROMPT)
+        self.assertIn("lexical_hints", json.loads(messages[1]["content"]))
+
+    def test_model_input_combines_context_and_lexical_hints(self):
+        content = json.loads(
+            model_input_json(
+                {
+                    "text": "met at gat c14",
+                    "context_snippets": [
+                        {
+                            "app_name": "Calendar",
+                            "window_title": "Flight",
+                            "visible_text": "Gate C14",
+                        }
+                    ],
+                },
+                lexical_hints=True,
+            )
+        )
+        self.assertEqual(
+            set(content), {"context_snippets", "text", "lexical_hints"}
+        )
+        self.assertEqual(content["context_snippets"][0]["visible_text"], "Gate C14")
+        self.assertTrue(content["lexical_hints"])
 
 
 if __name__ == "__main__":

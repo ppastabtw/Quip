@@ -1,0 +1,137 @@
+{
+  "protocol": "quip_context_human_reviewed_v1",
+  "schema_version": 1,
+  "source_sha256": "db399c3ec92d7b17f587c64bf9e1de0bddc536ac2edbf08c6582fe03d315f225",
+  "source_rows": 300,
+  "human_reviewed_provenance": {
+    "source_dataset": "quip_context_human_reviewed_v1",
+    "generation_method": "human_reviewed_source",
+    "source_license": "project-authored-human-reviewed",
+    "note": "Rows are compiled from the approved reviewed source without synthetic replacement or quarantine."
+  },
+  "split_policy": {
+    "name": "stable_hash_family_balancing_v1",
+    "family_key": "normalized input.text",
+    "target_row_shares": {
+      "train": 0.8,
+      "eval": 0.1,
+      "test": 0.1
+    }
+  },
+  "multi_snippet_policy": {
+    "name": "reviewed_source_line_selection_v1",
+    "source_rows": [
+      {
+        "source_line": 15,
+        "selected_snippet_index": 1
+      },
+      {
+        "source_line": 28,
+        "selected_snippet_index": 1
+      },
+      {
+        "source_line": 56,
+        "selected_snippet_index": 0
+      },
+      {
+        "source_line": 149,
+        "selected_snippet_index": 0
+      },
+      {
+        "source_line": 150,
+        "selected_snippet_index": 1
+      },
+      {
+        "source_line": 151,
+        "selected_snippet_index": 1
+      },
+      {
+        "source_line": 152,
+        "selected_snippet_index": 0
+      },
+      {
+        "source_line": 244,
+        "selected_snippet_index": 1
+      },
+      {
+        "source_line": 250,
+        "selected_snippet_index": 0
+      },
+      {
+        "source_line": 264,
+        "selected_snippet_index": 0
+      }
+    ],
+    "runtime_max_snippets": 1
+  },
+  "runtime_bounds_projection": {
+    "visible_text_max_characters": 240,
+    "truncated_rows": [
+      {
+        "source_line": 199,
+        "field": "visible_text",
+        "source_characters": 244,
+        "compiled_characters": 240
+      }
+    ],
+    "empty_visible_text_fallback_rows": [
+      {
+        "source_line": 190,
+        "field": "visible_text",
+        "replacement": "window_title"
+      }
+    ]
+  },
+  "families": 214,
+  "singleton_families": 181,
+  "compiled_rows": 300,
+  "splits": {
+    "train": {
+      "rows": 240,
+      "sha256": "00aa5d9ba2f16c27d6e1adae62c14c01e94b8051634605678dcc5b5d4ded880a",
+      "changed": 162,
+      "unchanged": 78,
+      "categories": {
+        "context_disambiguation": 139,
+        "context_hard_negative": 43,
+        "context_preservation": 58
+      },
+      "context_variants": {
+        "distractor_context": 43,
+        "relevant_context": 162,
+        "without_context": 35
+      },
+      "families": 154
+    },
+    "eval": {
+      "rows": 30,
+      "sha256": "721a58404122389b558fb5b6422bd2a2f0f1a59d8bfe485c12d914ffda32abf8",
+      "changed": 26,
+      "unchanged": 4,
+      "categories": {
+        "context_disambiguation": 25,
+        "context_preservation": 5
+      },
+      "context_variants": {
+        "relevant_context": 29,
+        "without_context": 1
+      },
+      "families": 30
+    },
+    "test": {
+      "rows": 30,
+      "sha256": "0ffd58ce11b034ef83be8f572258ebcc6fb7f5445e9820c56a9bf16c05718d1f",
+      "changed": 26,
+      "unchanged": 4,
+      "categories": {
+        "context_disambiguation": 25,
+        "context_preservation": 5
+      },
+      "context_variants": {
+        "relevant_context": 29,
+        "without_context": 1
+      },
+      "families": 30
+    }
+  }
+}

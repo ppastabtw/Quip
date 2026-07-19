@@ -1,0 +1,192 @@
+{
+  "contract": {
+    "ambiguity_minimum_zipf": 3.0,
+    "augmentation": "deterministic_typing_errors",
+    "augmentation_event_weights": {
+      "1": 3,
+      "2": 5,
+      "3": 3,
+      "4": 1
+    },
+    "augmentation_operators": {
+      "deletion": 12.0,
+      "insertion": 8.0,
+      "phonetic_rewrite": 10.0,
+      "repeat": 8.0,
+      "spacing": 10.0,
+      "substitution": 35.0,
+      "transposition": 5.0,
+      "vowel_deletion": 12.0
+    },
+    "augmented_share": 0.9,
+    "letter_neighbors_only": true,
+    "minimum_characters_per_event": 3,
+    "one_word_augmentation_event_weights": {
+      "1": 7,
+      "2": 5
+    },
+    "one_word_source_buffer_share": 0.75,
+    "profanity_filter": "better-profanity==0.7.0",
+    "sampling": "runtime_chunks",
+    "source_buffer_share": 0.5,
+    "source_quality": "wordfreq==3.1.1 with minimum Zipf frequency 3.0",
+    "split_policy": "MASSIVE partitions plus normalized input and target isolation",
+    "two_word_augmentation_event_weights": {
+      "1": 4,
+      "2": 5,
+      "3": 3
+    },
+    "unchanged_share": 0.1,
+    "window_share": {
+      "1": 0.032,
+      "10": 0.168,
+      "2": 0.064,
+      "3": 0.08,
+      "4": 0.112,
+      "5": 0.128,
+      "6": 0.136,
+      "7": 0.12,
+      "8": 0.088,
+      "9": 0.072
+    },
+    "window_sizes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ]
+  },
+  "dataset_policy": "massive_runtime_10w_augmentation_v2_5k",
+  "schema_version": 2,
+  "seed": 42,
+  "source": {
+    "dataset": "MASSIVE",
+    "license": "CC BY 4.0",
+    "locale": "en-US",
+    "records": 16521,
+    "revision": "1.1"
+  },
+  "source_manifest_sha256": "4628c2916aa29f84f1b39cc98edb8b5da7ab4d7646aba9bc47fee6fc09b1f1c2",
+  "splits": {
+    "eval": {
+      "augmentation_event_counts": {
+        "1": 243,
+        "2": 375,
+        "3": 216,
+        "4": 66
+      },
+      "changes": {
+        "changed": 900,
+        "unchanged": 100
+      },
+      "rows": 1000,
+      "sha256": "2284458cc91e59700ad1b64636562bda3df26e657db8e90791594d519a264178",
+      "unchanged_by_size": {
+        "1": 4,
+        "10": 16,
+        "2": 8,
+        "3": 8,
+        "4": 12,
+        "5": 12,
+        "6": 12,
+        "7": 12,
+        "8": 8,
+        "9": 8
+      },
+      "window_sizes": {
+        "1": 40,
+        "10": 160,
+        "2": 80,
+        "3": 80,
+        "4": 120,
+        "5": 120,
+        "6": 120,
+        "7": 120,
+        "8": 80,
+        "9": 80
+      }
+    },
+    "test": {
+      "augmentation_event_counts": {
+        "1": 243,
+        "2": 375,
+        "3": 216,
+        "4": 66
+      },
+      "changes": {
+        "changed": 900,
+        "unchanged": 100
+      },
+      "rows": 1000,
+      "sha256": "df750f68b809aef2a14e5dba2d327ee3419995be388fb6e42540b41c2971db88",
+      "unchanged_by_size": {
+        "1": 4,
+        "10": 16,
+        "2": 8,
+        "3": 8,
+        "4": 12,
+        "5": 12,
+        "6": 12,
+        "7": 12,
+        "8": 8,
+        "9": 8
+      },
+      "window_sizes": {
+        "1": 40,
+        "10": 160,
+        "2": 80,
+        "3": 80,
+        "4": 120,
+        "5": 120,
+        "6": 120,
+        "7": 120,
+        "8": 80,
+        "9": 80
+      }
+    },
+    "train": {
+      "augmentation_event_counts": {
+        "1": 1197,
+        "2": 1875,
+        "3": 1089,
+        "4": 339
+      },
+      "changes": {
+        "changed": 4500,
+        "unchanged": 500
+      },
+      "rows": 5000,
+      "sha256": "4c99fcbf7e9ca23df1d4be40ac4b1eaaa46b58e80a6e28c019025304ef673408",
+      "unchanged_by_size": {
+        "1": 16,
+        "10": 84,
+        "2": 32,
+        "3": 40,
+        "4": 56,
+        "5": 64,
+        "6": 68,
+        "7": 60,
+        "8": 44,
+        "9": 36
+      },
+      "window_sizes": {
+        "1": 160,
+        "10": 840,
+        "2": 320,
+        "3": 400,
+        "4": 560,
+        "5": 640,
+        "6": 680,
+        "7": 600,
+        "8": 440,
+        "9": 360
+      }
+    }
+  }
+}

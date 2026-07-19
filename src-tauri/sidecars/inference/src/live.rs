@@ -28,8 +28,6 @@ const DEFAULT_COMPLETION_COUNT: usize = 5;
 const DEFAULT_TEMPERATURE: f64 = 0.1;
 const DEFAULT_MAX_TOKENS: u64 = 64;
 const SYSTEM_PROMPT: &str = include_str!("../../../../training/flash/system_prompt.txt");
-const SYSTEM_PROMPT_V0_JSON: &str =
-    include_str!("../../../../training/flash/system_prompt_v0_json.txt");
 const COMPLETION_SEEDS: [u64; DEFAULT_COMPLETION_COUNT] = [101, 202, 303, 404, 505];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +48,7 @@ impl OutputContract {
     }
 
     fn system_prompt(self) -> &'static str {
-        match self {
-            Self::PlainText => SYSTEM_PROMPT,
-            Self::JsonSuggestion => SYSTEM_PROMPT_V0_JSON,
-        }
+        SYSTEM_PROMPT
     }
 }
 
@@ -411,7 +406,7 @@ impl LiveBackend {
                 .ok()
                 .map(|value| OutputContract::parse(&value, "QUIP_GLOBAL_OUTPUT_CONTRACT"))
                 .transpose()?
-                .unwrap_or(OutputContract::PlainText);
+                .unwrap_or(OutputContract::JsonSuggestion);
             backend = backend.with_global_endpoint_contract(
                 &global_address,
                 global_model_id,
@@ -437,7 +432,7 @@ impl LiveBackend {
             address,
             timeout: Duration::from_secs(90),
             config,
-            output_contract: OutputContract::PlainText,
+            output_contract: OutputContract::JsonSuggestion,
             global_endpoint: None,
             cache_fork: false,
             schema_token_elision: false,
@@ -449,7 +444,7 @@ impl LiveBackend {
         address: &str,
         model_id: String,
     ) -> Result<Self, LiveBackendError> {
-        self.with_global_endpoint_contract(address, model_id, OutputContract::PlainText)
+        self.with_global_endpoint_contract(address, model_id, OutputContract::JsonSuggestion)
     }
 
     fn with_global_endpoint_contract(
@@ -762,7 +757,14 @@ impl LiveBackend {
             "temperature": self.config.temperature,
             "seed": completion_seed(completion_index),
             "max_tokens": self.config.max_tokens,
-            "stop": ["<|endoftext|>"]
+            "stop": ["<|endoftext|>"],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            }
         });
         if self.output_contract == OutputContract::JsonSuggestion {
             body["response_format"] = json!({
@@ -1357,20 +1359,17 @@ fn decode_model_output(
     Ok(suggestion)
 }
 
-/// Stable-first field order: `context_snippets` and `personal_patterns` stay
-/// constant for an entire composition session, while `text` (the sliding
-/// window's draft) changes on every burst. Serializing the stable fields
-/// first — and `text` last — means consecutive sliding-window requests
-/// within a session share the longest possible literal byte prefix up to
-/// where the draft actually diverges. The repository MLX server uses this to
-/// cache the stable system/context layers and prefill only the draft suffix.
+/// Context comes before `text`, the sliding draft that changes on every burst.
+/// Empty context is omitted from the model input. Personal patterns remain an
+/// internal request field and are not part of the finalized model contract.
+/// Keeping the stable context first also lets the repository MLX server reuse
+/// its cached prefix while the sliding draft changes.
 fn model_input(request: &PredictionRequest) -> Value {
-    if request.context_snippets.is_empty() && request.personal_patterns.is_empty() {
+    if request.context_snippets.is_empty() {
         json!({"text": request.draft})
     } else {
         json!({
             "context_snippets": request.context_snippets,
-            "personal_patterns": request.personal_patterns,
             "text": request.draft,
         })
     }
@@ -1402,6 +1401,11 @@ struct ChatMessage {
 #[serde(deny_unknown_fields)]
 struct JsonSuggestion {
     suggestion: String,
+}
+
+#[cfg(test)]
+fn parse_model_output(content: &str) -> Result<String, LiveBackendError> {
+    decode_model_output(content, OutputContract::JsonSuggestion)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1595,9 +1599,10 @@ fn normalize_model_outputs(
     }
 }
 
-/// Suppress literal schema/example text if a small model echoes prompt
-/// scaffolding instead of producing a correction. Returning no candidate is
-/// safer than offering text that was never derived from the user's draft.
+/// Suppress literal schema/example text if a small model places prompt
+/// scaffolding inside the schema-valid suggestion field. Returning no
+/// candidate is safer than offering text that was never derived from the
+/// user's draft.
 fn is_model_scaffolding(suggestion: &str) -> bool {
     let normalized = suggestion.trim().to_ascii_lowercase();
     let repeats_prompt_policy = SYSTEM_PROMPT.lines().any(|line| {
@@ -1750,9 +1755,9 @@ mod tests {
 
     use super::{
         completion_seed, decode_model_output, healthy_response, is_implausibly_truncated,
-        is_model_scaffolding, model_input, normalize_model_outputs, token_profile, CancelHandle,
-        ChatTimings, ChatUsage, LiveBackend, LiveConfig, OutputContract, DEFAULT_COMPLETION_COUNT,
-        SYSTEM_PROMPT,
+        is_model_scaffolding, model_input, normalize_model_outputs, parse_model_output,
+        token_profile, CancelHandle, ChatTimings, ChatUsage, LiveBackend, LiveConfig,
+        OutputContract, DEFAULT_COMPLETION_COUNT, SYSTEM_PROMPT,
     };
     use crate::InferenceBackend;
 
@@ -1830,7 +1835,10 @@ mod tests {
     #[test]
     fn prompt_contains_policy_without_answer_shaped_text() {
         assert!(SYSTEM_PROMPT.contains("actual complete text"));
-        assert!(SYSTEM_PROMPT.contains("If no confident correction is needed"));
+        assert!(SYSTEM_PROMPT.contains("If no correction is needed"));
+        assert!(SYSTEM_PROMPT.contains("exactly one JSON object"));
+        assert!(SYSTEM_PROMPT.contains("suggestion"));
+        assert!(!SYSTEM_PROMPT.contains("personal patterns"));
         assert!(!SYSTEM_PROMPT.contains("Suggestion text:"));
         assert!(!SYSTEM_PROMPT
             .to_ascii_lowercase()
@@ -1874,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn model_input_extends_the_prototype_shape_only_with_real_context() {
+    fn model_input_extends_the_finalized_shape_only_with_real_context() {
         let mut input_request = request();
         assert_eq!(model_input(&input_request), json!({"text": "cnt cm tmr"}));
 
@@ -1895,10 +1903,6 @@ mod tests {
                     "window_title": "#launch",
                     "visible_text": "Mira asked for the report tomorrow",
                 }],
-                "personal_patterns": [{
-                    "shorthand": "tmr",
-                    "expansion": "tomorrow",
-                }],
                 "text": "cnt cm tmr",
             })
         );
@@ -1913,13 +1917,37 @@ mod tests {
             "text_1,",
             "suggestion",
             "} tomorrow",
-            "Correct confident keyboard typos, phonetic spellings, and common compressed phrases.",
-            "I'm Quip, a conservative English text corrector. I can help with that.",
+            "Correct keyboard typos, phonetic spellings, and compressed phrases.",
+            "You are an English text corrector.",
             "uggestionuggestion:see you tomorrow",
         ] {
             assert!(is_model_scaffolding(leaked), "{leaked}");
         }
         assert!(!is_model_scaffolding("this is a sentence"));
+    }
+
+    #[test]
+    fn model_input_matches_finalized_contract() {
+        let mut with_context = request();
+        with_context.context_snippets.push(ContextSnippet {
+            app_name: "Notes".to_owned(),
+            window_title: "Trip planning".to_owned(),
+            visible_text: "Tomorrow: meet at Union Station.".to_owned(),
+        });
+        assert_eq!(
+            model_input(&with_context),
+            json!({
+                "context_snippets": with_context.context_snippets,
+                "text": "cnt cm tmr",
+            })
+        );
+
+        let mut with_pattern = request();
+        with_pattern.personal_patterns.push(PersonalPattern {
+            shorthand: "tmr".to_owned(),
+            expansion: "tomorrow".to_owned(),
+        });
+        assert_eq!(model_input(&with_pattern), json!({"text": "cnt cm tmr"}));
     }
 
     #[test]
@@ -1940,9 +1968,21 @@ mod tests {
     }
 
     #[test]
-    fn token_profile_reports_zero_schema_tax_for_plain_text() {
+    fn parses_only_the_strict_model_output_contract() {
+        assert_eq!(
+            parse_model_output(r#"{"suggestion":"can't meet tomorrow"}"#).unwrap(),
+            "can't meet tomorrow"
+        );
+        assert!(parse_model_output("can't meet tomorrow").is_err());
+        assert!(
+            parse_model_output(r#"{"suggestion":"can't meet tomorrow","reason":"fixed"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn token_profile_reports_json_schema_tax() {
         let profile = token_profile(
-            "can't meet tomorrow",
+            r#"{"suggestion":"can't meet tomorrow"}"#,
             "can't meet tomorrow",
             ChatUsage {
                 prompt_tokens: 80,
@@ -1962,8 +2002,8 @@ mod tests {
 
         assert_eq!(profile.prompt_tokens, 80);
         assert_eq!(profile.completion_tokens, 10);
-        assert_eq!(profile.deterministic_schema_chars, 0);
-        assert_eq!(profile.estimated_schema_tokens, 0.0);
+        assert!(profile.deterministic_schema_chars > 0);
+        assert!(profile.estimated_schema_tokens > 0.0);
         assert_eq!(profile.server_ms_per_output_token, 50.0);
         assert_eq!(profile.completion_ms_per_token, Some(25.0));
         assert_eq!(profile.prompt_prefill_ms, Some(250.0));
@@ -2129,9 +2169,10 @@ mod tests {
     // trusting this in production.
 
     fn sse_body_for(suggestion: &str) -> Vec<u8> {
+        let model_output = json!({"suggestion": suggestion}).to_string();
         let chunk1 = format!(
             "data: {}\n\n",
-            json!({"choices": [{"delta": {"content": suggestion}}]})
+            json!({"choices": [{"delta": {"content": model_output}}]})
         );
         let chunk2 = format!(
             "data: {}\n\n",
@@ -2159,7 +2200,9 @@ mod tests {
         let mut chunk = [0_u8; 4096];
         loop {
             let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "client closed before sending a full request");
+            if read == 0 {
+                return Vec::new();
+            }
             buf.extend_from_slice(&chunk[..read]);
             let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
                 continue;
@@ -2181,8 +2224,8 @@ mod tests {
         }
     }
 
-    fn drain_one_request(stream: &mut TcpStream) {
-        let _ = read_one_request(stream);
+    fn drain_one_request(stream: &mut TcpStream) -> bool {
+        !read_one_request(stream).is_empty()
     }
 
     #[test]
@@ -2204,7 +2247,9 @@ mod tests {
                 .map(|index| {
                     json!({
                         "index": index,
-                        "message": {"content": format!("candidate {index}")},
+                        "message": {
+                            "content": json!({"suggestion": format!("candidate {index}")}).to_string()
+                        },
                         "finish_reason": "stop"
                     })
                 })
@@ -2252,7 +2297,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            drain_one_request(&mut stream);
+            assert!(drain_one_request(&mut stream));
             let body = sse_body_for("Can't come tomorrow.");
             let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
             response.extend_from_slice(&body);
@@ -2274,7 +2319,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            drain_one_request(&mut stream);
+            assert!(drain_one_request(&mut stream));
             let body = to_chunked_encoding(&sse_body_for("Can't come tomorrow."));
             let mut response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
             response.extend_from_slice(&body);
@@ -2326,7 +2371,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            drain_one_request(&mut stream);
+            assert!(drain_one_request(&mut stream));
             // Never respond: park on a read that only ends when the client
             // (the cancellation under test) shuts the socket down.
             let mut park = [0_u8; 1];
@@ -2363,7 +2408,9 @@ mod tests {
             let mut served_fast = 0;
             for _ in 0..completion_count {
                 let (mut stream, _) = listener.accept().unwrap();
-                drain_one_request(&mut stream);
+                if !drain_one_request(&mut stream) {
+                    continue;
+                }
                 if served_fast < early_exit_agreement {
                     served_fast += 1;
                     let body = sse_body_for("Can't come tomorrow.");

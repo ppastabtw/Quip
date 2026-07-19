@@ -18,7 +18,7 @@ The executable shapes live in `docs/phase-0.schema.json`. Examples live in `docs
 
 - Accessibility element handles and burst-range markers
 - UI candidate and transition state
-- raw model responses and aggregation implementation
+- raw model transport and aggregation implementation. Each raw completion still validates against `$defs.model_completion`.
 - personal-example storage
 - model and adapter paths
 - idle timing, draft limits, and other tuning values
@@ -29,7 +29,7 @@ The Accessibility layer exposes an opaque `destination_id`. The UI returns that 
 
 - A request carries bounded draft text, bounded window snippets, and compact personal patterns.
 - `model_variant` identifies `base`, `global`, or `global_plus_personal`. `backend` independently identifies `fixture` or `live`.
-- Each internal model completion contains one full-input `suggestion`.
+- Each internal model completion is exactly one JSON object matching `$defs.model_completion`. Plain text, extra fields, empty suggestions, and commentary are invalid.
 - Inference runs exactly five completions, removes exact-draft suggestions, deduplicates changed suggestions, and returns zero through five ranked candidates.
 - A successful result may have zero candidates. Zero means skip and shows no suggestion bar.
 - A successful result has no action field. Each candidate is a full-input replacement.
