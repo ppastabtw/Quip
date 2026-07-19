@@ -1,0 +1,20 @@
+model = "Qwen/Qwen3.5-2B"
+algorithm = "sft"
+seed = 42
+
+[environment]
+id = "ariobarin/quip-v2-context-mega-20260719"
+
+[environment.params]
+split = "train"
+dataset_path = "context_data/mixed/train.jsonl"
+
+[train]
+max_examples = 5240
+lora_rank = 32
+lora_alpha = 64
+max_context_tokens = 1024
+learning_rate = 1e-5
+batch_size = 8
+max_steps = 250
+save_at_steps = [50, 100, 150, 200, 250]

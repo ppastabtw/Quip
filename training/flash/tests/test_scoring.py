@@ -132,6 +132,30 @@ class ScoreCompletionTests(unittest.TestCase):
         self.assertEqual(result.score, 1.0)
         self.assertTrue(result.success)
 
+    def test_context_input_with_one_snippet_earns_full_reward(self):
+        result = score_completion(
+            input_text=json.dumps(
+                {
+                    "context_snippets": [
+                        {
+                            "app_name": "Notes",
+                            "window_title": "Trip",
+                            "visible_text": "Meet at Union Station tomorrow.",
+                        }
+                    ],
+                    "text": "meet there tmrw",
+                }
+            ),
+            expected_output='{"suggestion":"meet at Union Station tomorrow"}',
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at Union Station tomorrow"],
+            },
+            response_text='{"suggestion":"meet at Union Station tomorrow"}',
+        )
+        self.assertEqual(result.score, 1.0)
+        self.assertTrue(result.success)
+
 
 class CandidateRankingTests(unittest.TestCase):
     def test_ranks_by_votes_then_first_completion_and_hides_unchanged(self):

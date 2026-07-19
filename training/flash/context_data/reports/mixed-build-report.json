@@ -1,0 +1,25 @@
+{
+  "protocol": "quip_v2_plus_context_sft_v1",
+  "schema_version": 1,
+  "v2": {
+    "train_rows": 5000,
+    "train_sha256": "4c99fcbf7e9ca23df1d4be40ac4b1eaaa46b58e80a6e28c019025304ef673408",
+    "build_report_sha256": "e8098ff94477696c315e2525f177d9447dacfe7b08fe652cbdb40f237b34ae76",
+    "dataset_policy": "massive_runtime_10w_augmentation_v2_5k"
+  },
+  "context": {
+    "train_rows": 240,
+    "train_sha256": "00aa5d9ba2f16c27d6e1adae62c14c01e94b8051634605678dcc5b5d4ded880a",
+    "context_build_report_sha256": "e04e024a2ac619e83bb07f72521afab6ce30d497e151b7f5d45cfe5e544de03e"
+  },
+  "mixed": {
+    "rows": 5240,
+    "sha256": "e67d1aadb9ce11177d287bfb02c367ca71f1a7bf995a72342bae6cf12c3ea211",
+    "v2_prefix_rows": 5000,
+    "context_suffix_rows": 240
+  },
+  "family_leakage": {
+    "context_train_vs_context_eval_test": false,
+    "v2_family_namespace_overlaps_context": false
+  }
+}

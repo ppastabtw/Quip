@@ -2,3 +2,5 @@
 * text=auto
 training/flash/dataset/*.json text eol=lf
 training/flash/dataset/*.jsonl text eol=lf
+training/flash/context_data/**/*.json -text
+training/flash/context_data/**/*.jsonl -text
