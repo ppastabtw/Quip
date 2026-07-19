@@ -2,7 +2,7 @@ import json
 import unittest
 
 from dataset_compiler.contract import CONTRACT
-from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment
+from environment import SYSTEM_PROMPT, QuipEnvironment, load_environment, model_input_json
 from scoring import model_text
 
 
@@ -31,6 +31,27 @@ class EnvironmentTests(unittest.TestCase):
             ),
         )
         self.assertEqual(set(json.loads(messages[1]["content"])), {"text"})
+
+    def test_model_input_projects_finalized_fields_in_stable_order(self):
+        value = model_input_json(
+            {
+                "text": "meet there tmrw",
+                "personal_patterns": [{"shorthand": "tmrw", "expansion": "tomorrow"}],
+                "context_snippets": [
+                    {
+                        "app_name": "Notes",
+                        "window_title": "Trip planning",
+                        "visible_text": "Tomorrow: meet at Union Station.",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            value,
+            '{"context_snippets":[{"app_name":"Notes","window_title":"Trip planning","visible_text":"Tomorrow: meet at Union Station."}],"text":"meet there tmrw"}',
+        )
+        self.assertNotIn("personal_patterns", value)
 
     def test_prompt_has_policy_without_answer_shaped_text(self):
         self.assertIn("actual complete text", SYSTEM_PROMPT)

@@ -17,6 +17,15 @@ ROOT = Path(__file__).parent
 SYSTEM_PROMPT = (ROOT / "system_prompt.txt").read_text(encoding="utf-8")
 
 
+def model_input_json(example_input: str | dict) -> str:
+    raw_input = json.loads(example_input) if isinstance(example_input, str) else example_input
+    model_input = {}
+    if raw_input.get("context_snippets"):
+        model_input["context_snippets"] = raw_input["context_snippets"]
+    model_input["text"] = raw_input["text"]
+    return json.dumps(model_input, ensure_ascii=False, separators=(",", ":"))
+
+
 class QuipEnvironment(EnvironmentSingleTurn):
     def __init__(self, *, split: str = "train", dataset_path: str | None = None) -> None:
         path = Path(dataset_path) if dataset_path else ROOT / "dataset" / f"{split}.jsonl"
@@ -25,21 +34,9 @@ class QuipEnvironment(EnvironmentSingleTurn):
         self.dataset = load_task_examples(path)
 
     def build_prompt_messages(self, example: TaskExample, prompt_text: str):
-        user_input = (
-            json.loads(example.input)
-            if isinstance(example.input, str)
-            else example.input
-        )
         return [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": json.dumps(
-                    user_input,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            },
+            {"role": "user", "content": model_input_json(example.input)},
         ]
 
     def score_response(self, example: TaskExample, response_text: str) -> RewardResult:
