@@ -43,6 +43,8 @@ export interface AppSettings {
   active_profile: string;
   backend_mode: "fixture" | "live";
   model_variant: ModelVariant;
+  /** Burst window in words; 5 until a retrained model raises it. */
+  window_words: number;
 }
 
 export interface Metrics {
@@ -97,13 +99,30 @@ export interface CommitOutcome {
   text: string;
 }
 
+/** One word-slot proposal from the engine's session edit accumulator, in
+ * session word coordinates. */
+export interface Mark {
+  start_word: number;
+  /** Draft words replaced (0 = insertion before start_word). */
+  word_len: number;
+  original: string;
+  replacement: string;
+  agreements: number;
+  /** Hardened: stable enough to show and apply. */
+  stable: boolean;
+}
+
 export const api = {
-  injectCapture: (result: CaptureResult) => invoke<void>("inject_capture", { result }),
+  injectCapture: (result: CaptureResult, barless?: boolean) =>
+    invoke<void>("inject_capture", { result, barless }),
   selectCandidate: (index: number) => invoke<CommitOutcome>("select_candidate", { index }),
   moveSelection: (delta: number) => invoke<void>("move_selection", { delta }),
   dismissSuggestions: () => invoke<void>("dismiss_suggestions"),
   endSession: () => invoke<void>("end_composition_session"),
   retractOffer: (burstId: string) => invoke<void>("retract_offer", { burstId }),
+  getMarks: () => invoke<Mark[]>("get_marks"),
+  applyMarks: () => invoke<Mark[]>("apply_marks"),
+  clearMarks: () => invoke<void>("clear_marks"),
   getCompositionState: () => invoke<Snapshot>("get_composition_state"),
   getSettings: () => invoke<AppSettings>("get_settings"),
   updateSettings: (settings: AppSettings) => invoke<void>("update_settings", { settings }),
@@ -131,6 +150,8 @@ export const events = {
     listen<Snapshot>("composition://state", (e) => handler(e.payload)),
   onSettled: (handler: (settled: SettledEvent) => void) =>
     listen<SettledEvent>("composition://settled", (e) => handler(e.payload)),
+  onMarks: (handler: (marks: Mark[]) => void) =>
+    listen<Mark[]>("composition://marks", (e) => handler(e.payload)),
   onCommitted: (handler: (outcome: CommitOutcome) => void) =>
     listen<CommitOutcome>("composition://committed", (e) => handler(e.payload)),
   onSettings: (handler: (settings: AppSettings) => void) =>

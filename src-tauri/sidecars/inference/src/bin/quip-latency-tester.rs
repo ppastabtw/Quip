@@ -39,6 +39,8 @@ struct Options {
     completion_count: usize,
     temperature: f64,
     max_tokens: u64,
+    streaming: bool,
+    early_exit_agreement: usize,
     phrases: Vec<String>,
     json: bool,
     html: Option<PathBuf>,
@@ -60,6 +62,11 @@ impl BenchmarkSidecar {
             .env("QUIP_COMPLETION_COUNT", config.completion_count.to_string())
             .env("QUIP_TEMPERATURE", config.temperature.to_string())
             .env("QUIP_MAX_TOKENS", config.max_tokens.to_string())
+            .env("QUIP_STREAMING", config.streaming.to_string())
+            .env(
+                "QUIP_EARLY_EXIT_AGREEMENT",
+                config.early_exit_agreement.to_string(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -133,6 +140,8 @@ impl Options {
             completion_count: env_value("QUIP_COMPLETION_COUNT", 5)?,
             temperature: env_value("QUIP_TEMPERATURE", 0.1)?,
             max_tokens: env_value("QUIP_MAX_TOKENS", 64)?,
+            streaming: env_value("QUIP_STREAMING", false)?,
+            early_exit_agreement: env_value("QUIP_EARLY_EXIT_AGREEMENT", 3)?,
             phrases: Vec::new(),
             json: false,
             html: None,
@@ -166,6 +175,13 @@ impl Options {
                 "--max-tokens" => {
                     options.max_tokens =
                         parse_value(&next_value(&mut arguments, "--max-tokens")?, "--max-tokens")?
+                }
+                "--streaming" => options.streaming = true,
+                "--early-exit-agreement" => {
+                    options.early_exit_agreement = parse_value(
+                        &next_value(&mut arguments, "--early-exit-agreement")?,
+                        "--early-exit-agreement",
+                    )?
                 }
                 "--phrase" => options
                     .phrases
@@ -201,6 +217,8 @@ fn run(options: Options) -> Result<(), String> {
         completion_count: options.completion_count,
         temperature: options.temperature,
         max_tokens: options.max_tokens,
+        streaming: options.streaming,
+        early_exit_agreement: options.early_exit_agreement,
     };
     let backend =
         LiveBackend::with_config(&options.address, config).map_err(|error| error.to_string())?;
@@ -795,11 +813,20 @@ Usage: quip-latency-tester [options]\n\n\
   --completions N         Concurrent completions per inference, 1-5 (default: 5)\n\
   --temperature N         Sampling temperature, 0-2 (default: 0.1)\n\
   --max-tokens N          Maximum completion tokens, 1-512 (default: 64)\n\
+  --streaming             Stream each completion and cancel the rest of the\n\
+                          batch once --early-exit-agreement of them agree\n\
+                          (default: batched, waits for the full n:5)\n\
+  --early-exit-agreement N  Agreeing streamed completions needed to cancel\n\
+                          the rest, 1..completions (default: 3)\n\
   --phrase TEXT           Phrase to benchmark; repeat for a phrase set\n\
   --json                  Emit machine-readable samples and summaries\n\
   --html PATH             Write a self-contained interactive latency profile\n\
 Environment equivalents: QUIP_MODEL_ADDR, QUIP_MODEL_ID, QUIP_MODEL_LABEL,\n\
-QUIP_COMPLETION_COUNT, QUIP_TEMPERATURE, QUIP_MAX_TOKENS."
+QUIP_COMPLETION_COUNT, QUIP_TEMPERATURE, QUIP_MAX_TOKENS, QUIP_STREAMING,\n\
+QUIP_EARLY_EXIT_AGREEMENT.\n\n\
+Benchmark streaming against the current batched n:5 default:\n\
+  quip-latency-tester --runs 20 --streaming --json > streaming.json\n\
+  quip-latency-tester --runs 20 --json > batched.json"
     );
 }
 

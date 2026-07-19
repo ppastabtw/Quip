@@ -254,7 +254,10 @@ fn build_ready_capture_result(
     snapshot: DestinationSnapshot,
 ) -> CaptureResult {
     let destination_id = registry.register(snapshot);
+    // Word positions within the composition session are not tracked by the
+    // Accessibility observer yet; the accumulator simply skips such bursts.
     CaptureResult::Ready {
+        word_offset: None,
         burst_id: format!("burst_{destination_id}"),
         destination_id,
         profile_id: profile_id.to_string(),

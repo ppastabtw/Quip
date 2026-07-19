@@ -9,6 +9,14 @@
 //! candidates replace the burst in place only on explicit selection,
 //! dismissal and stale results change nothing, and resolving one offer
 //! surfaces the next already-computed one immediately.
+//!
+//! Alongside the offer queue, every settled result also feeds the
+//! session-scoped word-level edit accumulator (`edits::SessionEdits`):
+//! corrections that stay stable across passes harden into quiet inline
+//! marks the user can apply all at once, and a sentence boundary can
+//! consolidate them into one full-sentence offer.
+
+pub mod edits;
 
 use crate::commit::{self, CommitOutcome};
 use crate::inference::{FixtureBackend, Metrics};
@@ -74,6 +82,12 @@ pub struct Burst {
     pub trigger: Trigger,
     pub caret: Rect,
     pub model_variant: ModelVariant,
+    /// Session word index of the draft's first word, when the capture side
+    /// tracks it. Required for the edit accumulator; without it a burst's
+    /// results still make offers but never update word slots.
+    pub word_offset: Option<u32>,
+    /// Sliding-window cadence: results feed the accumulator only, no bar.
+    pub barless: bool,
 }
 
 /// Input to `begin_burst`: a `capture_result.ready` from the playground now,
@@ -86,6 +100,10 @@ pub struct BurstInput {
     pub burst_id: Option<String>,
     pub destination_id: Option<String>,
     pub profile_id: Option<String>,
+    pub word_offset: Option<u32>,
+    /// True for sliding-window cadences that feed the edit accumulator only:
+    /// results update word slots but never create a candidate-bar offer.
+    pub barless: bool,
 }
 
 /// A settled prediction waiting for the user to act on it.
@@ -96,6 +114,8 @@ struct Offer {
     backend: Option<Backend>,
     latency_ms: Option<u64>,
     error: Option<ErrorInfo>,
+    /// Learning-label source when a candidate is confirmed.
+    source: &'static str,
 }
 
 /// How `apply_result` disposed of a finished prediction.
@@ -123,6 +143,11 @@ pub struct Engine {
     in_flight: Option<Burst>,
     /// Settled offers, oldest first. The front is what the bar shows.
     offers: VecDeque<Offer>,
+    /// Word-level correction evidence for the current composition session.
+    session: edits::SessionEdits,
+    /// The most recent burst that entered the pipeline: the consolidation
+    /// offer inherits its destination, profile, and caret.
+    last_burst: Option<Burst>,
     burst_seq: u64,
     data_dir: std::path::PathBuf,
 }
@@ -136,6 +161,8 @@ impl Engine {
             metrics: Metrics::default(),
             in_flight: None,
             offers: VecDeque::new(),
+            session: edits::SessionEdits::default(),
+            last_burst: None,
             burst_seq: 0,
             data_dir: data_dir.to_path_buf(),
         }
@@ -177,6 +204,8 @@ impl Engine {
             trigger: input.trigger,
             caret: input.caret,
             model_variant: self.settings.model_variant,
+            word_offset: input.word_offset,
+            barless: input.barless,
         };
         let request = PredictionRequest {
             request_id: format!("req_{}", burst.burst_id),
@@ -200,6 +229,7 @@ impl Engine {
             draft: burst.draft.clone(),
             model_variant: burst.model_variant,
         };
+        self.last_burst = Some(burst.clone());
         self.in_flight = Some(burst);
         Ok((snapshot, request, self.settings.backend_mode))
     }
@@ -241,10 +271,14 @@ impl Engine {
 
     /// Applies a finished prediction. Candidates equal to the typed draft are
     /// filtered out — leaving the text alone is not a correction — and a
-    /// result with nothing left is skipped without an offer. Otherwise the
-    /// result becomes an offer: it replaces an existing offer whose draft it
-    /// extends (a grown burst re-predicting the same words), or queues behind
-    /// unrelated offers so an earlier batch is never skipped by a later one.
+    /// result with nothing left is skipped without an offer. Every consumed
+    /// result also feeds the session edit accumulator when the burst carries
+    /// a word offset: changed candidates as correction evidence, no-change
+    /// results as decay ("the text is fine" is evidence too). A surviving
+    /// result becomes an offer unless the burst was barless: it replaces an
+    /// existing offer whose draft it extends (a grown burst re-predicting
+    /// the same words), or queues behind unrelated offers so an earlier
+    /// batch is never skipped by a later one.
     pub fn apply_result(&mut self, burst_id: &str, result: PredictionResult) -> ApplyDisposition {
         if self
             .in_flight
@@ -258,17 +292,38 @@ impl Engine {
         let (candidates, backend, latency_ms, error) = match result {
             PredictionResult::Ok {
                 candidates,
+                votes,
                 backend,
                 latency_ms,
                 ..
             } => {
-                let changed: Vec<String> = candidates
+                // Filter no-change candidates, keeping votes aligned.
+                let votes = votes.unwrap_or_else(|| vec![1; candidates.len()]);
+                let sampled = candidates.len();
+                let (changed, changed_votes): (Vec<String>, Vec<u32>) = candidates
                     .into_iter()
-                    .filter(|candidate| candidate.trim() != burst.draft)
-                    .collect();
+                    .zip(votes)
+                    .filter(|(candidate, _)| candidate.trim() != burst.draft)
+                    .unzip();
                 if changed.is_empty() {
+                    if let Some(offset) = burst.word_offset {
+                        self.session.observe_no_change(offset as usize, &burst.draft);
+                    }
                     // The typed text stands; the user is never interrupted.
                     return ApplyDisposition::Skipped(self.current_snapshot());
+                }
+                if let Some(offset) = burst.word_offset {
+                    self.session.observe(
+                        offset as usize,
+                        &burst.draft,
+                        &changed[0],
+                        edits::PassSignal {
+                            top_votes: Some(changed_votes[0]),
+                            // The raw samples deduplicated to one distinct
+                            // changed candidate: unanimity.
+                            unanimous: sampled == 1,
+                        },
+                    );
                 }
                 (changed, Some(backend), Some(latency_ms), None)
             }
@@ -277,6 +332,11 @@ impl Engine {
             PredictionResult::Error { error, .. } => (Vec::new(), None, None, Some(error)),
         };
 
+        if burst.barless {
+            // Sliding-window cadence: evidence only, never a bar.
+            return ApplyDisposition::Skipped(self.current_snapshot());
+        }
+
         let offer = Offer {
             burst,
             candidates,
@@ -284,6 +344,7 @@ impl Engine {
             backend,
             latency_ms,
             error,
+            source: "confirmed_candidate",
         };
         if let Some(existing) = self
             .offers
@@ -315,16 +376,15 @@ impl Engine {
     /// no auto-apply. Queued offers and the in-flight burst survive: the next
     /// offer surfaces right after.
     pub fn select(&mut self, index: usize) -> Result<(Snapshot, CommitOutcome), String> {
-        let offer = self
-            .offers
-            .front()
-            .ok_or("no suggestions to select")?;
+        let offer = self.offers.front().ok_or("no suggestions to select")?;
         let text = offer
             .candidates
             .get(index)
             .ok_or("candidate index out of range")?
             .clone();
-        let burst = self.offers.pop_front().expect("checked above").burst;
+        let offer = self.offers.pop_front().expect("checked above");
+        let source = offer.source;
+        let burst = offer.burst;
 
         let outcome = commit::replace_burst(&burst.destination_id, &burst.burst_id, &text);
         if !self.settings.learning_paused {
@@ -335,13 +395,20 @@ impl Engine {
                 draft: burst.draft.clone(),
                 label: "replace".to_string(),
                 committed: text.clone(),
-                source: "confirmed_candidate".to_string(),
+                source: source.to_string(),
                 model_variant: burst.model_variant,
             });
             for (shorthand, expansion) in learning::extract_patterns(&burst.draft, &text) {
                 self.learning
                     .record_pattern(&burst.profile_id, &shorthand, &expansion);
             }
+        }
+        // The commit changed word counts in the destination: keep the
+        // session's word indices true and resolve overlapping slots.
+        if let Some(offset) = burst.word_offset {
+            let old_len = burst.draft.split_whitespace().count();
+            self.session
+                .shift_after_commit(offset as usize, old_len, &text);
         }
         Ok((
             Snapshot::Applied {
@@ -367,13 +434,47 @@ impl Engine {
     /// Ends the composition session (sentence boundary, or the destination
     /// was edited out from under the tracked burst): the visible offer counts
     /// as a stable dismissal, queued offers and the in-flight burst are
-    /// dropped without labels.
+    /// dropped without labels. If the session accumulated hardened word
+    /// corrections that were never applied, they consolidate into one final
+    /// full-sentence offer — accepting it replaces the whole sentence,
+    /// dismissing it changes nothing.
     pub fn end_session(&mut self) -> Snapshot {
         if let Some(offer) = self.offers.pop_front() {
             self.record_keep(&offer);
         }
         self.offers.clear();
         self.in_flight = None;
+
+        let consolidated = self.session.consolidated();
+        let original = self.session.original_text();
+        self.session = edits::SessionEdits::default();
+        if let (Some(text), Some(last)) = (consolidated, self.last_burst.take()) {
+            self.burst_seq += 1;
+            let burst = Burst {
+                burst_id: format!("consolidated_{}_{}", self.burst_seq, learning::now_ms()),
+                destination_id: last.destination_id,
+                profile_id: last.profile_id,
+                draft: original.unwrap_or_default(),
+                trigger: Trigger::Punctuation,
+                caret: last.caret,
+                model_variant: last.model_variant,
+                // The session that produced it is already reset; accepting
+                // this offer must not shift fresh-session indices.
+                word_offset: None,
+                barless: false,
+            };
+            self.offers.push_back(Offer {
+                burst,
+                candidates: vec![text],
+                selected: 0,
+                backend: None,
+                latency_ms: None,
+                error: None,
+                source: "sentence_pass",
+            });
+            return self.current_snapshot();
+        }
+        self.last_burst = None;
         Snapshot::Idle
     }
 
@@ -390,6 +491,68 @@ impl Engine {
             self.in_flight = None;
         }
         self.current_snapshot()
+    }
+
+    /// Every current word-slot proposal for the marks overlay and stats.
+    pub fn marks(&self) -> Vec<edits::Mark> {
+        self.session.marks()
+    }
+
+    /// Applies every hardened mark (⌘⏎ / apply-all): records one learning
+    /// example per edit — cleaner shorthand→expansion pairs than a
+    /// whole-burst diff — and returns the marks (pre-apply indices, oldest
+    /// first) for the caller to replay onto the destination text right to
+    /// left.
+    pub fn apply_marks(&mut self) -> Vec<edits::Mark> {
+        let applied = self.session.take_hardened();
+        if !self.settings.learning_paused {
+            let profile_id = self.settings.active_profile.clone();
+            for mark in &applied {
+                self.learning.append_example(&LabeledExample {
+                    ts_ms: learning::now_ms(),
+                    burst_id: format!("mark_{}_{}", mark.start_word, learning::now_ms()),
+                    profile_id: profile_id.clone(),
+                    draft: mark.original.clone(),
+                    label: "replace".to_string(),
+                    committed: mark.replacement.clone(),
+                    source: "hardened_edit".to_string(),
+                    model_variant: self.settings.model_variant,
+                });
+                for (shorthand, expansion) in
+                    learning::extract_patterns(&mark.original, &mark.replacement)
+                {
+                    self.learning
+                        .record_pattern(&profile_id, &shorthand, &expansion);
+                }
+            }
+        }
+        applied
+    }
+
+    /// Explicitly reverts the pending marks (Escape with no bar visible).
+    /// Hardened marks record a keep example — the user saw a stable
+    /// correction and chose their own text — and all word-slot evidence
+    /// resets.
+    pub fn clear_marks(&mut self) {
+        if !self.settings.learning_paused {
+            let profile_id = self.settings.active_profile.clone();
+            for mark in self.session.marks() {
+                if !mark.stable {
+                    continue;
+                }
+                self.learning.append_example(&LabeledExample {
+                    ts_ms: learning::now_ms(),
+                    burst_id: format!("mark_{}_{}", mark.start_word, learning::now_ms()),
+                    profile_id: profile_id.clone(),
+                    draft: mark.original.clone(),
+                    label: "keep".to_string(),
+                    committed: String::new(),
+                    source: "revert".to_string(),
+                    model_variant: self.settings.model_variant,
+                });
+            }
+        }
+        self.session = edits::SessionEdits::default();
     }
 
     fn record_keep(&mut self, offer: &Offer) {
@@ -476,6 +639,8 @@ mod tests {
             burst_id: None,
             destination_id: Some("destination_test".to_string()),
             profile_id: None,
+            word_offset: None,
+            barless: false,
         }
     }
 
@@ -545,6 +710,7 @@ mod tests {
             model_variant: request.model_variant,
             backend: Backend::Live,
             candidates: vec!["cnt cm tmrw".to_string(), " cnt cm tmrw ".to_string()],
+            votes: None,
             latency_ms: 12,
         };
         assert!(matches!(
@@ -563,6 +729,7 @@ mod tests {
                 "cnt cm tmrw".to_string(),
                 "Can't come tomorrow.".to_string(),
             ],
+            votes: None,
             latency_ms: 12,
         };
         settled(engine.apply_result(&burst_id, mixed));
@@ -671,6 +838,7 @@ mod tests {
             model_variant: request.model_variant,
             backend: Backend::Live,
             candidates: candidates.iter().map(ToString::to_string).collect(),
+            votes: None,
             latency_ms: 12,
         }
     }
@@ -777,6 +945,106 @@ mod tests {
         let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
         assert_eq!(raw.matches("\"keep\"").count(), 1);
         assert!(raw.contains("cnt cm tmrw"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A barless sliding-window burst at a session word offset.
+    fn typed_at(draft: &str, offset: u32) -> BurstInput {
+        BurstInput {
+            word_offset: Some(offset),
+            barless: true,
+            ..typed(draft)
+        }
+    }
+
+    fn voted_result(
+        request: &PredictionRequest,
+        candidates: &[&str],
+        votes: &[u32],
+    ) -> PredictionResult {
+        PredictionResult::Ok {
+            request_id: request.request_id.clone(),
+            model_variant: request.model_variant,
+            backend: Backend::Live,
+            candidates: candidates.iter().map(ToString::to_string).collect(),
+            votes: Some(votes.to_vec()),
+            latency_ms: 12,
+        }
+    }
+
+    #[test]
+    fn barless_bursts_harden_marks_without_offers() {
+        let (mut engine, dir) = test_engine();
+        let (_, request, _) = engine.begin_burst(typed_at("cnt cm tmrw", 0)).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        // 4-of-5 votes on the correction: very strong, but the caret has not
+        // moved past it yet, and no bar ever opens in barless mode.
+        let disposition = engine.apply_result(
+            &burst_id,
+            voted_result(
+                &request,
+                &["Can't come tomorrow.", "cnt come tmrw"],
+                &[4, 1],
+            ),
+        );
+        assert!(matches!(disposition, ApplyDisposition::Skipped(_)));
+        assert_eq!(engine.current_snapshot(), Snapshot::Idle);
+        assert!(engine.marks().iter().all(|m| !m.stable));
+
+        // The next window reports the following words are fine; the caret is
+        // now two words past the correction and it hardens.
+        let (_, request, _) = engine.begin_burst(typed_at("ok going now", 3)).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        engine.apply_result(&burst_id, voted_result(&request, &["ok going now"], &[5]));
+        let marks = engine.marks();
+        let stable: Vec<_> = marks.iter().filter(|m| m.stable).collect();
+        assert_eq!(stable.len(), 1);
+        assert_eq!(stable[0].original, "cnt cm tmrw");
+        assert_eq!(stable[0].replacement, "Can't come tomorrow.");
+
+        // Apply-all records one example per edit and clears the mark.
+        let applied = engine.apply_marks();
+        assert_eq!(applied.len(), 1);
+        assert!(engine.marks().iter().all(|m| !m.stable));
+        let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
+        assert!(raw.contains("\"hardened_edit\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn end_session_consolidates_unapplied_marks_into_one_offer() {
+        let (mut engine, dir) = test_engine();
+        let (_, request, _) = engine.begin_burst(typed_at("cnt cm tmrw", 0)).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        engine.apply_result(
+            &burst_id,
+            voted_result(&request, &["Can't come tomorrow."], &[5]),
+        );
+        let (_, request, _) = engine.begin_burst(typed_at("ok going now", 3)).unwrap();
+        let burst_id = request.request_id.strip_prefix("req_").unwrap().to_string();
+        engine.apply_result(&burst_id, voted_result(&request, &["ok going now"], &[5]));
+
+        // Sentence boundary with a hardened, never-applied correction: one
+        // final offer holds the whole corrected sentence.
+        let snapshot = engine.end_session();
+        let Snapshot::Suggesting {
+            candidates,
+            burst_id,
+            draft,
+            ..
+        } = snapshot
+        else {
+            panic!("expected the consolidation offer, got {snapshot:?}");
+        };
+        assert!(burst_id.starts_with("consolidated_"));
+        assert_eq!(candidates, vec!["Can't come tomorrow. ok going now"]);
+        assert_eq!(draft, "cnt cm tmrw ok going now");
+        let (_, outcome) = engine.select(0).unwrap();
+        assert_eq!(outcome.text, "Can't come tomorrow. ok going now");
+        let raw = std::fs::read_to_string(dir.join("profiles/profile_a/examples.jsonl")).unwrap();
+        assert!(raw.contains("\"sentence_pass\""));
+        // A second end_session finds a fresh session: no offer, plain idle.
+        assert_eq!(engine.end_session(), Snapshot::Idle);
         let _ = std::fs::remove_dir_all(dir);
     }
 

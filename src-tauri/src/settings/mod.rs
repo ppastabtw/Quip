@@ -23,6 +23,10 @@ pub struct AppSettings {
     pub active_profile: String,
     pub backend_mode: BackendMode,
     pub model_variant: ModelVariant,
+    /// The burst window in words. Stays 5 (what the current model was
+    /// trained on) until a retrained model justifies raising it; the
+    /// playground derives its chunk boundary and char backstop from this.
+    pub window_words: usize,
 }
 
 impl Default for AppSettings {
@@ -34,6 +38,7 @@ impl Default for AppSettings {
             active_profile: "profile_a".to_string(),
             backend_mode: BackendMode::Fixture,
             model_variant: ModelVariant::GlobalPlusPersonal,
+            window_words: 5,
         }
     }
 }

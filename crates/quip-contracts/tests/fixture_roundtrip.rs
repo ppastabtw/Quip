@@ -112,6 +112,7 @@ fn textedit_ready_capture_fixture_matches_shared_rust_contract() {
             profile_id: "profile_default".to_string(),
             draft: "cnt cm tmrw".to_string(),
             trigger: Trigger::Idle,
+            word_offset: None,
             caret: Rect {
                 x: 512.0,
                 y: 384.0,

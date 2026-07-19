@@ -3,7 +3,11 @@ use std::{
     error::Error,
     fmt,
     io::{Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{Shutdown, SocketAddr, TcpStream},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -43,6 +47,11 @@ pub enum LiveBackendError {
     InvalidJson(serde_json::Error),
     MissingModelContent,
     WorkerPanicked,
+    /// The coordinator shut this completion's connection down deliberately
+    /// (early-exit agreement, or a superseded sliding-window burst). Not a
+    /// failure: `normalize_model_outputs` excludes it from the batch-size
+    /// check that guards against genuine transport/parse errors.
+    Cancelled,
 }
 
 impl fmt::Display for LiveBackendError {
@@ -67,6 +76,7 @@ impl fmt::Display for LiveBackendError {
             }
             Self::MissingModelContent => write!(formatter, "local model response had no content"),
             Self::WorkerPanicked => write!(formatter, "local model completion worker panicked"),
+            Self::Cancelled => write!(formatter, "completion was cancelled"),
         }
     }
 }
@@ -77,6 +87,22 @@ pub struct LiveConfig {
     pub completion_count: usize,
     pub temperature: f64,
     pub max_tokens: u64,
+    /// Streams each completion instead of waiting for the full buffered
+    /// response, so the coordinator can see partial agreement and cancel the
+    /// rest of the batch early. Defaults off: the batched path is the one
+    /// validated against a live server so far, and this is the A/B toggle
+    /// for benchmarking streaming against it (see `run-latency-benchmark.sh`).
+    #[serde(default)]
+    pub streaming: bool,
+    /// Early-exit threshold: once this many streamed completions agree on
+    /// the same suggestion, the rest of the batch is cancelled. Only takes
+    /// effect when `streaming` is true.
+    #[serde(default = "default_early_exit_agreement")]
+    pub early_exit_agreement: usize,
+}
+
+fn default_early_exit_agreement() -> usize {
+    3
 }
 
 impl Default for LiveConfig {
@@ -86,6 +112,8 @@ impl Default for LiveConfig {
             completion_count: DEFAULT_COMPLETION_COUNT,
             temperature: DEFAULT_TEMPERATURE,
             max_tokens: DEFAULT_MAX_TOKENS,
+            streaming: false,
+            early_exit_agreement: default_early_exit_agreement(),
         }
     }
 }
@@ -152,9 +180,64 @@ struct TimedHttpResponse {
     timing: HttpTiming,
 }
 
+#[derive(Debug)]
 struct TimedModelOutput {
     output: ModelOutput,
     timing: CompletionTiming,
+}
+
+/// Lets the coordinator thread abort one streaming completion's socket from
+/// outside the worker thread that owns it. `try_clone` on a `TcpStream`
+/// duplicates the file descriptor for the same underlying socket, so
+/// `shutdown` here unblocks a concurrent blocking `read` on the worker's
+/// half — the standard way to cancel a blocking std socket read in Rust.
+#[derive(Default)]
+struct CancelHandle {
+    stream: Mutex<Option<TcpStream>>,
+    cancelled: AtomicBool,
+}
+
+impl CancelHandle {
+    /// Never itself panics on a poisoned lock: `cancel()` runs from the
+    /// coordinator thread and must still be able to reach in and shut a
+    /// worker's socket down even if something else already went wrong.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<TcpStream>> {
+        self.stream.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn arm(&self, stream: &TcpStream) -> std::io::Result<()> {
+        *self.lock() = Some(stream.try_clone()?);
+        Ok(())
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Some(stream) = self.lock().take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+/// One decoded Server-Sent-Events chunk from an OpenAI-compatible streaming
+/// `/v1/chat/completions` response.
+#[derive(Debug, Deserialize)]
+struct ChatCompletionChunk {
+    choices: Vec<ChatChunkChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChunkChoice {
+    delta: ChatChunkDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChatChunkDelta {
+    content: Option<String>,
 }
 
 impl Error for LiveBackendError {}
@@ -201,6 +284,18 @@ impl LiveBackend {
         if let Ok(value) = std::env::var("QUIP_MAX_TOKENS") {
             config.max_tokens = value.parse().map_err(|_| {
                 LiveBackendError::InvalidConfig("QUIP_MAX_TOKENS must be an integer".to_owned())
+            })?;
+        }
+        if let Ok(value) = std::env::var("QUIP_STREAMING") {
+            config.streaming = value.parse().map_err(|_| {
+                LiveBackendError::InvalidConfig("QUIP_STREAMING must be true or false".to_owned())
+            })?;
+        }
+        if let Ok(value) = std::env::var("QUIP_EARLY_EXIT_AGREEMENT") {
+            config.early_exit_agreement = value.parse().map_err(|_| {
+                LiveBackendError::InvalidConfig(
+                    "QUIP_EARLY_EXIT_AGREEMENT must be an integer".to_owned(),
+                )
             })?;
         }
         Self::with_config(&address, config)
@@ -314,27 +409,37 @@ impl LiveBackend {
 
         let backend_started = Instant::now();
         let batch_started = Instant::now();
-        let timed_outputs = std::thread::scope(|scope| {
-            let workers = (0..self.config.completion_count)
-                .map(|_| scope.spawn(|| self.complete_base(request)))
-                .collect::<Vec<_>>();
-            workers
+        let (model_outputs, cancelled_count, completion_timings) = if self.config.streaming {
+            self.run_streaming_batch(request)?
+        } else {
+            let timed_outputs = std::thread::scope(|scope| {
+                let workers = (0..self.config.completion_count)
+                    .map(|_| scope.spawn(|| self.complete_base(request)))
+                    .collect::<Vec<_>>();
+                workers
+                    .into_iter()
+                    .map(|worker| match worker.join() {
+                        Ok(result) => result,
+                        Err(_) => Err(LiveBackendError::WorkerPanicked),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })?;
+            let (outputs, timings): (Vec<_>, Vec<_>) = timed_outputs
                 .into_iter()
-                .map(|worker| match worker.join() {
-                    Ok(result) => result,
-                    Err(_) => Err(LiveBackendError::WorkerPanicked),
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+                .map(|timed| (timed.output, timed.timing))
+                .unzip();
+            (outputs, 0, timings)
+        };
         let completion_batch_us = elapsed_us(batch_started);
 
-        let (model_outputs, completion_timings): (Vec<_>, Vec<_>) = timed_outputs
-            .into_iter()
-            .map(|timed| (timed.output, timed.timing))
-            .unzip();
         let normalization_started = Instant::now();
-        let mut result =
-            normalize_model_outputs(request, model_outputs, self.config.completion_count, 0);
+        let mut result = normalize_model_outputs(
+            request,
+            model_outputs,
+            self.config.completion_count,
+            cancelled_count,
+            0,
+        );
         let normalization_us = elapsed_us(normalization_started);
         let backend_total_us = elapsed_us(backend_started);
         if let PredictionResult::Ok { latency_ms, .. } = &mut result {
@@ -420,6 +525,323 @@ impl LiveBackend {
             },
         })
     }
+
+    /// Streams all `completion_count` completions concurrently and cancels
+    /// the rest of the batch once `early_exit_agreement` of them land on the
+    /// same suggestion. A real transport/parse failure on any completion
+    /// still fails the whole batch (bubbles up as `Err`); only deliberate
+    /// cancellations are folded into `cancelled_count` and treated as
+    /// expected by `normalize_model_outputs`.
+    fn run_streaming_batch(
+        &self,
+        request: &PredictionRequest,
+    ) -> Result<(Vec<ModelOutput>, usize, Vec<CompletionTiming>), LiveBackendError> {
+        let handles: Vec<Arc<CancelHandle>> = (0..self.config.completion_count)
+            .map(|_| Arc::new(CancelHandle::default()))
+            .collect();
+        let (tx, rx) = mpsc::channel::<(usize, Result<TimedModelOutput, LiveBackendError>)>();
+
+        let slots = std::thread::scope(|scope| {
+            for (index, handle) in handles.iter().enumerate() {
+                let tx = tx.clone();
+                let handle = Arc::clone(handle);
+                scope.spawn(move || {
+                    // Caught, not propagated: the coordinator loop below
+                    // only terminates once every index has reported back
+                    // through `tx`. An uncaught panic here would starve that
+                    // loop of its final message and hang the batch forever,
+                    // the same failure mode `.join()` already guards against
+                    // on the non-streaming path.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.complete_base_streaming(request, &handle)
+                    }))
+                    .unwrap_or(Err(LiveBackendError::WorkerPanicked));
+                    let _ = tx.send((index, result));
+                });
+            }
+            drop(tx);
+
+            let mut slots: Vec<Option<Result<TimedModelOutput, LiveBackendError>>> =
+                (0..self.config.completion_count).map(|_| None).collect();
+            let mut votes: HashMap<String, usize> = HashMap::new();
+            let mut settled = 0;
+            for (index, result) in rx {
+                if let Ok(timed) = &result {
+                    let suggestion = timed.output.suggestion.trim().to_owned();
+                    if !suggestion.is_empty() && suggestion != request.draft {
+                        let count = votes.entry(suggestion).or_insert(0);
+                        *count += 1;
+                        if *count >= self.config.early_exit_agreement {
+                            // Agreement reached: cancel every completion that
+                            // hasn't reported back yet.
+                            for (other, other_handle) in handles.iter().enumerate() {
+                                if other != index && slots[other].is_none() {
+                                    other_handle.cancel();
+                                }
+                            }
+                        }
+                    }
+                }
+                slots[index] = Some(result);
+                settled += 1;
+                if settled == self.config.completion_count {
+                    break;
+                }
+            }
+            slots
+        });
+
+        let mut outputs = Vec::new();
+        let mut timings = Vec::new();
+        let mut cancelled_count = 0;
+        for slot in slots {
+            match slot.expect("every worker reports before the batch loop exits") {
+                Ok(timed) => {
+                    outputs.push(timed.output);
+                    timings.push(timed.timing);
+                }
+                Err(LiveBackendError::Cancelled) => cancelled_count += 1,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok((outputs, cancelled_count, timings))
+    }
+
+    fn complete_base_streaming(
+        &self,
+        request: &PredictionRequest,
+        cancel: &CancelHandle,
+    ) -> Result<TimedModelOutput, LiveBackendError> {
+        let total_started = Instant::now();
+        let build_started = Instant::now();
+        let user_content = model_input(request).to_string();
+        let body = json!({
+            "model": &self.config.model_id,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_content}
+            ],
+            "enable_thinking": false,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+            "stop": ["<|endoftext|>"],
+            "stream": true,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "quip_prediction",
+                    "schema": prediction_schema()
+                }
+            }
+        });
+        let body = serde_json::to_vec(&body)?;
+        let request_build_us = elapsed_us(build_started);
+        let (content, http_timing) =
+            self.request_streaming("POST", "/v1/chat/completions", &body, cancel)?;
+        let response_decode_started = Instant::now();
+        let output: ModelOutput = serde_json::from_str(content.trim())?;
+        let response_decode_us = elapsed_us(response_decode_started);
+
+        Ok(TimedModelOutput {
+            output,
+            timing: CompletionTiming {
+                request_build_us,
+                http: http_timing,
+                response_decode_us,
+                output_decode_us: 0,
+                total_us: elapsed_us(total_started),
+                // Streaming doesn't request `usage`; token accounting stays
+                // a non-streaming-only measurement for now (see the
+                // person-2 task list — not required for the cadence gate).
+                tokens: None,
+            },
+        })
+    }
+
+    /// Connects, sends one SSE request, and incrementally decodes the
+    /// response — either `Transfer-Encoding: chunked` or a bare
+    /// `Connection: close` / `Content-Length` body, whichever the server
+    /// uses — accumulating the streamed `delta.content` fragments into the
+    /// final JSON text. Registers the connection into `cancel` right after
+    /// connecting so the coordinator can abort a blocked read from another
+    /// thread.
+    fn request_streaming(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        cancel: &CancelHandle,
+    ) -> Result<(String, HttpTiming), LiveBackendError> {
+        let total_started = Instant::now();
+        let connect_started = Instant::now();
+        let mut stream = TcpStream::connect_timeout(&self.address, Duration::from_secs(2))?;
+        let connect_us = elapsed_us(connect_started);
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+        cancel.arm(&stream)?;
+        if cancel.is_cancelled() {
+            // Superseded before the connection even finished dialing.
+            return Err(LiveBackendError::Cancelled);
+        }
+
+        let headers = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.address,
+            body.len()
+        );
+        let write_started = Instant::now();
+        stream.write_all(headers.as_bytes())?;
+        stream.write_all(body)?;
+        stream.flush()?;
+        let request_write_us = elapsed_us(write_started);
+
+        let mut chunk = [0_u8; 8192];
+        let mut raw = Vec::new();
+        let first_byte_started = Instant::now();
+        let head_end = loop {
+            let read = self.read_or_cancelled(&mut stream, &mut chunk, cancel)?;
+            if read == 0 {
+                return Err(LiveBackendError::InvalidHttpResponse(
+                    "connection closed before headers arrived",
+                ));
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            if let Some(pos) = find_subslice(&raw, b"\r\n\r\n") {
+                break pos;
+            }
+        };
+        let time_to_first_byte_us = elapsed_us(first_byte_started);
+
+        let header_text = std::str::from_utf8(&raw[..head_end])
+            .map_err(|_| LiveBackendError::InvalidHttpResponse("headers were not UTF-8"))?
+            .to_owned();
+        let status = parse_status_line(header_text.lines().next().unwrap_or(""))?;
+        let mut pending = raw[head_end + 4..].to_vec();
+        if !(200..300).contains(&status) {
+            // Best-effort: drain whatever body has arrived so far for the
+            // error message rather than blocking further on a bad response.
+            return Err(LiveBackendError::HttpStatus {
+                status,
+                body: String::from_utf8_lossy(&pending).into_owned(),
+            });
+        }
+        let chunked = header_text
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked"));
+        let content_length = header_text.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if !name.trim().eq_ignore_ascii_case("content-length") {
+                return None;
+            }
+            value.trim().parse::<usize>().ok()
+        });
+
+        let read_started = Instant::now();
+        let mut decoded = Vec::new();
+        let mut consumed_len = 0usize;
+        let mut accumulated = String::new();
+        let mut line_scan_start = 0usize;
+        let mut done = false;
+
+        loop {
+            if chunked {
+                loop {
+                    match take_one_chunk(&pending) {
+                        ChunkTake::Complete { data, consumed } => {
+                            decoded.extend_from_slice(&data);
+                            pending.drain(..consumed);
+                        }
+                        ChunkTake::Terminal { consumed } => {
+                            pending.drain(..consumed);
+                            done = true;
+                            break;
+                        }
+                        ChunkTake::Incomplete => break,
+                    }
+                }
+            } else if let Some(total) = content_length {
+                let take = pending.len().min(total.saturating_sub(consumed_len));
+                decoded.extend_from_slice(&pending[..take]);
+                consumed_len += take;
+                pending.drain(..take);
+                if consumed_len >= total {
+                    done = true;
+                }
+            } else {
+                decoded.append(&mut pending);
+            }
+
+            while let Some(offset) = decoded[line_scan_start..].iter().position(|&b| b == b'\n') {
+                let line_end = line_scan_start + offset;
+                let line = String::from_utf8_lossy(&decoded[line_scan_start..line_end]).into_owned();
+                let line = line.trim_end_matches('\r');
+                line_scan_start = line_end + 1;
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    done = true;
+                    break;
+                }
+                if data.is_empty() {
+                    continue;
+                }
+                let event: ChatCompletionChunk = serde_json::from_str(data)?;
+                for choice in event.choices {
+                    if let Some(content) = choice.delta.content {
+                        accumulated.push_str(&content);
+                    }
+                    if choice.finish_reason.is_some() {
+                        done = true;
+                    }
+                }
+            }
+
+            if done {
+                break;
+            }
+
+            let read = self.read_or_cancelled(&mut stream, &mut chunk, cancel)?;
+            if read == 0 {
+                if !chunked && content_length.is_none() {
+                    // EOF-terminated body: this is the normal end.
+                    break;
+                }
+                return Err(LiveBackendError::InvalidHttpResponse(
+                    "stream ended before its terminal marker",
+                ));
+            }
+            pending.extend_from_slice(&chunk[..read]);
+        }
+        let response_read_us = elapsed_us(read_started);
+
+        Ok((
+            accumulated,
+            HttpTiming {
+                connect_us,
+                request_write_us,
+                time_to_first_byte_us,
+                response_read_us,
+                http_parse_us: 0,
+                total_us: elapsed_us(total_started),
+            },
+        ))
+    }
+
+    fn read_or_cancelled(
+        &self,
+        stream: &mut TcpStream,
+        buf: &mut [u8],
+        cancel: &CancelHandle,
+    ) -> Result<usize, LiveBackendError> {
+        match stream.read(buf) {
+            Ok(0) if cancel.is_cancelled() => Err(LiveBackendError::Cancelled),
+            Ok(n) => Ok(n),
+            Err(_) if cancel.is_cancelled() => Err(LiveBackendError::Cancelled),
+            Err(error) => Err(LiveBackendError::Io(error)),
+        }
+    }
 }
 
 impl InferenceBackend for LiveBackend {
@@ -484,6 +906,11 @@ fn validate_config(config: &LiveConfig) -> Result<(), LiveBackendError> {
             "max_tokens must be between 1 and 512".to_owned(),
         ));
     }
+    if !(1..=config.completion_count).contains(&config.early_exit_agreement) {
+        return Err(LiveBackendError::InvalidConfig(
+            "early_exit_agreement must be between 1 and completion_count".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -505,14 +932,23 @@ fn prediction_schema() -> Value {
     })
 }
 
+/// Stable-first field order: `context_snippets` and `personal_patterns` stay
+/// constant for an entire composition session, while `text` (the sliding
+/// window's draft) changes on every burst. Serializing the stable fields
+/// first — and `text` last — means consecutive sliding-window requests
+/// within a session share the longest possible literal byte prefix up to
+/// where the draft actually diverges, which is what a server-side prefix
+/// cache keys on. Whether this actually reduces measured latency (vs. the
+/// server's own batching behavior) needs the 5/10/15-word matrix from
+/// `run-latency-benchmark.sh` on real hardware — unverified here.
 fn model_input(request: &PredictionRequest) -> Value {
     if request.context_snippets.is_empty() && request.personal_patterns.is_empty() {
         json!({"text": request.draft})
     } else {
         json!({
-            "text": request.draft,
             "context_snippets": request.context_snippets,
             "personal_patterns": request.personal_patterns,
+            "text": request.draft,
         })
     }
 }
@@ -632,13 +1068,19 @@ fn token_profile(
     }
 }
 
+/// `cancelled` counts completions the coordinator deliberately aborted once
+/// early-exit agreement was reached (see `benchmark_prediction`) — those are
+/// evidence the batch worked, not a failure. Anything else missing from
+/// `outputs` (a real transport/parse error) still fails the whole batch: a
+/// genuinely incomplete sample would corrupt the vote count.
 fn normalize_model_outputs(
     request: &PredictionRequest,
     outputs: Vec<ModelOutput>,
     expected_output_count: usize,
+    cancelled: usize,
     latency_ms: u64,
 ) -> PredictionResult {
-    if outputs.len() != expected_output_count {
+    if outputs.len() + cancelled != expected_output_count {
         return prediction_error(
             request,
             "incomplete_generation_batch",
@@ -677,17 +1119,18 @@ fn normalize_model_outputs(
                 .then_with(|| left_index.cmp(right_index))
         },
     );
-    let candidates = ranked
+    let (candidates, votes): (Vec<String>, Vec<u32>) = ranked
         .into_iter()
         .take(5)
-        .map(|(suggestion, _)| suggestion)
-        .collect::<Vec<_>>();
+        .map(|(suggestion, (vote_count, _))| (suggestion, vote_count as u32))
+        .unzip();
 
     let result = PredictionResult::Ok {
         request_id: request.request_id.clone(),
         model_variant: request.model_variant,
         backend: Backend::Live,
         candidates,
+        votes: Some(votes),
         latency_ms,
     };
 
@@ -738,12 +1181,7 @@ fn parse_http_response(response: &[u8]) -> Result<Vec<u8>, LiveBackendError> {
         .ok_or(LiveBackendError::InvalidHttpResponse("missing headers"))?;
     let headers = std::str::from_utf8(&response[..separator])
         .map_err(|_| LiveBackendError::InvalidHttpResponse("headers were not UTF-8"))?;
-    let status = headers
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|status| status.parse::<u16>().ok())
-        .ok_or(LiveBackendError::InvalidHttpResponse("missing status code"))?;
+    let status = parse_status_line(headers.lines().next().unwrap_or(""))?;
     let body = response[separator + 4..].to_vec();
 
     if !(200..300).contains(&status) {
@@ -756,14 +1194,76 @@ fn parse_http_response(response: &[u8]) -> Result<Vec<u8>, LiveBackendError> {
     Ok(body)
 }
 
+fn parse_status_line(line: &str) -> Result<u16, LiveBackendError> {
+    line.split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse::<u16>().ok())
+        .ok_or(LiveBackendError::InvalidHttpResponse("missing status code"))
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// One step of decoding an HTTP chunked-transfer-encoded body: `<hex
+/// size>\r\n<data>\r\n`, terminated by a zero-size chunk. Trailers after the
+/// terminal chunk (rare for SSE) are not parsed; the caller stops reading
+/// once `Terminal` confirms the blank line that ends the zero chunk.
+enum ChunkTake {
+    Complete { data: Vec<u8>, consumed: usize },
+    Terminal { consumed: usize },
+    Incomplete,
+}
+
+fn take_one_chunk(buf: &[u8]) -> ChunkTake {
+    let Some(line_end) = find_subslice(buf, b"\r\n") else {
+        return ChunkTake::Incomplete;
+    };
+    let Ok(size_line) = std::str::from_utf8(&buf[..line_end]) else {
+        return ChunkTake::Incomplete;
+    };
+    let size_hex = size_line.split(';').next().unwrap_or("").trim();
+    let Ok(size) = usize::from_str_radix(size_hex, 16) else {
+        return ChunkTake::Incomplete;
+    };
+    // Saturating: a malformed or hostile chunk-size header must degrade to
+    // "not enough bytes yet" (and eventually a stalled-stream error), never
+    // an arithmetic-overflow panic.
+    let data_start = line_end.saturating_add(2);
+    if size == 0 {
+        if buf.len() < data_start.saturating_add(2) {
+            return ChunkTake::Incomplete;
+        }
+        return ChunkTake::Terminal {
+            consumed: data_start + 2,
+        };
+    }
+    let data_end = data_start.saturating_add(size);
+    if buf.len() < data_end.saturating_add(2) {
+        return ChunkTake::Incomplete;
+    }
+    ChunkTake::Complete {
+        data: buf[data_start..data_end].to_vec(),
+        consumed: data_end + 2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        sync::Arc,
+        thread,
+        time::Duration,
+    };
+
     use quip_contracts::{ModelVariant, PredictionRequest};
     use serde_json::json;
 
     use super::{
-        normalize_model_outputs, prediction_schema, token_profile, ChatUsage, LiveBackend,
-        LiveConfig, ModelOutput,
+        normalize_model_outputs, prediction_schema, token_profile, CancelHandle, ChatUsage,
+        LiveBackend, LiveConfig, ModelOutput,
     };
 
     fn request() -> PredictionRequest {
@@ -863,6 +1363,7 @@ mod tests {
                 },
             ],
             5,
+            0,
             12,
         );
 
@@ -870,12 +1371,13 @@ mod tests {
             result,
             quip_contracts::PredictionResult::Ok {
                 candidates,
+                votes,
                 ..
             } if candidates == vec![
                 "candidate b",
                 "candidate a",
                 "candidate c",
-            ]
+            ] && votes == Some(vec![2, 2, 1])
         ));
     }
 
@@ -889,6 +1391,7 @@ mod tests {
                 })
                 .collect(),
             5,
+            0,
             12,
         );
 
@@ -911,6 +1414,7 @@ mod tests {
                 })
                 .collect(),
             5,
+            0,
             12,
         );
 
@@ -921,5 +1425,217 @@ mod tests {
                 ..
             } if error.code == "incomplete_generation_batch" && error.retryable
         ));
+    }
+
+    #[test]
+    fn cancelled_completions_are_not_an_incomplete_batch() {
+        // Early-exit cancelled one of five completions: four real outputs
+        // plus one deliberate cancellation still satisfies the batch.
+        let result = normalize_model_outputs(
+            &request(),
+            (0..4)
+                .map(|index| ModelOutput {
+                    suggestion: format!("candidate {index}"),
+                })
+                .collect(),
+            5,
+            1,
+            12,
+        );
+
+        assert!(matches!(
+            result,
+            quip_contracts::PredictionResult::Ok { candidates, .. } if candidates.len() == 4
+        ));
+    }
+
+    // ---- streaming / cancellation, against a mock TCP server ----
+    //
+    // No live Qwen server is available in this environment, so these tests
+    // exercise the wire-level SSE decoding, chunked-transfer-encoding
+    // framing, and cross-thread cancellation against a hand-rolled mock
+    // server instead. They prove the client-side logic is correct; they do
+    // not replace validating against a real mistral.rs server (its exact
+    // framing choice — chunked vs EOF-terminated — is unconfirmed) before
+    // trusting this in production.
+
+    fn sse_body_for(suggestion: &str) -> Vec<u8> {
+        let inner = serde_json::to_string(&json!({"suggestion": suggestion})).unwrap();
+        let chunk1 = format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"content": inner}}]})
+        );
+        let chunk2 = format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        );
+        format!("{chunk1}{chunk2}data: [DONE]\n\n").into_bytes()
+    }
+
+    fn to_chunked_encoding(body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for piece in body.chunks(29) {
+            out.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+            out.extend_from_slice(piece);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"0\r\n\r\n");
+        out
+    }
+
+    /// Drains one HTTP request off `stream` (headers plus its
+    /// Content-Length body) so the mock server behaves like a real one
+    /// instead of racing the client's write.
+    fn drain_one_request(stream: &mut TcpStream) {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let content_length = loop {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "client closed before sending a full request");
+            buf.extend_from_slice(&chunk[..read]);
+            let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+            let content_length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if buf.len() >= head_end + 4 + content_length {
+                break content_length;
+            }
+        };
+        let _ = content_length;
+    }
+
+    #[test]
+    fn streams_and_decodes_an_eof_terminated_sse_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            drain_one_request(&mut stream);
+            let body = sse_body_for("Can't come tomorrow.");
+            let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+            response.extend_from_slice(&body);
+            stream.write_all(&response).unwrap();
+        });
+
+        let backend = LiveBackend::new(&addr.to_string()).unwrap();
+        let cancel = CancelHandle::default();
+        let timed = backend
+            .complete_base_streaming(&request(), &cancel)
+            .expect("streaming completion should decode");
+        assert_eq!(timed.output.suggestion, "Can't come tomorrow.");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn streams_and_decodes_a_chunked_sse_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            drain_one_request(&mut stream);
+            let body = to_chunked_encoding(&sse_body_for("Can't come tomorrow."));
+            let mut response =
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            response.extend_from_slice(&body);
+            stream.write_all(&response).unwrap();
+        });
+
+        let backend = LiveBackend::new(&addr.to_string()).unwrap();
+        let cancel = CancelHandle::default();
+        let timed = backend
+            .complete_base_streaming(&request(), &cancel)
+            .expect("chunked streaming completion should decode");
+        assert_eq!(timed.output.suggestion, "Can't come tomorrow.");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancellation_unblocks_a_stalled_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            drain_one_request(&mut stream);
+            // Never respond: park on a read that only ends when the client
+            // (the cancellation under test) shuts the socket down.
+            let mut park = [0_u8; 1];
+            let _ = stream.read(&mut park);
+        });
+
+        let backend = LiveBackend::new(&addr.to_string()).unwrap();
+        let cancel = Arc::new(CancelHandle::default());
+        let worker_cancel = Arc::clone(&cancel);
+        let worker = thread::spawn(move || backend.complete_base_streaming(&request(), &worker_cancel));
+
+        // Give the worker time to connect and register its stream before
+        // cancelling, without depending on exact timing for correctness —
+        // `cancel()` is a no-op-safe idempotent call either way.
+        thread::sleep(Duration::from_millis(100));
+        cancel.cancel();
+
+        let result = worker.join().unwrap();
+        assert!(
+            matches!(result, Err(super::LiveBackendError::Cancelled)),
+            "expected Cancelled, got {result:?}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn run_streaming_batch_cancels_stragglers_once_early_exit_agrees() {
+        let completion_count = 5;
+        let early_exit_agreement = 3;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut served_fast = 0;
+            for _ in 0..completion_count {
+                let (mut stream, _) = listener.accept().unwrap();
+                drain_one_request(&mut stream);
+                if served_fast < early_exit_agreement {
+                    served_fast += 1;
+                    let body = sse_body_for("Can't come tomorrow.");
+                    let mut response =
+                        b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+                    response.extend_from_slice(&body);
+                    let _ = stream.write_all(&response);
+                } else {
+                    // Straggler: never respond. A correct coordinator
+                    // cancels this connection instead of waiting on it.
+                    let mut park = [0_u8; 1];
+                    let _ = stream.read(&mut park);
+                }
+            }
+        });
+
+        let config = LiveConfig {
+            completion_count,
+            streaming: true,
+            early_exit_agreement,
+            ..LiveConfig::default()
+        };
+        let backend = LiveBackend::with_config(&addr.to_string(), config).unwrap();
+        let (outputs, cancelled_count, timings) = backend
+            .run_streaming_batch(&request())
+            .expect("early-exit agreement should still produce a successful batch");
+
+        assert_eq!(outputs.len(), early_exit_agreement);
+        assert_eq!(cancelled_count, completion_count - early_exit_agreement);
+        assert_eq!(timings.len(), early_exit_agreement);
+        assert!(outputs
+            .iter()
+            .all(|output| output.suggestion == "Can't come tomorrow."));
+
+        server.join().unwrap();
     }
 }

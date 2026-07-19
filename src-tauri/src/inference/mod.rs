@@ -208,6 +208,8 @@ fn ok_result(
         request_id: request.request_id.clone(),
         model_variant: request.model_variant,
         backend: Backend::Fixture,
+        // The fixture backend cannot vote; the contract says emit all 1s.
+        votes: Some(vec![1; candidates.len()]),
         candidates,
         latency_ms,
     }
@@ -461,6 +463,7 @@ mod tests {
             model_variant: ModelVariant::Global,
             backend: Backend::Fixture,
             candidates: vec!["duplicate".into(), "duplicate".into()],
+            votes: None,
             latency_ms: 1,
         };
         assert!(!metrics.record(&invalid));

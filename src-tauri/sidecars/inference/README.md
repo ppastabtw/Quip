@@ -154,6 +154,48 @@ target/debug/quip-latency-tester \
   --address 127.0.0.1:1234 --label "Qwen3.5-2B 4-bit" --runs 10
 ```
 
+## Streaming, cancellation, and early exit
+
+`LiveConfig.streaming` (`QUIP_STREAMING=true`, or `--streaming` on the
+latency tester) switches each of the `completion_count` concurrent
+completions from one buffered response to an incrementally-decoded SSE
+stream (`stream: true` against `/v1/chat/completions`, handling both
+`Transfer-Encoding: chunked` and plain `Connection: close` framing — the
+server's actual choice is unconfirmed against a real mistral.rs instance,
+which is why both are implemented and covered by mock-server tests in
+`live.rs`). Streaming is off by default; the batched n:5 path it grew from
+is unchanged and still the one validated against a live server so far.
+
+With streaming on, `run_streaming_batch` reads completions in the order they
+actually finish rather than the order they were dispatched, and once
+`early_exit_agreement` of them (`QUIP_EARLY_EXIT_AGREEMENT`, default 3, must
+be between 1 and `completion_count`) land on the same suggestion, the rest
+are cancelled — their sockets are shut down from the coordinator thread,
+which unblocks their blocked `read`s (`CancelHandle` in `live.rs`). A
+cancelled completion is not a failure: `normalize_model_outputs` only fails
+the batch on a genuine transport/parse error, distinct from an intentional
+cancellation.
+
+A/B the two against each other with the latency tester:
+
+```bash
+target/debug/quip-latency-tester --address 127.0.0.1:1234 --runs 20 --json > batched.json
+target/debug/quip-latency-tester --address 127.0.0.1:1234 --runs 20 --streaming --json > streaming.json
+```
+
+Streaming's benefit depends on whether early-exit agreement typically lands
+before all 5 completions would have finished anyway — measure on real
+hardware before flipping the default; nothing in this repo does that yet.
+
+`model_input` (the JSON body of the user chat message) also orders
+`context_snippets`/`personal_patterns` before `text`: those two fields stay
+constant for a whole composition session while `text` (the sliding-window
+draft) changes on every burst, so this ordering maximizes the literal byte
+prefix consecutive sliding-window requests share — the lever a server-side
+prefix cache would key on. Whether it measurably helps still needs the
+5/10/15-word latency matrix above, run on both Macs, before it's trusted as
+more than a plausible mechanism.
+
 ## Run the full app with live inference
 
 The team can launch the pushed Tauri app, the Rust sidecar, and local Base Qwen

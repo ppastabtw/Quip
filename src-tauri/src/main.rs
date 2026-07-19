@@ -19,7 +19,7 @@ mod settings;
 
 use commit::CommitOutcome;
 use composition::{ApplyDisposition, BurstInput, Engine, Snapshot};
-use inference::{DemoCase, Metrics, SidecarClient, SideSpec};
+use inference::{DemoCase, Metrics, SideSpec, SidecarClient};
 use quip_contracts::{
     CaptureResult, PredictionRequest, PredictionResult, Rect, SidecarHealth, Trigger,
 };
@@ -246,16 +246,31 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
     match disposition {
         ApplyDisposition::Offered(snapshot) | ApplyDisposition::Skipped(snapshot) => {
             emit_snapshot(&app, &snapshot);
+            emit_marks(&app);
         }
         ApplyDisposition::Stale => {}
     }
     let _ = app.emit("composition://settled", SettledEvent { burst_id, offered });
 }
 
+/// Broadcasts the session's word-slot proposals so the playground can render
+/// hardened corrections as inline marks.
+fn emit_marks(app: &AppHandle) {
+    let marks = {
+        let engine = app.state::<EngineState>();
+        let engine = engine.0.lock().unwrap();
+        engine.marks()
+    };
+    let _ = app.emit("composition://marks", &marks);
+}
+
 /// `capture_result` entry point: the playground and demo harness now, real
 /// Accessibility observation from Workstream 3 later, same shape either way.
+/// `barless` is a presentation choice, not part of the capture record:
+/// sliding-window cadences set it so results feed the edit accumulator
+/// without opening candidate-bar offers.
 #[tauri::command]
-async fn inject_capture(app: AppHandle, result: CaptureResult) {
+async fn inject_capture(app: AppHandle, result: CaptureResult, barless: Option<bool>) {
     match result {
         CaptureResult::Ready {
             burst_id,
@@ -264,6 +279,7 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
             draft,
             trigger,
             caret,
+            word_offset,
         } => {
             run_burst_flow(
                 app,
@@ -274,6 +290,8 @@ async fn inject_capture(app: AppHandle, result: CaptureResult) {
                     burst_id: Some(burst_id),
                     destination_id: Some(destination_id),
                     profile_id: Some(profile_id),
+                    word_offset,
+                    barless: barless.unwrap_or(false),
                 },
             )
             .await;
@@ -300,6 +318,7 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
         engine.current_snapshot()
     };
     emit_snapshot(&app, &current);
+    emit_marks(&app);
     Ok(outcome)
 }
 
@@ -335,6 +354,38 @@ fn end_composition_session(app: AppHandle) {
         engine.end_session()
     };
     emit_snapshot(&app, &snapshot);
+    emit_marks(&app);
+}
+
+#[tauri::command]
+fn get_marks(app: AppHandle) -> Vec<composition::edits::Mark> {
+    app.state::<EngineState>().0.lock().unwrap().marks()
+}
+
+/// Apply-all (⌘⏎): commits every hardened mark. Returns the applied marks in
+/// pre-apply session word coordinates; the caller replays them onto its text
+/// right to left.
+#[tauri::command]
+fn apply_marks(app: AppHandle) -> Vec<composition::edits::Mark> {
+    let applied = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.apply_marks()
+    };
+    emit_marks(&app);
+    applied
+}
+
+/// Escape with no bar visible: revert the pending marks, keeping the typed
+/// text.
+#[tauri::command]
+fn clear_marks(app: AppHandle) {
+    {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.clear_marks();
+    }
+    emit_marks(&app);
 }
 
 /// Editing invalidated the words a burst's model saw: drop it wherever it is
@@ -424,7 +475,12 @@ async fn get_health(app: AppHandle) -> SidecarHealth {
         engine.settings.backend_mode
     };
     match mode {
-        BackendMode::Fixture => app.state::<EngineState>().0.lock().unwrap().fixture_health(),
+        BackendMode::Fixture => app
+            .state::<EngineState>()
+            .0
+            .lock()
+            .unwrap()
+            .fixture_health(),
         // Async so the sidecar exchange never runs on (or blocks) the main
         // thread; it shares the serial sidecar pipe with predictions.
         BackendMode::Live => with_sidecar(&app, |sidecar| sidecar.health())
@@ -699,6 +755,7 @@ fn main() {
                             profile_id: "profile_default".into(),
                             draft: "cnt cm tmrw".into(),
                             trigger: Trigger::Idle,
+                            word_offset: None,
                             caret: Rect {
                                 x: 512.0,
                                 y: 384.0,
@@ -706,6 +763,7 @@ fn main() {
                                 height: 18.0,
                             },
                         },
+                        None,
                     )
                     .await;
                 });
@@ -760,6 +818,9 @@ fn main() {
             dismiss_suggestions,
             end_composition_session,
             retract_offer,
+            get_marks,
+            apply_marks,
+            clear_marks,
             get_composition_state,
             get_settings,
             update_settings,
@@ -799,6 +860,21 @@ mod selftest {
             draft: draft.to_string(),
             trigger: Trigger::Idle,
             caret: test_caret(),
+            word_offset: None,
+        }
+    }
+
+    /// A sliding-window burst at a session word offset, for the barless /
+    /// edit-accumulator path (marks, not bars).
+    fn capture_at(burst_id: &str, profile_id: &str, draft: &str, word_offset: u32) -> CaptureResult {
+        CaptureResult::Ready {
+            burst_id: burst_id.to_string(),
+            destination_id: "destination_selftest".to_string(),
+            profile_id: profile_id.to_string(),
+            draft: draft.to_string(),
+            trigger: Trigger::Idle,
+            caret: test_caret(),
+            word_offset: Some(word_offset),
         }
     }
 
@@ -832,6 +908,7 @@ mod selftest {
         inject_capture(
             app.clone(),
             capture("st_1", "profile_default", "cnt cm tmrw"),
+            None,
         )
         .await;
         let (candidates, error) = suggesting(&app)?;
@@ -854,7 +931,12 @@ mod selftest {
 
         // 3. Personal patterns from the seeded profile personalize a burst,
         //    then a dismissal records a keep example.
-        inject_capture(app.clone(), capture("st_2", "profile_a", "ship spec tn")).await;
+        inject_capture(
+            app.clone(),
+            capture("st_2", "profile_a", "ship spec tn"),
+            None,
+        )
+        .await;
         let (candidates, _) = suggesting(&app)?;
         check(
             "profile_a personalizes tn -> tonight",
@@ -867,6 +949,7 @@ mod selftest {
         inject_capture(
             app.clone(),
             capture("st_3", "profile_default", "open usr/bin and q3_finl_v2.pdf"),
+            None,
         )
         .await;
         check(
@@ -880,6 +963,7 @@ mod selftest {
         inject_capture(
             app.clone(),
             capture("st_4", "profile_default", "cnt cm tmrw"),
+            None,
         )
         .await;
         let (candidates, error) = suggesting(&app)?;
@@ -897,9 +981,15 @@ mod selftest {
         inject_capture(
             app.clone(),
             capture("st_q1", "profile_default", "cnt cm tmrw"),
+            None,
         )
         .await;
-        inject_capture(app.clone(), capture("st_q2", "profile_default", "omw")).await;
+        inject_capture(
+            app.clone(),
+            capture("st_q2", "profile_default", "omw"),
+            None,
+        )
+        .await;
         let (candidates, _) = suggesting(&app)?;
         check(
             "the first batch stays on display while the second queues",
@@ -939,6 +1029,77 @@ mod selftest {
             metrics.requests >= 6 && metrics.schema_invalid == 0,
             format!("{metrics:?}"),
         )?;
+
+        // 9. Barless (sliding-window) bursts never open a bar; a single-
+        //    candidate fixture result is unanimous, so it hardens into a mark
+        //    once the caret is two words past it. Base model_variant has two
+        //    such fixtures back to back, which doubles as the caret-advance.
+        let original_settings = get_settings(app.clone());
+        let mut base_settings = original_settings.clone();
+        base_settings.model_variant = quip_contracts::ModelVariant::Base;
+        update_settings(app.clone(), base_settings);
+
+        inject_capture(
+            app.clone(),
+            capture_at("st_m1", "profile_default", "cnt cm tmrw", 0),
+            Some(true),
+        )
+        .await;
+        check(
+            "a barless burst never opens a bar",
+            state(&app) == Snapshot::Idle,
+            format!("{:?}", state(&app)),
+        )?;
+        let marks = get_marks(app.clone());
+        check(
+            "an unhardened mark records the proposed correction",
+            marks
+                .iter()
+                .any(|m| m.start_word == 0 && !m.stable && m.replacement == "I can't come tomorrow."),
+            format!("{marks:?}"),
+        )?;
+
+        inject_capture(
+            app.clone(),
+            capture_at(
+                "st_m2",
+                "profile_default",
+                "open usr/bin and q3_finl_v2.pdf",
+                3,
+            ),
+            Some(true),
+        )
+        .await;
+        let marks = get_marks(app.clone());
+        check(
+            "the caret moving two words past a unanimous correction hardens it",
+            marks.iter().any(|m| {
+                m.start_word == 0 && m.stable && m.replacement == "I can't come tomorrow."
+            }),
+            format!("{marks:?}"),
+        )?;
+
+        // The second burst's own 4-word window already puts the caret two
+        // words past its own correction, so it hardens on the same pass as
+        // the first: apply-all commits both.
+        let applied = apply_marks(app.clone());
+        check(
+            "apply-all commits every hardened mark",
+            applied.len() == 2
+                && applied
+                    .iter()
+                    .any(|m| m.replacement == "I can't come tomorrow.")
+                && applied.iter().any(|m| m.replacement == "Open /usr/bin"),
+            format!("{applied:?}"),
+        )?;
+        check(
+            "the applied mark is gone and state is still barless-idle",
+            !get_marks(app.clone()).iter().any(|m| m.stable) && state(&app) == Snapshot::Idle,
+            format!("{:?} {:?}", get_marks(app.clone()), state(&app)),
+        )?;
+
+        end_composition_session(app.clone());
+        update_settings(app.clone(), original_settings);
         Ok(())
     }
 }
@@ -964,6 +1125,7 @@ mod live_selftest {
                 profile_id: "profile_default".to_owned(),
                 draft: "see you tomorow".to_owned(),
                 trigger: Trigger::Idle,
+                word_offset: None,
                 caret: Rect {
                     x: 512.0,
                     y: 384.0,
@@ -971,6 +1133,7 @@ mod live_selftest {
                     height: 18.0,
                 },
             },
+            None,
         )
         .await;
 

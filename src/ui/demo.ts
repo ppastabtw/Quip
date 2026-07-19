@@ -13,6 +13,7 @@ import {
   type ComparisonSide,
   type Metrics,
 } from "./ipc";
+import type { Mark } from "./ipc";
 import type { PredictionResult, Rect, SidecarHealth, Trigger } from "./contracts";
 
 const healthStatusEl = byId<HTMLSpanElement>("health_status");
@@ -33,19 +34,22 @@ const playgroundEl = byId<HTMLTextAreaElement>("playground");
 // free; the constraints are the sidecar's serial throughput (one request at
 // a time, each costing a full inference) and how the bar feels. A cadence
 // strategy decides which keystrokes are worth a serial slot.
-const DRAFT_WINDOW_CHARS = 80;
-
-// The base model is trained on groups of at most five words, so the burst is
-// chunked: completing the fifth word freezes that chunk and fires inference
-// on it while typing continues seamlessly in a fresh burst. When the result
-// lands, the chunk is underlined so it is obvious which words the candidates
-// would replace. Chunking applies under every strategy — it is a model
-// constraint, not a cadence choice.
-const MAX_BURST_WORDS = 5;
+//
+// The window size in words comes from settings (`window_words`, 5 until a
+// retrained model raises it); the char backstop scales with it. The model
+// never sees more than one window of words.
+const windowWords = () => settings?.window_words ?? 5;
+const windowChars = () => windowWords() * 16;
 
 // Long enough that ordinary typing rhythm never trips it: only a deliberate
 // stop mid-burst fetches early.
 const PAUSE_MS = 600;
+
+// Keyboard-ownership rule: the bar auto-expires after this many words are
+// typed through it, capping how long digits 1–5 stay claimed. The offer's
+// evidence lives on in the word slots, so an expired bar can still resurface
+// as a quiet mark.
+const BAR_EXPIRY_WORDS = 3;
 
 interface KeyInfo {
   /** The last typed character completed a word (whitespace after a non-space). */
@@ -62,8 +66,11 @@ interface CadenceStrategy {
   /** Refire the moment a result lands if the draft moved meanwhile (the
    * sidecar never idles while dirty, and never queues more than one). */
   pipelined: boolean;
+  /** Sliding-window cadence: fire the trailing window at word boundaries,
+   * feed the edit accumulator only (marks, no bars), no chunk freezing. */
+  barless?: boolean;
   /** "now" fires immediately, a number arms the pause timer, "never" leaves
-   * only the 80-char draft window as a backstop. */
+   * only the draft-window char backstop. */
   onKey(key: KeyInfo): "now" | number | "never";
 }
 
@@ -73,6 +80,13 @@ const STRATEGIES: Record<string, CadenceStrategy> = {
     hint: "The five-word chunk and punctuation fire immediately; a 600 ms pause catches unfinished bursts. Typing never waits on inference.",
     pipelined: true,
     onKey: (key) => (key.sentencePunct ? "now" : PAUSE_MS),
+  },
+  sliding_word: {
+    label: "Sliding window: marks, not bars",
+    hint: "Every completed word fires the trailing five-word window; corrections that stay stable across passes harden into dotted underlines. ⌘⏎ applies them, Esc reverts, and a sentence end offers the whole corrected sentence in one bar.",
+    pipelined: true,
+    barless: true,
+    onKey: (key) => (key.sentencePunct || key.wordBoundary ? "now" : 500),
   },
   pipeline_greedy: {
     label: "Pipelined: every keystroke",
@@ -109,6 +123,17 @@ interface ChunkRange {
 
 let settings: AppSettings | undefined;
 let burstStart = 0;
+/** Char offset where the current composition session began; word slots and
+ * marks are indexed by words counted from here. */
+let sessionStart = 0;
+/** The engine's current word-slot proposals (marks event mirror). */
+let sessionMarks: Mark[] = [];
+/** The whole-session char range snapshotted when endSession fires, so a
+ * consolidated sentence offer knows what it would replace. */
+let consolidationRange: ChunkRange | undefined;
+/** Words typed through the shown offer; at BAR_EXPIRY_WORDS the bar
+ * auto-dismisses so digits stop being claimed. */
+let typedThroughWords = 0;
 /** The exact range each fired burst's candidates would replace, keyed by
  * burst id and pinned at request time: typing continues past it, so a
  * selection must replace exactly the words the model saw. Entries live until
@@ -149,30 +174,75 @@ function medianGapMs(): number {
 function renderStrategyStats() {
   const avg = stats.shown === 0 ? "–" : `${Math.round(stats.ttbSum / stats.shown)} ms`;
   const last = stats.shown === 0 ? "–" : `${stats.ttbLast} ms`;
+  const hardened = sessionMarks.filter((m) => m.stable).length;
   strategyStatsEl.textContent =
     `keystrokes ${stats.keystrokes} · requests ${stats.fired} · bars ${stats.shown}` +
     ` · time-to-bar last ${last} / avg ${avg}` +
-    ` · median key gap ${Math.round(medianGapMs())} ms`;
+    ` · median key gap ${Math.round(medianGapMs())} ms` +
+    ` · marks ${hardened}/${sessionMarks.length} hardened`;
+}
+
+/** Absolute char ranges of the session's words (whitespace-separated tokens
+ * from sessionStart up to `upTo`). Index k here is session word index k. */
+function sessionWordRanges(upTo: number): ChunkRange[] {
+  const slice = playgroundEl.value.slice(sessionStart, upTo);
+  const ranges: ChunkRange[] = [];
+  for (const match of slice.matchAll(/\S+/g)) {
+    ranges.push({
+      start: sessionStart + match.index,
+      end: sessionStart + match.index + match[0].length,
+    });
+  }
+  return ranges;
+}
+
+/** Char range covering session words [startWord, startWord + wordLen), or
+ * undefined when the text no longer has those words. */
+function wordCharRange(startWord: number, wordLen: number): ChunkRange | undefined {
+  const words = sessionWordRanges(playgroundEl.value.length);
+  const last = startWord + Math.max(wordLen, 1) - 1;
+  if (startWord >= words.length || last >= words.length) return undefined;
+  return { start: words[startWord].start, end: words[last].end };
 }
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
 
 const backdropEl = byId<HTMLDivElement>("playground_backdrop");
 
-// The backdrop mirrors the textarea's text with transparent glyphs; only the
-// span around the active chunk draws, as an underline exactly under the words
-// the visible candidates would replace.
+// The backdrop mirrors the textarea's text with transparent glyphs; only
+// annotation spans draw. Two kinds: the solid underline under the words the
+// visible candidates would replace, and dotted underlines under hardened
+// marks (hover shows original → replacement).
 function renderChunkIndicator() {
-  if (!shownChunk) {
-    backdropEl.replaceChildren();
-    return;
-  }
   const value = playgroundEl.value;
-  backdropEl.replaceChildren(
-    document.createTextNode(value.slice(0, shownChunk.start)),
-    el("span", "chunk-underline", value.slice(shownChunk.start, shownChunk.end)),
-    document.createTextNode(value.slice(shownChunk.end)),
-  );
+  interface Span extends ChunkRange {
+    cls: string;
+    title?: string;
+  }
+  const spans: Span[] = [];
+  for (const mark of sessionMarks) {
+    if (!mark.stable || mark.word_len === 0) continue;
+    const range = wordCharRange(mark.start_word, mark.word_len);
+    if (range) {
+      spans.push({ ...range, cls: "mark-underline", title: `${mark.original} → ${mark.replacement}` });
+    }
+  }
+  if (shownChunk) {
+    spans.push({ start: shownChunk.start, end: shownChunk.end, cls: "chunk-underline" });
+  }
+  spans.sort((a, b) => a.start - b.start);
+  const nodes: Node[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start < cursor) continue; // overlaps are rare; first wins
+    nodes.push(document.createTextNode(value.slice(cursor, span.start)));
+    const node = el("span", span.cls, value.slice(span.start, span.end));
+    if (span.title) node.title = span.title;
+    nodes.push(node);
+    cursor = span.end;
+  }
+  nodes.push(document.createTextNode(value.slice(cursor)));
+  backdropEl.replaceChildren(...nodes);
   backdropEl.scrollTop = playgroundEl.scrollTop;
   backdropEl.scrollLeft = playgroundEl.scrollLeft;
 }
@@ -217,11 +287,28 @@ async function caretScreenRect(): Promise<Rect> {
 async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
   window.clearTimeout(idleTimer);
   const value = playgroundEl.value;
-  const start = chunk ? chunk.start : burstStart;
+  let start = chunk ? chunk.start : burstStart;
   let end = chunk ? chunk.end : playgroundEl.selectionStart;
-  // Trailing whitespace stays outside the replaced range so an accepted
-  // candidate keeps its separator from the words typed after it.
-  while (end > start && /\s/.test(value[end - 1])) end -= 1;
+  let wordOffset: number;
+  if (strategy.barless && !chunk) {
+    // Sliding cadence: the window is the trailing ≤ window_words words at
+    // the caret, so consecutive passes overlap and per-word agreement can
+    // accumulate.
+    const words = sessionWordRanges(playgroundEl.selectionStart);
+    if (words.length === 0) {
+      inflight = false;
+      return;
+    }
+    const windowLen = Math.min(words.length, windowWords());
+    start = words[words.length - windowLen].start;
+    end = words[words.length - 1].end;
+    wordOffset = words.length - windowLen;
+  } else {
+    // Trailing whitespace stays outside the replaced range so an accepted
+    // candidate keeps its separator from the words typed after it.
+    while (end > start && /\s/.test(value[end - 1])) end -= 1;
+    wordOffset = sessionWordRanges(start).length;
+  }
   const draft = value.slice(start, end).trim();
   if (draft.length === 0) {
     inflight = false;
@@ -229,15 +316,19 @@ async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
   }
   activeBurstId = `pg_${++burstSeq}`;
   firedRanges.set(activeBurstId, { start, end });
-  void api.injectCapture({
-    status: "ready",
-    burst_id: activeBurstId,
-    destination_id: "destination_playground",
-    profile_id: settings?.active_profile ?? "profile_default",
-    draft,
-    trigger,
-    caret: await caretScreenRect(),
-  });
+  void api.injectCapture(
+    {
+      status: "ready",
+      burst_id: activeBurstId,
+      destination_id: "destination_playground",
+      profile_id: settings?.active_profile ?? "profile_default",
+      draft,
+      trigger,
+      caret: await caretScreenRect(),
+      word_offset: wordOffset,
+    },
+    strategy.barless === true,
+  );
 }
 
 // Spends a serial slot, or earmarks one: pipelined strategies never queue
@@ -279,7 +370,10 @@ function chunkBurst(caret: number) {
 
 // Ends the composition session at the current caret: the engine records the
 // visible offer as a stable dismissal (a keep label), drops queued offers and
-// the in-flight burst, and the next keystroke starts a fresh burst.
+// the in-flight burst, and the next keystroke starts a fresh burst. If
+// hardened marks were never applied, the engine answers with one
+// consolidated whole-sentence offer; the range it would replace is
+// snapshotted here, before the session moves on.
 function endSession() {
   window.clearTimeout(idleTimer);
   dirty = false;
@@ -291,9 +385,15 @@ function endSession() {
   pendingChunks.length = 0;
   firedRanges.clear();
   shownChunk = undefined;
+  const words = sessionWordRanges(playgroundEl.selectionStart);
+  consolidationRange =
+    words.length > 0
+      ? { start: words[0].start, end: words[words.length - 1].end }
+      : undefined;
   renderChunkIndicator();
   void api.endSession();
   burstStart = playgroundEl.selectionStart;
+  sessionStart = burstStart;
 }
 
 playgroundEl.addEventListener("input", () => {
@@ -315,12 +415,14 @@ playgroundEl.addEventListener("input", () => {
   // current edit instead of slicing from an unreachable prior position.
   if (caret < burstStart || playgroundEl.value.length < burstStart) {
     burstStart = Math.max(0, caret - 1);
+    sessionStart = burstStart;
     inflight = false;
     dirty = false;
     activeBurstId = undefined;
     pendingChunks.length = 0;
     firedRanges.clear();
     shownChunk = undefined;
+    consolidationRange = undefined;
     void api.endSession();
   }
   // Editing at or before a fired range invalidates its candidates, whether
@@ -351,24 +453,43 @@ playgroundEl.addEventListener("input", () => {
     renderStrategyStats();
     return;
   }
-  // The five-word chunk boundary applies under every strategy — the model
-  // never sees a sixth word. Inference on the frozen chunk overlaps typing.
-  if (/\s/.test(last) && draft.trim().split(/\s+/).filter(Boolean).length >= MAX_BURST_WORDS) {
-    chunkBurst(caret);
-    renderStrategyStats();
-    return;
-  }
-  // The draft window is a strategy-independent backstop: past 80 chars the
-  // burst must be predicted on before it grows unwieldy.
-  if (draft.length >= DRAFT_WINDOW_CHARS) {
-    requestPrediction("idle");
-    return;
-  }
   const key: KeyInfo = {
     wordBoundary: /\s/.test(last) && draft.length > 1 && !/\s/.test(draft.at(-2) ?? " "),
     sentencePunct: ".!?".includes(last),
     medianGapMs: medianGapMs(),
   };
+  // Keyboard ownership: a bar that has been typed through for several words
+  // stops claiming digits — it dismisses itself (a stable dismissal; its
+  // evidence lives on as word-slot marks). Surfaces change only at word
+  // boundaries, never mid-word.
+  if (key.wordBoundary && shownChunk) {
+    typedThroughWords += 1;
+    if (typedThroughWords >= BAR_EXPIRY_WORDS) {
+      typedThroughWords = 0;
+      firedRanges.delete(shownChunk.burstId);
+      shownChunk = undefined;
+      renderChunkIndicator();
+      void api.dismissSuggestions();
+    }
+  }
+  // The window-words chunk boundary freezes a chunk under every bar-mode
+  // strategy — the model never sees an oversized draft. The sliding cadence
+  // has no frozen chunks: its window construction bounds itself.
+  if (
+    !strategy.barless &&
+    /\s/.test(last) &&
+    draft.trim().split(/\s+/).filter(Boolean).length >= windowWords()
+  ) {
+    chunkBurst(caret);
+    renderStrategyStats();
+    return;
+  }
+  // The draft window is a strategy-independent backstop: past the char cap
+  // the burst must be predicted on before it grows unwieldy.
+  if (draft.length >= windowChars()) {
+    requestPrediction("idle");
+    return;
+  }
   const action = strategy.onKey(key);
   if (action === "now") {
     requestPrediction(key.sentencePunct ? "punctuation" : "idle");
@@ -379,15 +500,47 @@ playgroundEl.addEventListener("input", () => {
   renderStrategyStats();
 });
 
+// Applies every hardened mark. Marks come back in pre-apply session word
+// coordinates, so they replay right to left — earlier (left) char ranges
+// stay valid while later ones are replaced.
+async function applyAllMarks() {
+  const applied = await api.applyMarks();
+  for (const mark of [...applied].sort((a, b) => b.start_word - a.start_word)) {
+    if (mark.word_len === 0) {
+      const words = sessionWordRanges(playgroundEl.value.length);
+      const at = words[mark.start_word]?.start;
+      if (at !== undefined) applyRangeReplacement(at, at, `${mark.replacement} `);
+      continue;
+    }
+    const range = wordCharRange(mark.start_word, mark.word_len);
+    if (range) applyRangeReplacement(range.start, range.end, mark.replacement);
+  }
+}
+
+// Keyboard ownership (single-owner invariant): the caret-anchored bar, when
+// visible, always owns the unmodified keys — digits pick, arrows move the
+// highlight, Tab accepts (Space stays a real character in English, so Tab
+// plays Space's role), Escape keeps the literal text. The engine's
+// suggesting state is always the offer on display (later batches queue
+// behind it), so those keys route through the engine. Marks never claim
+// plain keys: they are chorded (⌘⏎ applies all) or take Escape only when no
+// bar is up. Any other key types through untouched.
 playgroundEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (sessionMarks.some((m) => m.stable)) {
+      e.preventDefault();
+      void applyAllMarks();
+    }
+    return;
+  }
   const offered = shownChunk;
-  if (!offered) return;
-  // Pinyin-style keys while candidates are on offer: digits pick, arrow keys
-  // move the highlight, Tab accepts the highlighted candidate (Space stays a
-  // real character in English, so Tab plays Space's role), Escape keeps the
-  // literal text. The engine's suggesting state is always the offer on
-  // display (later batches queue behind it), so every key routes through the
-  // engine — commit, learning record, and the next queued offer surfacing.
+  if (!offered) {
+    if (e.key === "Escape" && sessionMarks.some((m) => m.stable)) {
+      e.preventDefault();
+      void api.clearMarks();
+    }
+    return;
+  }
   const accept = (index: number) => {
     if (index >= offered.candidates.length) return;
     e.preventDefault();
@@ -552,6 +705,13 @@ void events.onSettings((next) => {
   settings = next;
   renderBackendMode(next);
 });
+// Mirrors the engine's word-slot proposals: hardened ones draw as dotted
+// underlines in the backdrop, and unlock ⌘⏎ (apply all) / Escape (revert).
+void events.onMarks((marks) => {
+  sessionMarks = marks;
+  renderChunkIndicator();
+  renderStrategyStats();
+});
 void events.onSnapshot((snapshot) => {
   lastStateEl.textContent = `composition: ${snapshot.phase}`;
   if (snapshot.phase === "suggesting" && snapshot.backend) {
@@ -569,8 +729,17 @@ void events.onSnapshot((snapshot) => {
     // The engine shows the oldest unresolved offer; mirror it and underline
     // exactly the words its candidates would replace (the typist may be
     // several words past them by now). Bursts fired outside the playground
-    // (scripted capture buttons) have no range and get no underline.
-    const range = firedRanges.get(snapshot.burst_id);
+    // (scripted capture buttons) have no range and get no underline. The
+    // sentence-boundary consolidation offer is synthesized engine-side with
+    // no matching fireTrigger call, so it has no firedRanges entry yet;
+    // adopt the range snapshotted at endSession() and record it under the
+    // engine's burst id so the "applied" branch above finds it the same way
+    // as any other offer.
+    let range = firedRanges.get(snapshot.burst_id);
+    if (!range && snapshot.burst_id.startsWith("consolidated_") && consolidationRange) {
+      range = consolidationRange;
+      firedRanges.set(snapshot.burst_id, range);
+    }
     shownChunk = range
       ? {
           ...range,
@@ -634,6 +803,9 @@ strategyEl.addEventListener("change", () => {
 void (async () => {
   settings = await api.getSettings();
   renderBackendMode(settings);
+  sessionMarks = await api.getMarks();
+  renderChunkIndicator();
+  renderStrategyStats();
   const cases = await api.listCorpus();
   for (const demoCase of cases) {
     const button = el("button", undefined, demoCase.title);

@@ -236,6 +236,18 @@ th {
   border-radius: 3px;
 }
 
+/* A hardened correction: quiet dotted underline behind the caret. Never
+   interrupts; ⌘⏎ applies all, Escape reverts. */
+.mark-underline {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--warn, #d29922);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  background: color-mix(in srgb, var(--warn, #d29922) 12%, transparent);
+  border-radius: 3px;
+  pointer-events: auto;
+}
+
 /* ---- demo harness ---- */
 
 .grid2 {
