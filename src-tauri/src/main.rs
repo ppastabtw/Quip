@@ -39,9 +39,6 @@ use tauri::{
 
 const BAR_HEIGHT: f64 = 44.0;
 const BAR_GAP: f64 = 10.0;
-const DEMO_TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
-const DEMO_AUTO_CAPTURE_INTERVAL_MS: u64 = 300;
-const DEMO_AUTO_CAPTURE_PHRASES: [&str; 3] = ["cnt cm tmrw", "i went to the store instaed", "omw"];
 
 struct EngineState(Mutex<Engine>);
 
@@ -52,15 +49,6 @@ struct DebugState(Mutex<DebugSink>);
 /// so holding the engine lock across sidecar I/O freezes the whole UI
 /// (including typing). Requests serialize here instead, on a blocking worker.
 struct SidecarState(Arc<Mutex<SidecarClient>>);
-
-#[derive(Default)]
-struct DemoAutoCaptureLoopState {
-    running: bool,
-    last_destination_id: Option<String>,
-    last_draft: Option<String>,
-}
-
-struct DemoAutoCaptureState(Mutex<DemoAutoCaptureLoopState>);
 
 /// Runs one blocking sidecar exchange off the async runtime.
 async fn with_sidecar<T: Send + 'static>(
@@ -322,253 +310,6 @@ fn is_retryable_menu_focus_miss(focused: &accessibility::FocusedElementDiagnosti
         && focused.resolution_error == Some("not_text_role")
         && (raw_element_role_is(focused.system_focused.as_ref(), "AXMenuItem")
             || raw_element_role_is(focused.app_focused.as_ref(), "AXMenuItem"))
-}
-
-#[cfg(test)]
-mod demo_auto_capture_tests {
-    use super::*;
-
-    #[test]
-    fn demo_auto_capture_accepts_only_guardrail_phrases() {
-        assert_eq!(
-            demo_auto_capture_phrase("notes: cnt cm tmrw"),
-            Some("cnt cm tmrw")
-        );
-        assert_eq!(
-            demo_auto_capture_phrase("i went to the store instaed"),
-            Some("i went to the store instaed")
-        );
-        assert_eq!(demo_auto_capture_phrase("omw"), Some("omw"));
-        assert_eq!(demo_auto_capture_phrase("hi how are you"), None);
-    }
-}
-
-fn demo_auto_capture_phrase(draft: &str) -> Option<&'static str> {
-    DEMO_AUTO_CAPTURE_PHRASES
-        .iter()
-        .copied()
-        .find(|phrase| draft.contains(phrase))
-}
-
-fn record_demo_auto_capture_skip(app: &AppHandle, reason: &'static str, payload: Value) {
-    record_debug(
-        app,
-        "demo_auto_capture_skipped",
-        format!("auto-capture skipped: {reason}"),
-        json!({
-            "source": "demo_auto_capture",
-            "reason": reason,
-            "payload": payload,
-        }),
-    );
-}
-
-fn demo_auto_capture_is_running(app: &AppHandle) -> bool {
-    let state = app.state::<DemoAutoCaptureState>();
-    state.0.lock().is_ok_and(|state| state.running)
-}
-
-fn set_demo_auto_capture_running(app: &AppHandle, running: bool) {
-    let state = app.state::<DemoAutoCaptureState>();
-    if let Ok(mut state) = state.0.lock() {
-        state.running = running;
-        if running {
-            state.last_destination_id = None;
-            state.last_draft = None;
-        }
-    };
-}
-
-#[tauri::command]
-async fn set_demo_auto_capture(app: AppHandle, enabled: bool) -> Result<(), String> {
-    if enabled {
-        if demo_auto_capture_is_running(&app) {
-            return Ok(());
-        }
-        set_demo_auto_capture_running(&app, true);
-        record_debug(
-            &app,
-            "demo_auto_capture_started",
-            "TextEdit auto-capture started",
-            json!({
-                "source": "demo_auto_capture",
-                "interval_ms": DEMO_AUTO_CAPTURE_INTERVAL_MS,
-                "app_bundle_id": DEMO_TEXTEDIT_BUNDLE_ID,
-            }),
-        );
-        let handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            demo_auto_capture_loop(handle).await;
-        });
-    } else if demo_auto_capture_is_running(&app) {
-        set_demo_auto_capture_running(&app, false);
-    }
-    Ok(())
-}
-
-async fn demo_auto_capture_loop(app: AppHandle) {
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(
-            DEMO_AUTO_CAPTURE_INTERVAL_MS,
-        ))
-        .await;
-        if !demo_auto_capture_is_running(&app) {
-            record_debug(
-                &app,
-                "demo_auto_capture_stopped",
-                "TextEdit auto-capture stopped",
-                json!({ "source": "demo_auto_capture" }),
-            );
-            break;
-        }
-        demo_auto_capture_tick(app.clone()).await;
-    }
-}
-
-async fn demo_auto_capture_tick(app: AppHandle) {
-    let (app_enabled, bar_visible, profile_id, include_context) = {
-        let engine = app.state::<EngineState>();
-        let engine = engine.0.lock().unwrap();
-        (
-            engine.settings.enabled,
-            matches!(engine.current_snapshot(), Snapshot::Suggesting { .. }),
-            engine.settings.active_profile.clone(),
-            engine.settings.window_context,
-        )
-    };
-    if !app_enabled {
-        return;
-    }
-    if bar_visible {
-        record_demo_auto_capture_skip(&app, "bar_visible", json!({}));
-        return;
-    }
-
-    let focused_app = accessibility::focused_app_diagnostic();
-    if focused_app.app_bundle_id.as_deref() != Some(DEMO_TEXTEDIT_BUNDLE_ID) {
-        record_demo_auto_capture_skip(
-            &app,
-            "not_textedit",
-            json!({
-                "focused_app": focused_app,
-            }),
-        );
-        return;
-    }
-
-    let focused = accessibility::focused_element_diagnostic();
-    if focused.resolution_error == Some("secure_field") {
-        record_demo_auto_capture_skip(&app, "secure_field", json!({ "focused": focused }));
-        return;
-    }
-
-    let result = accessibility::capture_focused_destination(&profile_id, Trigger::Idle);
-    let CaptureResult::Ready {
-        burst_id,
-        destination_id,
-        profile_id,
-        draft,
-        trigger,
-        caret,
-        word_offset,
-    } = result
-    else {
-        let reason = match result {
-            CaptureResult::Unavailable { ref reason } if reason == "secure_field" => "secure_field",
-            CaptureResult::Unavailable { .. } => "capture_unavailable",
-            CaptureResult::Ready { .. } => unreachable!(),
-        };
-        record_demo_auto_capture_skip(
-            &app,
-            reason,
-            json!({
-                "capture": result,
-            }),
-        );
-        return;
-    };
-
-    let new_session = {
-        let state = app.state::<DemoAutoCaptureState>();
-        let mut state = state.0.lock().unwrap();
-        let new_session = state.last_destination_id.as_deref() != Some(destination_id.as_str());
-        state.last_destination_id = Some(destination_id.clone());
-        let unchanged = state.last_draft.as_deref() == Some(draft.as_str());
-        if !unchanged {
-            state.last_draft = Some(draft.clone());
-        }
-        (new_session, unchanged)
-    };
-
-    if new_session.1 {
-        let _ = accessibility::release_destination(&destination_id);
-        record_demo_auto_capture_skip(
-            &app,
-            "unchanged_draft",
-            json!({
-                "destination_id": destination_id,
-                "draft_chars": draft.chars().count(),
-                "new_session": new_session.0,
-            }),
-        );
-        return;
-    }
-    if draft.chars().count() < 3 {
-        let _ = accessibility::release_destination(&destination_id);
-        record_demo_auto_capture_skip(
-            &app,
-            "too_short",
-            json!({
-                "destination_id": destination_id,
-                "draft_chars": draft.chars().count(),
-                "new_session": new_session.0,
-            }),
-        );
-        return;
-    }
-    let Some(matched_phrase) = demo_auto_capture_phrase(&draft) else {
-        let _ = accessibility::release_destination(&destination_id);
-        record_demo_auto_capture_skip(
-            &app,
-            "not_demo_phrase",
-            json!({
-                "destination_id": destination_id,
-                "draft_chars": draft.chars().count(),
-                "new_session": new_session.0,
-            }),
-        );
-        return;
-    };
-
-    record_debug(
-        &app,
-        "demo_auto_capture_triggered",
-        format!("auto-capture triggered: {matched_phrase}"),
-        json!({
-            "source": "demo_auto_capture",
-            "destination_id": destination_id,
-            "burst_id": burst_id,
-            "draft_chars": draft.chars().count(),
-            "matched_phrase": matched_phrase,
-            "new_session": new_session.0,
-        }),
-    );
-    run_capture_result(
-        app,
-        CaptureResult::Ready {
-            burst_id,
-            destination_id,
-            profile_id,
-            draft,
-            trigger,
-            caret,
-            word_offset,
-        },
-        include_context,
-        "demo_auto_capture",
-        None,
-    )
-    .await;
 }
 
 #[tauri::command]
@@ -1487,15 +1228,11 @@ fn main() {
             let profiles = engine.learning.list_profiles();
             app.manage(EngineState(Mutex::new(engine)));
             app.manage(SidecarState(Arc::new(Mutex::new(SidecarClient::auto()))));
-            app.manage(DemoAutoCaptureState(Mutex::new(
-                DemoAutoCaptureLoopState::default(),
-            )));
 
             let handles = build_tray(app, &settings, &profiles)?;
             app.manage(TrayState(Mutex::new(Some(handles))));
 
             let safe_demo_mode = std::env::var("QUIP_DEMO_SAFE_MODE").as_deref() == Ok("1");
-            let demo_auto_capture = std::env::var("QUIP_DEMO_AUTO_CAPTURE").as_deref() == Ok("1");
 
             if let Ok(show) = std::env::var("QUIP_SHOW") {
                 for label in show.split(',').map(str::trim).filter(|l| !l.is_empty()) {
@@ -1504,13 +1241,6 @@ fn main() {
             }
             if safe_demo_mode {
                 show_window(app.handle(), "demo");
-            }
-            if demo_auto_capture {
-                show_window(app.handle(), "demo");
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = set_demo_auto_capture(handle, true).await;
-                });
             }
 
             // Dev/validation hook: run the explicit presenter fallback shortly
@@ -1570,7 +1300,6 @@ fn main() {
             cancel_destination,
             inject_capture,
             run_safe_demo,
-            set_demo_auto_capture,
             select_candidate,
             move_selection,
             dismiss_suggestions,
