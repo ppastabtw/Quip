@@ -6,17 +6,17 @@ Source: `docs/SPEC.md`
 
 - **desktop shell**: Tauri 2 for the menu bar app, settings UI, candidate bar, global shortcut, and clipboard integration.
 - **system layer**: Rust for macOS integration, application state, orchestration, sidecar control, and packaging-sensitive code.
-- **macOS Accessibility**: `axuielement` for Accessibility trust, focused elements, text markers, and `AXObserver`; `objc2` ApplicationServices bindings only where `axuielement` lacks coverage.
+- **macOS text input**: a standalone Swift InputMethodKit source for pass-through live typing, verified UTF-16 ranges, caret geometry, and confirmed replacement; `axuielement` remains for bounded window context and existing-text mode.
 - **composition UI**: HTML and CSS rendered through Tauri for the caret-anchored candidate bar, settings, and demo controls.
-- **local inference**: `mistral.rs` with Metal as the leading runtime for Qwen3.5, 4-bit quantization, LoRA merging, strict schemas, and Rust-facing integration.
-- **model family**: start with Qwen3.5-2B at 4-bit; benchmark Qwen3.5-4B only after 2B establishes a working latency and quality baseline.
+- **local inference**: MLX-VLM serves Base Qwen3.5 and the exported global LoRA as separate loopback-only endpoints behind the same Rust sidecar contract. The current `mistral.rs` Qwen3.5 LoRA path rejects this architecture, and its 4B UQFF path also failed a real multi-request shape check.
+- **model family**: the product lane is locked to Qwen3.5 2B over the matching 4-bit MLX base. The selected Global checkpoint is the v2 step-80 adapter.
 - **personalization**: Freesolo-trained per-user LoRA adapter plus a compact local pattern dictionary before enough examples exist for training.
 - **storage**: local files or an embedded local store for settings, confirmed examples, learned pattern dictionary, adapter metadata, and profile-specific state; no remote database is required for the judged build.
 - **observability**: local structured logs, demo-visible latency metrics, schema-validity counters, and evaluation reports; Freesolo profile runs may use a substantial deduplicated set of confirmed interactions.
 
 ## Key decisions and rejected alternatives
 
-**observe before explicit candidate commit**: Quip passively observes the writing burst in the destination field and changes text only after the user selects a model candidate. The literal input remains in place when no candidate appears or the candidate is dismissed.
+**InputMethodKit pass-through before explicit candidate commit**: Quip Native is a selectable Latin input source. It passes literal input through to the destination, sends a bounded stable burst and caret rectangle to the Tauri app over loopback, and changes text only after the user selects a model candidate.
 
 **local inference with Freesolo training**: The base model and exported adapters run on the Mac. Global and per-user adapter training run through Freesolo, using prepared global data or deduplicated confirmed profile examples. This is a hackathon validation target, not a production privacy guarantee.
 
@@ -26,11 +26,11 @@ Source: `docs/SPEC.md`
 
 **continuous prediction with bounded churn**: Prediction runs as the burst grows, with a short debounce and immediate refresh at punctuation, Return, or the draft-window cap. Stale results are dropped while the current bar remains visible.
 
-**guided JSON model contract**: Each model completion emits exactly `{ "suggestion": "..." }`. Workstream 2 implements the aggregation rules in `docs/phase-0-contracts.md`. Free-form responses were rejected because commentary, partial edits, and schema drift would complicate commit safety and evaluation.
+**model response compatibility boundary**: Each decoded model completion yields exactly one full-text suggestion before aggregation. The selected 2B endpoint uses its trained guided `json_suggestion` contract, which normalizes into the unchanged app-side `PredictionResult`. Workstream 2 implements the aggregation rules in `docs/phase-0-contracts.md`.
 
 **literal input remains the default**: The application does not add the unchanged draft as a candidate because it is already present in the destination. Only an explicit candidate selection changes it.
 
-**mistral.rs sidecar first, direct SDK later**: Start with a bundled local loopback sidecar for inference so model lifecycle failures are isolated from the Tauri app. Direct Rust SDK integration remains a later optimization once adapter loading and schema decoding are proven.
+**replaceable loopback sidecar first, direct SDK later**: Use isolated local model services behind the bundled Rust sidecar so runtime-specific lifecycle failures do not leak into the Tauri app. Direct Rust SDK integration remains a later optimization once adapter loading and output decoding are proven.
 
 **adapter composition with merge fallback**: The preferred runtime loads the Qwen base, frozen global Freesolo adapter, and separate user adapter together. If stacking fails, merge the global adapter into the base once and load a single user adapter over it.
 
@@ -40,9 +40,9 @@ Source: `docs/SPEC.md`
 
 ## Architecture overview
 
-Quip runs as a Tauri menu-bar app with a Rust core. When enabled, the Accessibility layer detects supported editable destinations and passively observes the writing burst, active app, element, selection, insertion point, and nearby visible text. The orchestration layer waits for punctuation, Return, or an idle trigger, builds a bounded model input from the draft or selection, relevant window snippets, and compact user patterns, then calls the local inference sidecar for the base Qwen and global Freesolo adapter comparison.
+Quip runs as a Tauri menu-bar app with a Rust core plus a standalone Swift InputMethodKit source. When selected, the input source passes literal typing through, validates the destination selection, obtains the caret rectangle, and sends a bounded capture to the Tauri engine over loopback. Accessibility supplies bounded open-window context and the secondary existing-text path. The orchestration layer builds the model input and calls the local inference sidecar for Base Qwen or the Global Freesolo adapter.
 
-The UI shows up to five ranked, schema-valid changed suggestions and shows nothing when all suggestions equal the input. On candidate selection, the commit layer replaces text through Accessibility where possible, falling back to simulated paste while preserving the previous clipboard. The learning layer records only compact labeled interactions that are useful for personalization, deduplicates repeated patterns, updates the local pattern dictionary immediately, and eventually refreshes the per-user adapter while idle.
+The UI shows up to five ranked, schema-valid changed suggestions and shows nothing when all suggestions equal the input. For live typing, an explicit candidate selection returns the full replacement through the loopback bridge and InputMethodKit writes it over the revalidated burst range. Accessibility replacement and clipboard-preserving paste remain the existing-text fallback. The learning layer records only compact labeled interactions that are useful for personalization.
 
 ## Module and folder structure
 
@@ -58,7 +58,9 @@ src-tauri/
     learning/           # local examples, pattern dictionary, profile state, adapter refresh orchestration
     settings/           # context toggle, learning pause/reset, profile selection, demo controls
   sidecars/
-    inference/          # local model runtime wrapper around mistral.rs or fallback runtime
+    inference/          # local model runtime wrapper around loopback MLX-VLM endpoints
+native/
+  quip-ime/             # standalone Swift InputMethodKit source and Tauri bridge client
 src/
   ui/                   # Tauri webview candidate bar, settings, demo harness
 training/
@@ -72,13 +74,13 @@ docs/
 
 ## Risk areas
 
-**mistral.rs adapter loading on Metal**: Failure looks like the app can run base Qwen but cannot load the exported Freesolo adapter or strict JSON decoding reliably. Roll back to a replaceable local sidecar with the same request/response contract. De-risk by proving adapter loading, quantization, schema decoding, and latency before wiring inference into the UI.
+**adapter loading on Metal**: The replaceable sidecar routes both Base and Global to separate MLX-VLM services over one 4-bit model identity; only Global receives the converted LoRA. Failure looks like either service failing health, output decoding, held-out correction, or latency checks. Roll back to fixture mode or an explicit 8-bit model override, and keep proving adapter identity, quantization, behavior, and latency through the process validator.
 
 **global plus user adapter composition**: Failure looks like personalization cannot run alongside the global Freesolo behavior, or user adapters overwrite the trained restraint. Roll back to a base model with the global adapter merged once and one user adapter loaded over it. De-risk with a small adapter-composition test harness using two intentionally different user profiles.
 
 **managed per-user training**: Failure looks like a small profile dataset overfits, weakens restraint, or produces an adapter that cannot compose with the global adapter. Roll back to the compact pattern dictionary plus two prepared Freesolo-trained profile adapters for the judged build. De-risk with held-out profile examples and explicit global-plus-user composition tests.
 
-**accessibility destination preservation**: Failure looks like Quip loses the insertion point, commits into the wrong field, modifies text on cancel, or fails across TextEdit and browser inputs. Roll back to the narrowest known-good app/input pair and simulated paste fallback with clipboard restore. De-risk by building the destination capture/restore spike before the full Tauri UI.
+**InputMethodKit destination preservation**: Failure looks like Quip loses the verified UTF-16 range, receives stale caret geometry, commits into a changed input session, or fails across TextEdit and browser clients. The input source invalidates on selection/navigation mismatch and the judged build falls back to the narrowest known-good client. Accessibility and simulated paste remain limited to existing-text mode.
 
 **window context quality and privacy**: Failure looks like accessible snippets are empty, irrelevant, too large, or accidentally include secure/excluded fields. Roll back to disabling context by default while keeping the menu-bar toggle and deterministic examples. De-risk by auditing snippets from TextEdit, Notes, Chrome, and Safari with bounded length, source labels, and secure-field checks.
 
@@ -120,22 +122,22 @@ docs/
 
 ### Workstream 2: local inference, adapters, and packaging
 
-1. Build the local inference sidecar around `mistral.rs` with the shared request/response contract and deterministic fixture mode.
-2. Prove base Qwen loading, 4-bit Metal inference, guided JSON decoding, five-completion aggregation, schema validation, and latency reporting before consuming app events.
-3. Load the global Freesolo adapter exported by the training workstream; if it fails, swap in a replaceable local runtime behind the same sidecar contract.
+1. Keep the local inference sidecar runtime-agnostic with the shared request/response contract and deterministic fixture mode.
+2. Prove Base Qwen loading, 4-bit Metal inference, plain full-text decoding, five-completion aggregation, contract validation, and latency reporting before consuming app events.
+3. Load the global Freesolo adapter through a separate MLX-VLM endpoint and require a held-out correction in addition to adapter-presence health.
 4. Test global plus per-user adapter composition with two intentionally different user profiles; if stacking fails, merge the global adapter into the base and load one user adapter.
-5. Benchmark Qwen3.5-2B on the M3 Pro and M4 Air; test Qwen3.5-4B only if quality requires it and latency remains interactive.
+5. Benchmark selected Qwen3.5 2B adapters under identical layered system/context KV caching, draft-only prefill, five-way cache-fork decode, and warmup settings on the target Macs.
 6. Load Freesolo-trained per-user adapters from two prepared profiles and verify that each changes only its intended patterns.
 7. Package model and adapter paths as local artifacts with health checks, missing-artifact errors, and no committed model binaries.
 
-### Workstream 3: Accessibility capture, commit, and context
+### Workstream 3: InputMethodKit capture and commit, Accessibility context
 
-1. Implement Accessibility permission detection, focused editable element recognition, secure-field exclusion, and supported-app gating.
-2. Passively observe destination application, element, selection, insertion point, burst markers, and caret geometry without redirecting input.
-3. Emit bounded writing-burst updates from TextEdit and one browser input while leaving focus and text in the destination.
+1. Package Quip Native as a user-enabled Latin InputMethodKit source and keep one controller per active text-client session.
+2. Pass literal typing through, then validate the destination selection and caret rectangle through the active text client.
+3. Emit bounded writing-burst updates from TextEdit and one browser input over the loopback bridge while leaving focus and literal text in the destination.
 4. Implement the initial 150 ms debounce, with immediate punctuation, Return, and 80-character window triggers.
-5. Replace only the tracked burst range after an explicit candidate selection.
-6. Add simulated paste fallback that preserves and restores the previous clipboard.
+5. Replace only the verified tracked UTF-16 range through `insertText:replacementRange:` after an explicit candidate selection.
+6. Keep Accessibility selection replacement and clipboard-preserving simulated paste as fallbacks for existing-text mode.
 7. Collect bounded accessible window text from supported apps, rank snippets locally, and expose only bounded context records to the orchestration layer.
 8. Validate cancellation, unchanged-input behavior, candidate commit, wrong-field prevention, secure-field avoidance, and context toggle behavior across TextEdit, Notes, and the chosen browser.
 

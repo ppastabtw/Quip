@@ -16,8 +16,10 @@ The validator must:
 1. Format-check the Tauri package.
 2. Run the Rust tests that cover capture, prediction, commit, and fixture lookup behavior.
 3. Build the demo webviews with TypeScript checking.
-4. Run the app selftest through the real Tauri runtime and verify `SELFTEST PASS`.
-5. Run the safe demo startup path with `QUIP_DEMO_SAFE_MODE=1 QUIP_SHOW=demo` and verify the debug event log contains `demo_safe_mode_started`, `capture_ready`, `prediction_started`, `prediction_result`, and `bar_shown`.
-6. Keep generated debug logs outside tracked source or under `.workspace/quip-debug`.
+4. Run the demo state tests that cover bounded long-input chunking, destructive
+   reset recovery, and replacement boundaries.
+5. Run the app selftest through the real Tauri runtime and verify `SELFTEST PASS`.
+6. Run the safe demo startup path with `QUIP_DEMO_SAFE_MODE=1 QUIP_SHOW=demo` and verify the debug event log contains `demo_safe_mode_started`, `capture_ready`, `prediction_started`, `prediction_result`, and `bar_shown`.
+7. Keep generated debug logs outside tracked source or under `.workspace/quip-debug`.
 
 Treat unit tests alone as insufficient. A successful run ends with `Quip demo validation passed` after the app-runtime checks. On failure, report the failing command and the relevant log excerpt; do not claim completion.

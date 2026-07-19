@@ -29,11 +29,15 @@ After changing live inference behavior, also run:
 .agents/skills/validate-quip-sidecar/scripts/validate-live.sh
 ```
 
-The live validator must exercise Qwen through the actual loopback HTTP server
-and the sidecar NDJSON boundary, then launch the real Tauri binary in live
-self-test mode. It verifies live health, schema-valid base output, latency,
-contract-valid zero-to-five candidate conversion, explicit unloaded-adapter results,
-app-side child-process launch, candidate rendering state, and metrics.
+The live validator must exercise Base Qwen and the converted Global Freesolo
+adapter through separate, sequential MLX-VLM services on actual loopback HTTP
+servers and through the sidecar NDJSON boundary, then launch the real Tauri binary in
+Global live self-test mode. The app self-test also enters through the native
+InputMethodKit loopback bridge and requires the model-backed commit message to
+return over that bridge. It verifies live health, schema-valid Base and
+Global output, a held-out Global correction, latency, contract-valid zero-to-five candidate conversion, the
+explicit unloaded-personal-adapter result, app-side child-process launch,
+candidate rendering state, and metrics.
 Deterministic tests separately verify vote ranking, deduplication, five-candidate
 capping, exact-draft filtering, and latency summary statistics. The validator
 also runs a live benchmark and checks backend, completion-batch,

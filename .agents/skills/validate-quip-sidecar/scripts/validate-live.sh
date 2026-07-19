@@ -17,75 +17,33 @@ fi
 
 .agents/skills/validate-quip-sidecar/scripts/validate.sh
 
-mistralrs_bin=${MISTRALRS_BIN:-"$HOME/.mistralrs/mistralrs"}
-model_id=${QUIP_BASE_MODEL_ID:-Qwen/Qwen3.5-2B}
-model_quant=${QUIP_BASE_MODEL_QUANT:-4}
-model_label=${model_id#Qwen/}
-export QUIP_BASE_MODEL_ID="$model_id"
-export QUIP_BASE_MODEL_QUANT="$model_quant"
-server_log=$(mktemp "${TMPDIR:-/tmp}/quip-live-model.XXXXXX")
+. "$repo_root/src-tauri/sidecars/inference/scripts/live-model-runtime.sh"
+quip_live_runtime_init
+model_label=${global_model_id##*/}
 responses=$(mktemp "${TMPDIR:-/tmp}/quip-live-responses.XXXXXX")
 benchmark_json=$(mktemp "${TMPDIR:-/tmp}/quip-live-benchmark.XXXXXX")
 benchmark_html=$(mktemp "${TMPDIR:-/tmp}/quip-live-profile.XXXXXX")
-server_pid=
 app_data=
 
 cleanup() {
-  if [ -n "$server_pid" ]; then
-    kill "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
-  fi
-  rm -f "$server_log" "$responses" "$benchmark_json" "$benchmark_html"
+  quip_live_runtime_cleanup
+  rm -f "$responses" "$benchmark_json" "$benchmark_html"
   if [ -n "$app_data" ]; then
     rm -rf -- "$app_data"
   fi
 }
 trap cleanup EXIT HUP INT TERM
 
-if curl -fsS http://127.0.0.1:1234/health >/dev/null 2>&1; then
-  if ! curl -fsS http://127.0.0.1:1234/v1/models | grep -Fq "\"$model_id\""; then
-    printf '%s\n' "A different model is already running on port 1234; expected $model_id." >&2
-    exit 1
-  fi
-else
-  if [ ! -x "$mistralrs_bin" ]; then
-    printf '%s\n' "mistral.rs was not found at $mistralrs_bin" >&2
-    exit 1
-  fi
-  "$mistralrs_bin" serve --host 127.0.0.1 -p 1234 --no-ui --disable-access-log \
-    auto --quant "$model_quant" -m "$model_id" --max-seq-len 2048 >"$server_log" 2>&1 &
-  server_pid=$!
-
-  ready=0
-  attempts=0
-  while [ "$attempts" -lt 120 ]; do
-    if curl -fsS http://127.0.0.1:1234/health >/dev/null 2>&1; then
-      ready=1
-      break
-    fi
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-      break
-    fi
-    attempts=$((attempts + 1))
-    sleep 1
-  done
-  if [ "$ready" -ne 1 ]; then
-    tail -n 40 "$server_log" >&2
-    exit 1
-  fi
-fi
-
 cargo build -p quip-inference-sidecar
 sidecar=target/debug/quip-inference-sidecar
 phrase_tester=target/debug/quip-phrase-tester
 latency_tester=target/debug/quip-latency-tester
 
+quip_start_base_server
 {
-  printf '%s\n' '{"operation":"health"}'
   printf '%s\n' '{"operation":"predict","request":{"request_id":"live-validation-base","profile_id":"profile_default","model_variant":"base","draft":"cnt cm tmr","context_snippets":[],"personal_patterns":[]}}'
   printf '%s\n' '{"operation":"predict","request":{"request_id":"live-validation-protected","profile_id":"profile_default","model_variant":"base","draft":"https://freesolo.co/docs","context_snippets":[],"personal_patterns":[]}}'
-  printf '%s\n' '{"operation":"predict","request":{"request_id":"live-validation-global","profile_id":"profile_default","model_variant":"global","draft":"cnt cm tmr","context_snippets":[],"personal_patterns":[]}}'
-} | "$sidecar" --live >"$responses"
+} | env -u QUIP_GLOBAL_MODEL_ADDR -u QUIP_GLOBAL_MODEL_ID "$sidecar" --live >"$responses"
 
 "$python_bin" - "$responses" <<'PY'
 import json
@@ -93,15 +51,7 @@ import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
-responses = [json.loads(line) for line in path.read_text().splitlines() if line]
-assert len(responses) == 4, responses
-
-health, base, protected, global_result = responses
-assert health == {
-    "status": "ready",
-    "fixture_available": True,
-    "loaded": {"base": True, "global_adapter": False, "user_adapter": False},
-}, health
+base, protected = [json.loads(line) for line in path.read_text().splitlines() if line]
 assert base["request_id"] == "live-validation-base", base
 assert base["status"] == "ok", base
 assert base["model_variant"] == "base", base
@@ -118,17 +68,57 @@ assert "action" not in protected, protected
 assert 0 <= len(protected["candidates"]) <= 5, protected
 assert len(protected["candidates"]) == len(set(protected["candidates"])), protected
 assert "https://freesolo.co/docs" not in protected["candidates"], protected
+for response in (base, protected):
+    print(json.dumps(response, separators=(",", ":")))
+PY
+
+quip_stop_base_server
+quip_start_global_server
+QUIP_DEMO_WARMUP_RUNS=1 quip_warm_global_model "$sidecar"
+{
+  printf '%s\n' '{"operation":"health"}'
+  printf '%s\n' "{\"operation\":\"predict\",\"request\":{\"request_id\":\"live-validation-global\",\"profile_id\":\"profile_default\",\"model_variant\":\"global\",\"draft\":\"$global_validation_draft\",\"context_snippets\":[],\"personal_patterns\":[]}}"
+  printf '%s\n' '{"operation":"predict","request":{"request_id":"live-validation-personal","profile_id":"profile_default","model_variant":"global_plus_personal","draft":"cnt cm tmr","context_snippets":[],"personal_patterns":[]}}'
+} | "$sidecar" --live >"$responses"
+
+python3 - "$responses" "$global_validation_draft" "$global_validation_expected" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+draft = sys.argv[2]
+expected = sys.argv[3]
+responses = [json.loads(line) for line in path.read_text().splitlines() if line]
+assert len(responses) == 3, responses
+
+health, global_result, personal_result = responses
+assert health == {
+    "status": "ready",
+    "fixture_available": True,
+    "loaded": {"base": False, "global_adapter": True, "user_adapter": False},
+}, health
 assert global_result["request_id"] == "live-validation-global", global_result
-assert global_result["status"] == "error", global_result
-assert global_result["error"]["code"] == "adapter_not_loaded", global_result
+assert global_result["status"] == "ok", global_result
+assert global_result["model_variant"] == "global", global_result
+assert global_result["backend"] == "live", global_result
+assert "action" not in global_result, global_result
+assert isinstance(global_result["latency_ms"], int) and global_result["latency_ms"] > 0, global_result
+assert 0 <= len(global_result["candidates"]) <= 5, global_result
+assert len(global_result["candidates"]) == len(set(global_result["candidates"])), global_result
+assert expected.casefold() in [candidate.casefold() for candidate in global_result["candidates"]], global_result
+assert draft not in global_result["candidates"], global_result
+assert personal_result["request_id"] == "live-validation-personal", personal_result
+assert personal_result["status"] == "error", personal_result
+assert personal_result["error"]["code"] == "adapter_not_loaded", personal_result
 
 for response in responses:
     print(json.dumps(response, separators=(",", ":")))
 PY
 
-phrase_output=$("$phrase_tester" --live "cnt cm tmr")
+phrase_output=$("$phrase_tester" --live "$global_validation_draft")
 case "$phrase_output" in
-  *"Live local inference — $model_label (4-bit, Metal)."*"Base: "*"[Live, "*"Global: error (adapter_not_loaded)"*) ;;
+  *"Live local inference — $model_label (Metal)."*"Base: error (live_inference_failed)"*"Global: "*"[Live, "*"$global_validation_expected"*) ;;
   *)
     printf '%s\n' "$phrase_output" >&2
     printf '%s\n' 'Live phrase tester output failed' >&2
@@ -137,7 +127,9 @@ case "$phrase_output" in
 esac
 printf '%s\n' "$phrase_output"
 
-"$latency_tester" --label "validation-qwen" --warmup 1 --runs 2 \
+"$latency_tester" --address "$global_model_addr" --model-id "$global_model_id" \
+  --output-contract "$global_output_contract" \
+  --label "validation-qwen" --warmup 1 --runs 2 \
   --phrase "cnt cm tmr" --html "$benchmark_html" --json >"$benchmark_json"
 "$python_bin" - "$benchmark_json" "$benchmark_html" <<'PY'
 import json
@@ -147,21 +139,30 @@ import sys
 report = json.loads(pathlib.Path(sys.argv[1]).read_text())
 profile_html = pathlib.Path(sys.argv[2]).read_text()
 assert report["model_label"] == "validation-qwen", report
+assert report["output_contract"] in {"plain_text", "json_suggestion"}, report
 assert report["warmup_runs"] == 1, report
 assert report["measured_runs"] == 2, report
 assert len(report["samples"]) == 2, report
 assert all("phrase" not in sample and "candidates" not in sample for sample in report["samples"]), report
 assert all(sample["timing"]["backend_total_us"] > 0 for sample in report["samples"]), report
-assert all(
-    completion["tokens"]["completion_tokens"] > 0
+profiled_completions = [
+    completion
     for sample in report["samples"]
     for completion in sample["timing"]["completions"]
-), report
-assert report["token_summary"]["mean_completion_tokens"] > 0, report
-assert report["token_summary"]["mean_server_ms_per_output_token"] > 0, report
-assert report["token_summary"]["mean_completion_ms_per_token"] > 0, report
-assert report["token_summary"]["mean_prompt_prefill_ms"] > 0, report
-assert report["token_summary"]["mean_completion_decode_ms"] > 0, report
+    if completion["tokens"] is not None
+]
+if profiled_completions:
+    assert all(
+        completion["tokens"]["completion_tokens"] > 0
+        for completion in profiled_completions
+    ), report
+    assert report["token_summary"]["mean_completion_tokens"] > 0, report
+    assert report["token_summary"]["mean_server_ms_per_output_token"] > 0, report
+else:
+    # MLX-VLM's streaming responses currently omit OpenAI usage data. The
+    # transport and end-to-end stage timings remain real and required below.
+    assert report["config"]["streaming"] is True, report
+    assert report["token_summary"] is None, report
 assert "validation-qwen" in profile_html, profile_html[:500]
 assert "Latency decomposition" in profile_html, profile_html[:500]
 stages = {(item["scope"], item["stage"]): item for item in report["summary"]}
@@ -190,7 +191,7 @@ if ! app_output=$(env \
   QUIP_DATA_DIR="$app_data" \
   QUIP_INFERENCE_SIDECAR="$repo_root/$sidecar" \
   QUIP_BACKEND_MODE=live \
-  QUIP_MODEL_VARIANT=base \
+  QUIP_MODEL_VARIANT=global \
   QUIP_SELFTEST_LIVE=1 \
   "$repo_root/target/debug/quip" 2>&1); then
   printf '%s\n' "$app_output" >&2
@@ -208,9 +209,10 @@ require_app_output() {
   esac
 }
 
-require_app_output 'LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded'
+require_app_output 'LIVE SELFTEST ok: sidecar health is ready with global model artifacts loaded'
 require_app_output 'LIVE SELFTEST ok: app rendered live candidates'
-require_app_output 'LIVE SELFTEST ok: app metrics recorded one schema-valid live result'
+require_app_output 'LIVE SELFTEST ok: native InputMethodKit bridge returned model-backed commit: controversy'
+require_app_output 'LIVE SELFTEST ok: app metrics recorded schema-valid live results'
 require_app_output 'LIVE SELFTEST PASS'
 
 case "$app_output" in

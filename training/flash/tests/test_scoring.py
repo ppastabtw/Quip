@@ -46,6 +46,37 @@ class ParseGoldOutputTests(unittest.TestCase):
 
 
 class ScoreCompletionTests(unittest.TestCase):
+    def test_contextual_input_uses_same_reward_contract(self):
+        result = score_completion(
+            input_text={
+                "text": "meet there tmrw",
+                "context_snippets": [
+                    {
+                        "app_name": "Notes",
+                        "window_title": "Trip planning",
+                        "visible_text": "Tomorrow: meet at Union Station.",
+                    }
+                ],
+            },
+            expected_output={"suggestion": "meet at Union Station tomorrow"},
+            metadata={
+                "target_changed": True,
+                "accepted_suggestions": ["meet at Union Station tomorrow"],
+            },
+            response_text='{"suggestion":"meet at Union Station tomorrow"}',
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.score, 1.0)
+
+    def test_contextual_input_rejects_malformed_snippets(self):
+        result = score_completion(
+            input_text={"text": "hi", "context_snippets": [{"visible_text": "x"}]},
+            expected_output={"suggestion": "hi"},
+            metadata={"target_changed": False, "accepted_suggestions": ["hi"]},
+            response_text="hi",
+        )
+        self.assertFalse(result.schema_valid)
+
     def test_correct_unchanged_suggestion_earns_full_reward(self):
         result = score_completion(
             input_text=input_json("usr/bin"),

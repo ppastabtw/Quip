@@ -14,19 +14,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from scoring import _normalize  # noqa: E402
-
 REPO_ROOT = ROOT.parents[1]
 DEFAULT_SIDECAR = REPO_ROOT / "target" / "debug" / "quip-inference-sidecar"
+
+
+def _normalize(value: str) -> str:
+    """Match the scoring contract without importing Freesolo-only dependencies."""
+    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+    return re.sub(r"\s+", " ", normalized)
+
 
 # Handpicked demo-critical cases. `accepted` empty means the correct behavior
 # is returning no changed suggestion (keep the draft as typed).
@@ -51,6 +56,7 @@ class CaseResult:
     draft: str
     accepted: list[str]
     candidates: list[str]
+    votes: list[int]
     latency_ms: int | None
     error: str | None
 
@@ -83,7 +89,10 @@ def eval_cases(sample: int) -> list[tuple[str, list[str]]]:
             if not line.strip():
                 continue
             row = json.loads(line)
-            draft = json.loads(row["input"])["text"]
+            model_input = row["input"]
+            if isinstance(model_input, str):
+                model_input = json.loads(model_input)
+            draft = model_input["text"]
             metadata = row["metadata"]
             accepted = metadata["accepted_suggestions"] if metadata["target_changed"] else []
             cases.append((draft, accepted))
@@ -126,11 +135,25 @@ def run_cases(sidecar: Path, cases: list[tuple[str, list[str]]]) -> list[CaseRes
     for (draft, accepted), response in zip(cases, responses):
         if response.get("status") == "ok":
             results.append(
-                CaseResult(draft, accepted, response["candidates"], response["latency_ms"], None)
+                CaseResult(
+                    draft,
+                    accepted,
+                    response["candidates"],
+                    response["votes"],
+                    response["latency_ms"],
+                    None,
+                )
             )
         else:
             results.append(
-                CaseResult(draft, accepted, [], None, response.get("error", {}).get("code"))
+                CaseResult(
+                    draft,
+                    accepted,
+                    [],
+                    [],
+                    None,
+                    response.get("error", {}).get("code"),
+                )
             )
     return results
 
@@ -165,6 +188,11 @@ def main() -> int:
                         help="also run N evenly spaced rows from dataset/eval.jsonl")
     parser.add_argument("--sidecar", type=Path, default=DEFAULT_SIDECAR)
     parser.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    parser.add_argument(
+        "--summary-json",
+        action="store_true",
+        help="emit aggregate JSON without drafts, targets, or candidates",
+    )
     args = parser.parse_args()
 
     if not args.sidecar.is_file():
@@ -178,7 +206,9 @@ def main() -> int:
     results = run_cases(args.sidecar, cases)
 
     summary = report(results)
-    if args.json:
+    if args.summary_json:
+        print(json.dumps(summary, separators=(",", ":")))
+    elif args.json:
         print(json.dumps({
             "summary": summary,
             "results": [
@@ -186,6 +216,7 @@ def main() -> int:
                     "draft": r.draft,
                     "accepted": r.accepted,
                     "candidates": r.candidates,
+                    "votes": r.votes,
                     "latency_ms": r.latency_ms,
                     "error": r.error,
                     "success": r.success,

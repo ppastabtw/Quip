@@ -57,7 +57,17 @@ fn interactive(backend: &impl InferenceBackend, mode: Mode) -> io::Result<()> {
                 "Quip phrase tester — live {} mode; inference stays on this Mac.",
                 live_model_label()
             );
-            println!("The global Freesolo adapter is not loaded yet, so only Base can infer.");
+            let loaded = backend.health(None).loaded;
+            match (loaded.base, loaded.global_adapter) {
+                (true, true) => {
+                    println!("Base and the global Freesolo adapter are loaded locally.")
+                }
+                (false, true) => println!(
+                    "The global Freesolo adapter is loaded locally; Base comparison is off."
+                ),
+                (true, false) => println!("Only Base is loaded locally."),
+                (false, false) => println!("No local model is ready."),
+            }
         }
     }
     println!("Type /quit or submit a blank line to exit.");
@@ -94,10 +104,7 @@ fn print_comparison(
 ) {
     match mode {
         Mode::Fixture => println!("Fixture mode only — no AI model is loaded."),
-        Mode::Live => println!(
-            "Live local inference — {} (4-bit, Metal).",
-            live_model_label()
-        ),
+        Mode::Live => println!("Live local inference — {} (Metal).", live_model_label()),
     }
     for (label, variant) in [
         ("Base", ModelVariant::Base),
@@ -116,10 +123,12 @@ fn print_comparison(
 }
 
 fn live_model_label() -> String {
-    std::env::var("QUIP_BASE_MODEL_ID")
-        .unwrap_or_else(|_| "Qwen/Qwen3.5-2B".to_owned())
-        .strip_prefix("Qwen/")
-        .unwrap_or("Qwen3.5-2B")
+    std::env::var("QUIP_GLOBAL_MODEL_ID")
+        .or_else(|_| std::env::var("QUIP_BASE_MODEL_ID"))
+        .unwrap_or_else(|_| "mlx-community/Qwen3.5-2B-MLX-4bit".to_owned())
+        .rsplit('/')
+        .next()
+        .unwrap_or("Qwen3.5-2B-MLX-4bit")
         .to_owned()
 }
 

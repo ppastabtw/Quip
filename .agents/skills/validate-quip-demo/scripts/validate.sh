@@ -24,6 +24,9 @@ cargo test
 echo "==> npm run build"
 npm run build
 
+echo "==> demo state and replacement boundary tests"
+node --test src/ui/*.test.mjs
+
 echo "==> tauri selftest"
 SELFTEST_LOG="$TMP_ROOT/selftest.log"
 QUIP_SELFTEST=1 \
@@ -32,10 +35,9 @@ QUIP_SELFTEST=1 \
 grep -F "SELFTEST PASS" "$SELFTEST_LOG" >/dev/null
 
 echo "==> safe demo startup"
-DEBUG_DIR="$ROOT/.workspace/quip-debug"
+DEBUG_DIR="$TMP_ROOT/quip-debug"
 EVENT_LOG="$DEBUG_DIR/events.jsonl"
 SAFE_LOG="$TMP_ROOT/safe-demo.log"
-rm -rf "$DEBUG_DIR"
 mkdir -p "$DEBUG_DIR"
 
 QUIP_DEMO_SAFE_MODE=1 \

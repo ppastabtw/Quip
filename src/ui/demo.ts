@@ -16,7 +16,12 @@ import {
   type Snapshot,
 } from "./ipc";
 import type { Mark } from "./ipc";
-import type { PredictionResult, Rect, SidecarHealth, Trigger } from "./contracts";
+import type { ContextSnippet, PredictionResult, Rect, SidecarHealth, Trigger } from "./contracts";
+import { completedBurstWindows, trailingBurstStart } from "./burst-window";
+import {
+  protectBoundaryWhitespace,
+  replacePreservingBoundaryWhitespace,
+} from "./replacement";
 
 const healthStatusEl = byId<HTMLSpanElement>("health_status");
 const backendModeEl = byId<HTMLSpanElement>("backend_mode");
@@ -165,6 +170,15 @@ let dirty = false;
 let lastKeyAt = 0;
 const keyGaps: number[] = [];
 const stats = { keystrokes: 0, fired: 0, shown: 0, ttbLast: 0, ttbSum: 0 };
+/** Incremented whenever destination offsets are invalidated. Async capture
+ * preparation from an older generation must never resurrect that session. */
+let sessionEpoch = 0;
+/** New predictions wait for the engine-side reset/end command so clearing and
+ * immediately retyping cannot race the old composition state. */
+let engineBarrier: Promise<void> = Promise.resolve();
+let pendingMutation:
+  | { value: string; start: number; end: number; inputType: string }
+  | undefined;
 
 const strategyStatsEl = byId<HTMLParagraphElement>("strategy_stats");
 const strategyHintEl = byId<HTMLSpanElement>("strategy_hint");
@@ -208,6 +222,23 @@ function wordCharRange(startWord: number, wordLen: number): ChunkRange | undefin
   const last = startWord + Math.max(wordLen, 1) - 1;
   if (startWord >= words.length || last >= words.length) return undefined;
   return { start: words[startWord].start, end: words[last].end };
+}
+
+/** The Slack-like conversation visible beside the composer. This snapshot is
+ * retained with learning labels even while model context is disabled. */
+function visibleDemoContext(): ContextSnippet[] {
+  const visibleText = Array.from(document.querySelectorAll<HTMLElement>(".message p"))
+    .map((message) => message.textContent?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 1600);
+  return [
+    {
+      app_name: "quip-demo",
+      window_title: "Northstar Ops · #customer-escalations",
+      visible_text: visibleText,
+    },
+  ];
 }
 
 const measureCanvas = document.createElement("canvas").getContext("2d")!;
@@ -367,10 +398,11 @@ function renderInferenceStatus(snapshot: Snapshot) {
   }
 }
 
-function resetPlayground(reason: string, caret: number) {
+function resetPlayground(reason: string, start: number) {
   window.clearTimeout(idleTimer);
-  burstStart = caret;
-  sessionStart = caret;
+  sessionEpoch += 1;
+  burstStart = start;
+  sessionStart = start;
   activeBurstId = undefined;
   inflight = false;
   dirty = false;
@@ -379,11 +411,15 @@ function resetPlayground(reason: string, caret: number) {
   shownChunk = undefined;
   consolidationRange = undefined;
   typedThroughWords = 0;
-  void api.endSession();
+  sessionMarks = [];
+  engineBarrier = api.cancelSession().catch((error) => {
+    lastStateEl.textContent = `reset failed: ${String(error)}`;
+  });
   renderChunkIndicator();
   recordTimelineEvent("playground_reset", reason, {
     reason,
-    caret,
+    start,
+    caret: playgroundEl.selectionStart,
     value_chars: playgroundEl.value.length,
   });
 }
@@ -466,6 +502,11 @@ async function caretScreenRect(): Promise<Rect> {
 }
 
 async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
+  const epoch = sessionEpoch;
+  const barrier = engineBarrier;
+  await barrier;
+  if (epoch !== sessionEpoch) return;
+
   window.clearTimeout(idleTimer);
   const value = playgroundEl.value;
   let start = chunk ? chunk.start : burstStart;
@@ -489,9 +530,9 @@ async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
     end = words[words.length - 1].end;
     wordOffset = words.length - windowLen;
   } else {
-    // Trailing whitespace stays outside the replaced range so an accepted
-    // candidate keeps its separator from the words typed after it.
-    while (end > start && /\s/.test(value[end - 1])) end -= 1;
+    // Boundary whitespace stays outside the replaced range so an accepted
+    // candidate cannot consume the separator before or after nearby text.
+    ({ start, end } = protectBoundaryWhitespace(value, start, end));
     wordOffset = sessionWordRanges(start).length;
   }
   const draft = value.slice(start, end).trim();
@@ -504,19 +545,24 @@ async function fireTrigger(trigger: Trigger, chunk?: ChunkRange) {
     trigger,
     draft_chars: draft.length,
   });
-  activeBurstId = `pg_${++burstSeq}`;
-  firedRanges.set(activeBurstId, { start, end });
-  void api.injectCapture(
+  const caret = await caretScreenRect();
+  if (epoch !== sessionEpoch) return;
+
+  const burstId = `pg_${++burstSeq}`;
+  activeBurstId = burstId;
+  firedRanges.set(burstId, { start, end });
+  void api.injectCaptureWithContext(
     {
       status: "ready",
-      burst_id: activeBurstId,
+      burst_id: burstId,
       destination_id: "destination_playground",
       profile_id: settings?.active_profile ?? "profile_default",
       draft,
       trigger,
-      caret: await caretScreenRect(),
+      caret,
       word_offset: wordOffset,
     },
+    visibleDemoContext(),
     strategy.barless === true,
   );
 }
@@ -539,23 +585,35 @@ function requestPrediction(trigger: Trigger) {
   void fireTrigger(trigger);
 }
 
-// Completing the fifth word freezes the chunk and starts a fresh burst at the
-// caret immediately: inference on the chunk overlaps typing the next words,
-// so the typist never waits. If the serial slot is busy the chunk queues and
-// fires the moment the previous result lands.
-function chunkBurst(caret: number) {
-  window.clearTimeout(idleTimer);
-  const chunk: ChunkRange = { start: burstStart, end: caret };
-  burstStart = caret;
+// Queues one already-bounded chunk. Long paste/IME input can produce several
+// complete windows in one input event; they enter the same serial lane in
+// source order instead of becoming one oversized model request.
+function enqueueChunk(chunk: ChunkRange) {
   if (inflight) {
     pendingChunks.push(chunk);
-    dirty = false;
     return;
   }
   inflight = true;
   stats.fired += 1;
   renderStrategyStats();
   void fireTrigger("idle", chunk);
+}
+
+function enqueueCompletedChunks(caret: number): number {
+  const chunks = completedBurstWindows(
+    playgroundEl.value,
+    burstStart,
+    caret,
+    windowWords(),
+  );
+  if (chunks.length === 0) return 0;
+
+  window.clearTimeout(idleTimer);
+  // A full frozen chunk supersedes a dirty partial pass over the same words.
+  dirty = false;
+  for (const chunk of chunks) enqueueChunk(chunk);
+  burstStart = chunks[chunks.length - 1].end;
+  return chunks.length;
 }
 
 // Ends the composition session at the current caret: the engine records the
@@ -566,6 +624,7 @@ function chunkBurst(caret: number) {
 // snapshotted here, before the session moves on.
 function endSession() {
   window.clearTimeout(idleTimer);
+  sessionEpoch += 1;
   dirty = false;
   // A newline is a hard composition boundary. Release the frontend's serial
   // slot even when a request is still in flight; the engine drops its result
@@ -581,10 +640,21 @@ function endSession() {
       ? { start: words[0].start, end: words[words.length - 1].end }
       : undefined;
   renderChunkIndicator();
-  void api.endSession();
+  engineBarrier = api.endSession().catch((error) => {
+    lastStateEl.textContent = `session end failed: ${String(error)}`;
+  });
   burstStart = playgroundEl.selectionStart;
   sessionStart = burstStart;
 }
+
+playgroundEl.addEventListener("beforeinput", (event) => {
+  pendingMutation = {
+    value: playgroundEl.value,
+    start: playgroundEl.selectionStart,
+    end: playgroundEl.selectionEnd,
+    inputType: event.inputType,
+  };
+});
 
 playgroundEl.addEventListener("input", () => {
   const now = performance.now();
@@ -600,12 +670,39 @@ playgroundEl.addEventListener("input", () => {
   stats.keystrokes += 1;
 
   const caret = playgroundEl.selectionStart;
+  const mutation = pendingMutation;
+  pendingMutation = undefined;
+  const simpleAppend =
+    mutation !== undefined &&
+    mutation.inputType.startsWith("insert") &&
+    mutation.start === mutation.end &&
+    mutation.start === mutation.value.length &&
+    caret === playgroundEl.value.length;
+
+  // Deletions, selection replacements, and edits away from the end destroy
+  // the pinned ranges the engine saw. Cancel them without creating a keep
+  // label, then recover from a fresh trailing bounded window. In particular,
+  // Select All + Delete leaves a clean composer that can immediately start a
+  // new session.
+  if (playgroundEl.value.length === 0) {
+    resetPlayground("composer_cleared", 0);
+    renderStrategyStats();
+    return;
+  }
+  if (mutation && !simpleAppend) {
+    resetPlayground(
+      `destructive_edit:${mutation.inputType}`,
+      trailingBurstStart(playgroundEl.value, caret, windowWords()),
+    );
+  }
   // Clearing the textarea, replacing a selection, or editing before the
   // tracked burst invalidates the old offsets. Start a fresh burst at the
   // current edit instead of slicing from an unreachable prior position.
   if (caret < burstStart || playgroundEl.value.length < burstStart) {
-    resetPlayground("cleared_or_caret_before_burst", Math.max(0, caret - 1));
-    return;
+    resetPlayground(
+      "caret_before_burst",
+      trailingBurstStart(playgroundEl.value, caret, windowWords()),
+    );
   }
   // Editing at or before a fired range invalidates its candidates, whether
   // the batch is on display, queued, or still inferring: the words the model
@@ -622,8 +719,8 @@ playgroundEl.addEventListener("input", () => {
     }
   }
   renderChunkIndicator();
-  const draft = playgroundEl.value.slice(burstStart, caret);
-  const last = draft.at(-1) ?? "";
+  let draft = playgroundEl.value.slice(burstStart, caret);
+  let last = draft.at(-1) ?? "";
   // Sentence boundary ends the session: a newline, or whitespace after a
   // terminator (the burst before it was already predicted on).
   if (last === "\n" || (/\s/.test(last) && /[.!?]$/.test(draft.trimEnd()))) {
@@ -636,7 +733,7 @@ playgroundEl.addEventListener("input", () => {
     renderStrategyStats();
     return;
   }
-  const key: KeyInfo = {
+  let key: KeyInfo = {
     wordBoundary: /\s/.test(last) && draft.length > 1 && !/\s/.test(draft.at(-2) ?? " "),
     sentencePunct: ".!?".includes(last),
     medianGapMs: medianGapMs(),
@@ -655,17 +752,21 @@ playgroundEl.addEventListener("input", () => {
       void api.dismissSuggestions();
     }
   }
-  // The window-words chunk boundary freezes a chunk under every bar-mode
-  // strategy — the model never sees an oversized draft. The sliding cadence
-  // has no frozen chunks: its window construction bounds itself.
-  if (
-    !strategy.barless &&
-    /\s/.test(last) &&
-    draft.trim().split(/\s+/).filter(Boolean).length >= windowWords()
-  ) {
-    chunkBurst(caret);
-    renderStrategyStats();
-    return;
+  // Freeze every complete window, including multiple windows delivered by a
+  // paste or input-method event. Keep the unfinished remainder on the normal
+  // pause cadence.
+  if (!strategy.barless && enqueueCompletedChunks(caret) > 0) {
+    draft = playgroundEl.value.slice(burstStart, caret);
+    if (draft.trim().length === 0) {
+      renderStrategyStats();
+      return;
+    }
+    last = draft.at(-1) ?? "";
+    key = {
+      wordBoundary: /\s/.test(last) && draft.length > 1 && !/\s/.test(draft.at(-2) ?? " "),
+      sentencePunct: ".!?".includes(last),
+      medianGapMs: medianGapMs(),
+    };
   }
   // The draft window is a strategy-independent backstop: past the char cap
   // the burst must be predicted on before it grows unwieldy.
@@ -751,8 +852,10 @@ playgroundEl.addEventListener("keydown", (e) => {
 function applyRangeReplacement(start: number, end: number, text: string) {
   const value = playgroundEl.value;
   const prevCaret = playgroundEl.selectionStart;
+  const replacement = replacePreservingBoundaryWhitespace(value, start, end, text);
+  ({ start, end } = replacement.range);
   const delta = text.length - (end - start);
-  playgroundEl.value = value.slice(0, start) + text + value.slice(end);
+  playgroundEl.value = replacement.value;
   // The typist may already be words past the replaced batch: keep their caret
   // where they are typing (shifted by the edit) instead of yanking it back.
   const caret = prevCaret >= end ? prevCaret + delta : start + text.length;
@@ -884,7 +987,7 @@ failureEl.addEventListener("change", async () => {
 });
 
 byId<HTMLButtonElement>("preset_primary").addEventListener("click", () => {
-  loadComposerPrompt("cnt cm tmrw", "compressed reply");
+  loadComposerPrompt("cancel next meetihng", "live tuned-model reply");
 });
 
 byId<HTMLButtonElement>("preset_typo").addEventListener("click", () => {
@@ -896,7 +999,7 @@ byId<HTMLButtonElement>("preset_short").addEventListener("click", () => {
 });
 
 byId<HTMLButtonElement>("run_safe_demo").addEventListener("click", () => {
-  loadComposerPrompt("cnt cm tmrw", "Quip demo");
+  loadComposerPrompt("cancel next meetihng", "Quip live demo");
 });
 
 byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {

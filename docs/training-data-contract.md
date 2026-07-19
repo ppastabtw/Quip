@@ -2,7 +2,7 @@
 
 Status: authoritative V0 data policy
 Owner: Workstream 1
-Last amended: 2026-07-18
+Last amended: 2026-07-19
 
 ## Authority
 
@@ -82,5 +82,39 @@ Before publishing a dataset:
    final rows.
 5. Verify JSON shape, provenance metadata, output schema, and dataset hashes.
 
-Only the source, window, augmentation, and validation path defined above is
-active for Quip V0 global data.
+The sourced MASSIVE splits remain the canonical V0 base corpus. They are not
+rewritten by supplemental generation jobs.
+
+## Supplemental synthetic-context train lane
+
+Quip may build a separate training-only supplement with
+`training/flash/scripts/generate_synthetic_data.py`. This lane teaches whether
+and how to use `context_snippets`; it does not alter the sourced train, eval, or
+locked test files under `training/flash/dataset/`.
+
+The default approved run shape is:
+
+- generate and independently judge 200 candidate records;
+- apply deterministic schema, privacy, length, contrast-group, exact duplicate,
+  normalized duplicate, and near-duplicate checks;
+- select the best 100 passing records by judge score while preserving the
+  configured context-behavior/category balance; prioritize complete passing
+  contrast groups, then use individually valid variants if judged-out siblings
+  would otherwise leave the final dataset short;
+- publish those selected rows as a separate `train.jsonl` run artifact.
+
+Synthetic drafts keep the product's one-to-five-word burst bound. Their input
+is a structured object containing `text` and optional `context_snippets`.
+Context snippets use exactly the phase-0 runtime fields `app_name`,
+`window_title`, and `visible_text`. Gold output remains the canonical object
+`{"suggestion":"complete target text"}` even though the active model prompt
+asks the model to reply with the plain suggestion text at inference time.
+
+Synthetic rows must retain generation model, judge model, prompt versions,
+category, context behavior, contrast identity, and judge scores in auditable
+artifacts. They must not contain real personal records, credentials, secrets,
+email addresses, phone numbers, or URLs. Synthetic records are training-only:
+never place generated variants into sourced evaluation or locked test splits.
+
+The versioned prompt, thresholds, distribution, and artifact contract are
+documented in `docs/synthetic-context-data.md`.

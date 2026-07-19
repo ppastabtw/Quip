@@ -15,6 +15,8 @@ mod accessibility;
 mod commit;
 mod composition;
 mod debug_events;
+#[cfg(target_os = "macos")]
+mod ime_bridge;
 mod inference;
 mod learning;
 mod settings;
@@ -346,11 +348,12 @@ struct SettledEvent {
 /// gets `barless: None` here.
 #[tauri::command]
 async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
-    let (profile_id, include_context) = {
+    let (profile_id, capture_context, context_used_for_model) = {
         let engine = app.state::<EngineState>();
         let engine = engine.0.lock().unwrap();
         (
             engine.settings.active_profile.clone(),
+            !engine.settings.learning_paused || engine.settings.window_context,
             engine.settings.window_context,
         )
     };
@@ -364,7 +367,8 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
             "source": "manual_focused_capture",
             "trigger": trigger,
             "profile_id": profile_id,
-            "include_context": include_context,
+            "capture_context": capture_context,
+            "context_used_for_model": context_used_for_model,
             "focused": focused,
         }),
     );
@@ -388,7 +392,15 @@ async fn capture_active_destination(app: AppHandle, trigger: Trigger) {
     } else {
         accessibility::capture_focused_destination(&profile_id, trigger)
     };
-    run_capture_result(app, result, include_context, "manual_focused_capture", None).await;
+    run_capture_result(
+        app,
+        result,
+        capture_context,
+        "manual_focused_capture",
+        None,
+        None,
+    )
+    .await;
 }
 
 /// One full burst: begin → inference → offer. Fixture latency is replayed;
@@ -485,7 +497,15 @@ async fn run_burst_flow(app: AppHandle, input: BurstInput) {
         }
         ApplyDisposition::Stale => {}
     }
-    let _ = app.emit("composition://settled", SettledEvent { burst_id, offered });
+    let _ = app.emit(
+        "composition://settled",
+        SettledEvent {
+            burst_id: burst_id.clone(),
+            offered,
+        },
+    );
+    #[cfg(target_os = "macos")]
+    ime_bridge::prediction_settled(&burst_id, offered);
 }
 
 /// Broadcasts the session's word-slot proposals so the playground can render
@@ -508,7 +528,28 @@ fn emit_marks(app: &AppHandle) {
 /// track session word positions yet, so it always passes `None`.
 #[tauri::command]
 async fn inject_capture(app: AppHandle, result: CaptureResult, barless: Option<bool>) {
-    run_capture_result(app, result, false, "manual_injection", barless).await;
+    run_capture_result(app, result, false, "manual_injection", barless, None).await;
+}
+
+/// Demo-only capture seam that attaches bounded visible screen context for
+/// local learning history. It remains independent of whether settings permit
+/// that context to enter the model request.
+#[tauri::command]
+async fn inject_capture_with_context(
+    app: AppHandle,
+    result: CaptureResult,
+    barless: Option<bool>,
+    context_snippets: Vec<quip_contracts::ContextSnippet>,
+) {
+    run_capture_result(
+        app,
+        result,
+        false,
+        "demo_injection",
+        barless,
+        Some(context_snippets),
+    )
+    .await;
 }
 
 fn safe_demo_capture(case_id: &str) -> Result<CaptureResult, String> {
@@ -578,7 +619,7 @@ async fn run_safe_demo(app: AppHandle, case_id: Option<String>) -> Result<(), St
     };
     emit_settings(&app);
 
-    run_capture_result(app.clone(), result, false, "safe_demo_mode", None).await;
+    run_capture_result(app.clone(), result, false, "safe_demo_mode", None, None).await;
 
     {
         let engine = app.state::<EngineState>();
@@ -595,6 +636,7 @@ async fn run_capture_result(
     include_context: bool,
     source: &'static str,
     barless: Option<bool>,
+    context_override: Option<Vec<quip_contracts::ContextSnippet>>,
 ) {
     match result {
         CaptureResult::Ready {
@@ -606,7 +648,9 @@ async fn run_capture_result(
             caret,
             word_offset,
         } => {
-            let context_snippets = if include_context {
+            let context_snippets = if let Some(context) = context_override {
+                context
+            } else if include_context {
                 accessibility::collect_context_snippets(accessibility::DEFAULT_CONTEXT_LIMIT)
             } else {
                 Vec::new()
@@ -696,6 +740,10 @@ fn select_candidate(app: AppHandle, index: usize) -> Result<CommitOutcome, Strin
             return Err(error);
         }
     };
+    #[cfg(target_os = "macos")]
+    if ime_bridge::is_native_destination(&outcome.destination_id) {
+        ime_bridge::commit_candidate(&outcome.destination_id, &outcome.text)?;
+    }
     emit_snapshot(&app, &snapshot);
     let _ = app.emit("composition://committed", &outcome);
     record_debug(
@@ -741,6 +789,8 @@ fn dismiss_suggestions(app: AppHandle) {
         engine.dismiss()
     };
     emit_snapshot(&app, &snapshot);
+    #[cfg(target_os = "macos")]
+    ime_bridge::dismiss_active();
 }
 
 /// Sentence boundary or a destroyed destination: the visible offer counts as
@@ -751,6 +801,20 @@ fn end_composition_session(app: AppHandle) {
         let engine = app.state::<EngineState>();
         let mut engine = engine.0.lock().unwrap();
         engine.end_session()
+    };
+    emit_snapshot(&app, &snapshot);
+    emit_marks(&app);
+}
+
+/// Destructive destination edits invalidate every tracked range. Drop the
+/// session without interpreting the edit as a dismissal or offering stale
+/// consolidated text.
+#[tauri::command]
+fn cancel_composition_session(app: AppHandle) {
+    let snapshot = {
+        let engine = app.state::<EngineState>();
+        let mut engine = engine.0.lock().unwrap();
+        engine.cancel_session()
     };
     emit_snapshot(&app, &snapshot);
     emit_marks(&app);
@@ -1229,6 +1293,11 @@ fn main() {
             app.manage(EngineState(Mutex::new(engine)));
             app.manage(SidecarState(Arc::new(Mutex::new(SidecarClient::auto()))));
 
+            #[cfg(target_os = "macos")]
+            if let Err(error) = ime_bridge::start(app.handle()) {
+                tracing::warn!(%error, "native IME bridge unavailable");
+            }
+
             let handles = build_tray(app, &settings, &profiles)?;
             app.manage(TrayState(Mutex::new(Some(handles))));
 
@@ -1299,11 +1368,13 @@ fn main() {
             commit_confirmed_text,
             cancel_destination,
             inject_capture,
+            inject_capture_with_context,
             run_safe_demo,
             select_candidate,
             move_selection,
             dismiss_suggestions,
             end_composition_session,
+            cancel_composition_session,
             retract_offer,
             get_marks,
             apply_marks,
@@ -1604,12 +1675,102 @@ mod selftest {
 mod live_selftest {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    fn read_bridge_message(
+        reader: &mut std::io::BufReader<std::net::TcpStream>,
+    ) -> Result<serde_json::Value, String> {
+        use std::io::BufRead;
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|error| format!("native bridge read failed: {error}"))?;
+        if line.is_empty() {
+            return Err("native bridge closed before completing the round trip".to_owned());
+        }
+        serde_json::from_str(&line)
+            .map_err(|error| format!("native bridge returned invalid JSON: {error}: {line}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_bridge_round_trip() -> Result<String, String> {
+        use std::io::{BufReader, Write};
+
+        let mut stream = std::net::TcpStream::connect(crate::ime_bridge::BRIDGE_ADDRESS)
+            .map_err(|error| format!("could not connect to native bridge: {error}"))?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .map_err(|error| format!("could not configure native bridge timeout: {error}"))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|error| format!("could not clone native bridge stream: {error}"))?;
+        let mut reader = BufReader::new(reader_stream);
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({
+                "type": "capture",
+                "session_id": "live-selftest-native",
+                "generation": 1,
+                "draft": "contropversy",
+                "caret": {"x": 512.0, "y": 384.0, "width": 2.0, "height": 18.0}
+            })
+        )
+        .map_err(|error| format!("native bridge capture write failed: {error}"))?;
+
+        let accepted = read_bridge_message(&mut reader)?;
+        if accepted["type"] != "capture_accepted" {
+            return Err(format!("native bridge did not accept capture: {accepted}"));
+        }
+        let destination_id = accepted["destination_id"]
+            .as_str()
+            .ok_or_else(|| format!("native bridge omitted destination: {accepted}"))?
+            .to_owned();
+
+        let settled = read_bridge_message(&mut reader)?;
+        if settled["type"] != "settled" || settled["offered"] != true {
+            return Err(format!(
+                "native bridge did not settle with an offer: {settled}"
+            ));
+        }
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({
+                "type": "accept",
+                "destination_id": destination_id
+            })
+        )
+        .map_err(|error| format!("native bridge accept write failed: {error}"))?;
+
+        let committed = read_bridge_message(&mut reader)?;
+        if committed["type"] != "commit" || committed["destination_id"] != destination_id {
+            return Err(format!(
+                "native bridge did not return a commit: {committed}"
+            ));
+        }
+        committed["text"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("native bridge commit omitted replacement text: {committed}"))
+    }
+
     pub async fn run(app: AppHandle) -> Result<(), String> {
         let health = get_health(app.clone()).await;
-        if health.status != quip_contracts::HealthStatus::Ready || !health.loaded.base {
+        let requested_variant =
+            std::env::var("QUIP_MODEL_VARIANT").unwrap_or_else(|_| "base".to_owned());
+        let selected_loaded = match requested_variant.as_str() {
+            "base" => health.loaded.base,
+            "global" => health.loaded.global_adapter,
+            "global_plus_personal" => health.loaded.user_adapter,
+            _ => false,
+        };
+        if health.status == quip_contracts::HealthStatus::Unavailable || !selected_loaded {
             return Err(format!("sidecar health was not live-ready: {health:?}"));
         }
-        println!("LIVE SELFTEST ok: sidecar health is ready with base Qwen loaded");
+        println!(
+            "LIVE SELFTEST ok: sidecar health is ready with {requested_variant} model artifacts loaded"
+        );
 
         // A slow local model must not hold the composition mutex. Prove that
         // the app can retract a predicting burst promptly, then verify the
@@ -1622,7 +1783,7 @@ mod live_selftest {
                     burst_id: "live_selftest_dismiss".to_owned(),
                     destination_id: "destination_live_selftest".to_owned(),
                     profile_id: "profile_default".to_owned(),
-                    draft: "this sa sntece".to_owned(),
+                    draft: "contropversy".to_owned(),
                     trigger: Trigger::Idle,
                     word_offset: None,
                     caret: Rect {
@@ -1674,7 +1835,7 @@ mod live_selftest {
                 burst_id: "live_selftest".to_owned(),
                 destination_id: "destination_live_selftest".to_owned(),
                 profile_id: "profile_default".to_owned(),
-                draft: "see you tomorow".to_owned(),
+                draft: "contropversy".to_owned(),
                 trigger: Trigger::Idle,
                 word_offset: None,
                 caret: Rect {
@@ -1708,11 +1869,34 @@ mod live_selftest {
             other => return Err(format!("unexpected live composition state: {other:?}")),
         }
 
+        dismiss_suggestions(app.clone());
+        #[cfg(target_os = "macos")]
+        {
+            let committed = tokio::task::spawn_blocking(native_bridge_round_trip)
+                .await
+                .map_err(|error| format!("native bridge worker failed: {error}"))??;
+            if committed != "controversy" {
+                return Err(format!(
+                    "native bridge returned unexpected model-backed commit: {committed:?}"
+                ));
+            }
+            println!(
+                "LIVE SELFTEST ok: native InputMethodKit bridge returned model-backed commit: {committed}"
+            );
+        }
+
         let metrics = get_metrics(app);
-        if metrics.requests != 2 || metrics.ok != 2 || metrics.schema_invalid != 0 {
+        #[cfg(target_os = "macos")]
+        let expected_requests = 3;
+        #[cfg(not(target_os = "macos"))]
+        let expected_requests = 2;
+        if metrics.requests != expected_requests
+            || metrics.ok != expected_requests
+            || metrics.schema_invalid != 0
+        {
             return Err(format!("unexpected live metrics: {metrics:?}"));
         }
-        println!("LIVE SELFTEST ok: app metrics recorded one schema-valid live result");
+        println!("LIVE SELFTEST ok: app metrics recorded schema-valid live results");
         Ok(())
     }
 }
