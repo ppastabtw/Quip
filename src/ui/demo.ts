@@ -828,6 +828,24 @@ failureEl.addEventListener("change", async () => {
   await refresh();
 });
 
+byId<HTMLButtonElement>("run_safe_demo").addEventListener("click", async () => {
+  activeBurstId = undefined;
+  recordTimelineEvent("demo_safe_mode_requested", "safe demo requested: primary", {
+    case_id: "primary",
+  });
+  try {
+    await api.runSafeDemo("primary");
+    lastStateEl.textContent = "safe demo: candidates requested";
+  } catch (error) {
+    const summary = `safe demo failed: ${String(error)}`;
+    lastStateEl.textContent = summary;
+    recordTimelineEvent("demo_safe_mode_failed", summary, {
+      case_id: "primary",
+      error: String(error),
+    });
+  }
+});
+
 byId<HTMLButtonElement>("fire_textedit").addEventListener("click", () => {
   void api.injectCapture({
     status: "ready",

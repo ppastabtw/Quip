@@ -234,7 +234,7 @@ Required `capture_retry` payload:
 - [x] Emit safe-demo and retry debug events: `src-tauri/src/main.rs`
 - [x] Add `runSafeDemo`: `src/ui/ipc.ts`
 - [x] Add `Run safe demo` button: `src/ui/demo.html`
-- [ ] Wire button behavior and UI state: `src/ui/demo.ts`
+- [x] Wire button behavior and UI state: `src/ui/demo.ts`
 - [ ] Ensure demo phrases exist in fixture corpus: `src-tauri/fixtures/demo_corpus.json`
 - [ ] Add app validation skill: `.agents/skills/validate-quip-demo/SKILL.md`
 - [ ] Add validation script: `.agents/skills/validate-quip-demo/scripts/validate.sh`
